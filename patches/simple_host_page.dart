@@ -176,6 +176,28 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
     } catch (_) {}
   }
 
+  Future<void> _closeApp() async {
+    try {
+      await windowManager.destroy();
+    } catch (_) {
+      exit(0);
+    }
+    // 兜底：窗口销毁后进程若仍驻留，直接退出
+    Future.delayed(const Duration(milliseconds: 600), () => exit(0));
+  }
+
+  Future<void> _minimize() async {
+    try {
+      await windowManager.minimize();
+    } catch (_) {}
+  }
+
+  Future<void> _startDrag() async {
+    try {
+      await windowManager.startDragging();
+    } catch (_) {}
+  }
+
   static String _groupedId(String raw) {
     final s = raw.replaceAll(' ', '');
     if (s.length < 6 || int.tryParse(s) == null) {
@@ -216,21 +238,31 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(
-                      height: 34,
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints:
-                                const BoxConstraints(minWidth: 24, minHeight: 24),
-                            splashRadius: 14,
-                            icon: Icon(Icons.settings,
-                                size: 17, color: subColor),
-                            onPressed: _openSettings,
-                          ),
+                    // 无系统标题栏，自绘一条可拖动条：齿轮 + 最小化 + 关闭
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onPanStart: (_) => _startDrag(),
+                      child: SizedBox(
+                        height: 34,
+                        child: Row(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(left: 16),
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 24, minHeight: 24),
+                                splashRadius: 14,
+                                icon: Icon(Icons.settings,
+                                    size: 17, color: subColor),
+                                onPressed: _openSettings,
+                              ),
+                            ),
+                            const Spacer(),
+                            _winButton(Icons.remove, subColor, _minimize),
+                            _winButton(Icons.close, subColor, _closeApp),
+                            const SizedBox(width: 6),
+                          ],
                         ),
                       ),
                     ),
@@ -346,6 +378,16 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
     } else {
       _copy(pwd, '已复制密码');
     }
+  }
+
+  Widget _winButton(IconData icon, Color color, VoidCallback onTap) {
+    return IconButton(
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      splashRadius: 13,
+      icon: Icon(icon, size: 15, color: color),
+      onPressed: onTap,
+    );
   }
 
   Widget _iconBtn(IconData icon, double size, Color color, VoidCallback onTap) {
