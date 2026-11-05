@@ -1,0 +1,53 @@
+name: Dart Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'rustdesk ref to analyze against'
+        required: false
+        default: 'master'
+        type: string
+
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout patch repo
+        uses: actions/checkout@v4
+
+      - name: Checkout rustdesk
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: ${{ inputs.ref }}
+          path: src
+          submodules: recursive
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
+
+      - name: Copy pages and apply patch
+        run: |
+          cp patches/client_home_page.dart src/flutter/lib/desktop/pages/
+          cp patches/screen_wall_page.dart src/flutter/lib/desktop/pages/
+          python3 patches/patch_client_ui.py src
+          grep -n "ClientHomePage" src/flutter/lib/main.dart
+
+      - name: Pub get
+        working-directory: src/flutter
+        run: flutter pub get || true
+
+      - name: Analyze new pages
+        working-directory: src/flutter
+        run: |
+          set +e
+          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart 2>&1 | tee /tmp/analyze.log
+          echo "---- errors only ----"
+          grep -E "^\s+(error|warning)" /tmp/analyze.log | head -80
+          exit 0
