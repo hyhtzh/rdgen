@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher_string.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
@@ -89,13 +90,82 @@ class _ClientHomePageState extends State<ClientHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Column(
       children: [
-        _buildLeftPane(context),
-        const VerticalDivider(width: 1),
-        Expanded(child: _buildRightPane(context)),
+        _buildTitleBar(context),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildLeftPane(context),
+              const VerticalDivider(width: 1),
+              Expanded(child: _buildRightPane(context)),
+            ],
+          ),
+        ),
       ],
+    );
+  }
+
+  // 窗口没有系统标题栏，自绘一条：可拖动、可双击最大化、带最小化/最大化/关闭
+  Widget _buildTitleBar(BuildContext context) {
+    final color = Theme.of(context).textTheme.titleLarge?.color ?? Colors.black87;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanStart: (_) async {
+        try {
+          await windowManager.startDragging();
+        } catch (_) {}
+      },
+      onDoubleTap: () => _toggleMaximize(),
+      child: SizedBox(
+        height: 32,
+        child: Row(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: Text(
+                appName,
+                style: TextStyle(fontSize: 11, color: color.withOpacity(0.45)),
+              ),
+            ),
+            const Spacer(),
+            _winButton(Icons.remove, color, () async {
+              try {
+                await windowManager.minimize();
+              } catch (_) {}
+            }),
+            _winButton(Icons.crop_square, color, _toggleMaximize, size: 13),
+            _winButton(Icons.close, color, () async {
+              try {
+                await windowManager.close();
+              } catch (_) {}
+            }),
+            const SizedBox(width: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleMaximize() async {
+    try {
+      if (await windowManager.isMaximized()) {
+        await windowManager.unmaximize();
+      } else {
+        await windowManager.maximize();
+      }
+    } catch (_) {}
+  }
+
+  Widget _winButton(IconData icon, Color color, VoidCallback onTap,
+      {double size = 15}) {
+    return IconButton(
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      splashRadius: 13,
+      icon: Icon(icon, size: size, color: color.withOpacity(0.55)),
+      onPressed: onTap,
     );
   }
 
