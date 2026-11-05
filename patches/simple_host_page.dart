@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart' show setPasswordDialog;
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 
 /// 极简被控端首页。
@@ -115,7 +116,7 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
         await bind.mainSetPermanentPasswordWithResult(password: "");
       } catch (_) {}
     }
-    await _reloadFlags();
+    _reloadFlags();
   }
 
   void _reloadFlags() {
@@ -134,7 +135,7 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
     try {
       Navigator.of(context).push(MaterialPageRoute(
           builder: (_) =>
-              const DesktopSettingPage(initialTabkey: SettingsTabKey.safety)));
+              DesktopSettingPage(initialTabkey: SettingsTabKey.safety)));
     } catch (_) {}
   }
 
