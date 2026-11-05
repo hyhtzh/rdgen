@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
