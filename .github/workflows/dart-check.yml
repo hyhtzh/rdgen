@@ -36,6 +36,7 @@ jobs:
         run: |
           cp patches/client_home_page.dart src/flutter/lib/desktop/pages/
           cp patches/screen_wall_page.dart src/flutter/lib/desktop/pages/
+          cp patches/simple_host_page.dart src/flutter/lib/desktop/pages/
           python3 patches/patch_client_ui.py src
           grep -n "ClientHomePage" src/flutter/lib/main.dart
 
@@ -47,7 +48,7 @@ jobs:
         working-directory: src/flutter
         run: |
           set +e
-          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart 2>&1 | tee /tmp/analyze.log
+          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/pages/simple_host_page.dart 2>&1 | tee /tmp/analyze.log
           echo "---- errors only ----"
           grep -E "^\s+(error|warning)" /tmp/analyze.log | head -80
           exit 0
