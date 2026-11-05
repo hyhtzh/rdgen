@@ -23,6 +23,11 @@ on:
         required: false
         default: ''
         type: string
+      clientui:
+        description: '1 = client (controller) UI with screen wall'
+        required: false
+        default: ''
+        type: string
 
 
 env:
@@ -161,6 +166,24 @@ jobs:
           curl -sSL -o patch_simple_ui.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_simple_ui.py
           python patch_simple_ui.py .
+
+      - name: Apply client UI
+        if: ${{ inputs.clientui == '1' }}
+        shell: bash
+        run: |
+          set -e
+          mkdir -p flutter/lib/desktop/pages ui
+          curl -sSL -o flutter/lib/desktop/pages/client_home_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/client_home_page.dart
+          curl -sSL -o flutter/lib/desktop/pages/screen_wall_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart
+          curl -sSL -o ui/client_home_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/client_home_page.dart
+          curl -sSL -o ui/screen_wall_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart
+          curl -sSL -o patch_client_ui.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_client_ui.py
+          python patch_client_ui.py .
 
       - name: Set custom app version
         continue-on-error: true
