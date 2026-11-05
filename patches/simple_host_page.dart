@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -30,11 +31,46 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
   bool _fixedPwd = false;
   bool _autoStart = false;
 
+  Timer? _idTimer;
+  String _lastId = '';
+
   @override
   void initState() {
     super.initState();
     _setupWindow();
     _loadFlags();
+    // 原版首页在 1s 定时器里调用 fetchID()，这里被替换后必须自己拉，
+    // 否则 ID 永远停在「正在生成...」。
+    _watchId();
+  }
+
+  @override
+  void dispose() {
+    _idTimer?.cancel();
+    super.dispose();
+  }
+
+  void _watchId() {
+    _idTimer?.cancel();
+    var ticks = 0;
+    _idTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+      ticks++;
+      try {
+        await gFFI.serverModel.fetchID();
+      } catch (_) {}
+      final id = gFFI.serverModel.serverId.text;
+      if (id.isNotEmpty && id != _lastId) {
+        _lastId = id;
+        if (mounted) {
+          setState(() {});
+        }
+      }
+      // 服务起不来时不要无限轮询
+      if (ticks >= 120) {
+        t.cancel();
+        _idTimer = null;
+      }
+    });
   }
 
   Future<void> _setupWindow() async {
@@ -42,7 +78,8 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
       return;
     }
     try {
-      await windowManager.setSize(const Size(376, 470));
+      await windowManager.setSize(const Size(320, 372));
+      await windowManager.setMinimumSize(const Size(320, 340));
       await windowManager.center();
       await windowManager.setTitle(appName);
     } catch (_) {}
@@ -165,31 +202,46 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
               final textColor = Theme.of(context).textTheme.titleLarge?.color ??
                   const Color(0xFF1F1F1F);
               final subColor = textColor.withOpacity(0.45);
-              final id = model.serverId.text;
+              final rawId = model.serverId.text;
+              final id = rawId.isEmpty ? translate("Generating ...") : rawId;
               final pwd = model.serverPasswd.text;
-              final hidden = !_pwdVisible;
-              final shownPwd = hidden ? '●' * pwd.length : pwd;
+              // 只启用固定密码时，RustDesk 用 '-' 表示「密码不外显」
+              final fixedOnly = pwd == '-';
+              final maskLen = fixedOnly ? 8 : pwd.length;
+              final dots = '●' * maskLen;
+              final shownPwd = !_pwdVisible
+                  ? dots
+                  : (fixedOnly ? '已设置固定密码' : pwd);
               return SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: IconButton(
-                        splashRadius: 16,
-                        icon: Icon(Icons.settings, size: 18, color: subColor),
-                        onPressed: _openSettings,
+                    SizedBox(
+                      height: 34,
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints:
+                                const BoxConstraints(minWidth: 24, minHeight: 24),
+                            splashRadius: 14,
+                            icon: Icon(Icons.settings,
+                                size: 17, color: subColor),
+                            onPressed: _openSettings,
+                          ),
+                        ),
                       ),
                     ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(22, 0, 22, 18),
+                      padding: const EdgeInsets.fromLTRB(26, 0, 20, 12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('你的 ID',
-                              style:
-                                  TextStyle(fontSize: 13, color: subColor)),
-                          const SizedBox(height: 4),
+                              style: TextStyle(fontSize: 12, color: subColor)),
+                          const SizedBox(height: 2),
                           Row(
                             children: [
                               Expanded(
@@ -198,25 +250,24 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    fontSize: 25,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 1.5,
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 2,
                                     color: textColor,
                                   ),
                                 ),
                               ),
-                              IconButton(
-                                splashRadius: 16,
-                                icon: Icon(Icons.copy_rounded,
-                                    size: 18, color: subColor),
-                                onPressed: () => _copy(id, '已复制 ID'),
+                              _iconBtn(
+                                Icons.copy_rounded,
+                                17,
+                                subColor,
+                                () => _copy(rawId, '已复制 ID'),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 14),
                           Text('你的密码',
-                              style:
-                                  TextStyle(fontSize: 13, color: subColor)),
+                              style: TextStyle(fontSize: 12, color: subColor)),
                           const SizedBox(height: 2),
                           Row(
                             children: [
@@ -226,63 +277,56 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    fontSize: hidden ? 13 : 17,
-                                    letterSpacing: hidden ? 3 : 1,
-                                    color: textColor,
+                                    fontSize: !_pwdVisible && !fixedOnly
+                                        ? 11
+                                        : 15,
+                                    height: 1.6,
+                                    letterSpacing:
+                                        !_pwdVisible && !fixedOnly ? 4 : 0.5,
+                                    color: fixedOnly && _pwdVisible
+                                        ? subColor
+                                        : textColor,
                                   ),
                                 ),
                               ),
-                              IconButton(
-                                splashRadius: 16,
-                                icon: Icon(
-                                  _pwdVisible
-                                      ? Icons.visibility_off_outlined
-                                      : Icons.visibility_outlined,
-                                  size: 19,
-                                  color: subColor,
-                                ),
-                                onPressed: () => setState(
-                                    () => _pwdVisible = !_pwdVisible),
+                              _iconBtn(
+                                _pwdVisible
+                                    ? Icons.visibility_off_outlined
+                                    : Icons.visibility_outlined,
+                                18,
+                                subColor,
+                                () => setState(() => _pwdVisible = !_pwdVisible),
                               ),
-                              IconButton(
-                                splashRadius: 16,
-                                icon: Icon(Icons.copy_rounded,
-                                    size: 18, color: subColor),
-                                onPressed: () => _copy(pwd, '已复制密码'),
+                              _iconBtn(
+                                Icons.copy_rounded,
+                                17,
+                                subColor,
+                                () => _copyPwd(pwd, fixedOnly, rawId),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 18),
+                          const SizedBox(height: 16),
                           _outlinedButton(
                             '复制 ID 和密码',
                             Icons.copy_rounded,
-                            () => _copy('ID: $id\n密码: $pwd', '已复制 ID 和密码'),
+                            () => fixedOnly
+                                ? _copy(rawId, '已复制 ID（固定密码不外显）')
+                                : _copy('ID: $rawId\n密码: $pwd', '已复制 ID 和密码'),
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 8),
                           _filledButton('设置固定密码', () => setPasswordDialog()),
-                          const SizedBox(height: 18),
-                          Divider(height: 1, color: subColor.withOpacity(0.25)),
                           const SizedBox(height: 14),
+                          Divider(height: 1, color: subColor.withOpacity(0.2)),
+                          const SizedBox(height: 8),
                           Row(
                             children: [
-                              Expanded(
-                                child: _switchRow(
-                                  context,
-                                  '使用固定密码',
-                                  _fixedPwd,
-                                  _onFixedPwdChanged,
-                                ),
-                              ),
-                              Expanded(
-                                child: _switchRow(
-                                  context,
-                                  '开机自启',
-                                  _autoStart,
-                                  _setAutoStart,
-                                ),
-                              ),
+                              _switchGroup(
+                                  '固定密码', _fixedPwd, _onFixedPwdChanged),
+                              const Spacer(),
+                              _switchGroup('开机自启', _autoStart, _setAutoStart),
                             ],
                           ),
+                          const SizedBox(height: 4),
                         ],
                       ),
                     ),
@@ -296,24 +340,44 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
     );
   }
 
+  void _copyPwd(String pwd, bool fixedOnly, String id) {
+    if (fixedOnly) {
+      _copy(id, '固定密码不外显，已复制 ID');
+    } else {
+      _copy(pwd, '已复制密码');
+    }
+  }
+
+  Widget _iconBtn(IconData icon, double size, Color color, VoidCallback onTap) {
+    return IconButton(
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+      splashRadius: 14,
+      icon: Icon(icon, size: size, color: color),
+      onPressed: onTap,
+    );
+  }
+
   Widget _outlinedButton(String label, IconData icon, VoidCallback onTap) {
     return SizedBox(
       width: double.infinity,
-      height: 44,
+      height: 36,
       child: OutlinedButton(
         onPressed: onTap,
         style: OutlinedButton.styleFrom(
-          side: BorderSide(color: const Color(0xFFDCDCDC), width: 1),
+          backgroundColor: const Color(0xFFF7F7F7),
+          side: const BorderSide(color: Color(0xFFE2E2E2), width: 1),
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-          foregroundColor: const Color(0xFF4A4A4A),
+          foregroundColor: const Color(0xFF3D3D3D),
+          padding: EdgeInsets.zero,
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 17),
+            Icon(icon, size: 16),
             const SizedBox(width: 6),
-            Text(label, style: const TextStyle(fontSize: 14)),
+            Text(label, style: const TextStyle(fontSize: 13.5)),
           ],
         ),
       ),
@@ -323,7 +387,7 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
   Widget _filledButton(String label, VoidCallback onTap) {
     return SizedBox(
       width: double.infinity,
-      height: 44,
+      height: 36,
       child: ElevatedButton(
         onPressed: onTap,
         style: ElevatedButton.styleFrom(
@@ -332,38 +396,42 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
           elevation: 0,
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          padding: EdgeInsets.zero,
         ),
-        child: Text(label, style: const TextStyle(fontSize: 14)),
+        child: Text(label, style: const TextStyle(fontSize: 13.5)),
       ),
     );
   }
 
-  Widget _switchRow(
-    BuildContext context,
-    String label,
-    bool value,
-    ValueChanged<bool> onChanged,
-  ) {
+  Widget _switchGroup(String label, bool value, ValueChanged<bool> onChanged) {
     final textColor = Theme.of(context).textTheme.titleLarge?.color ??
         const Color(0xFF1F1F1F);
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.circle, size: 8, color: MyTheme.accent),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 13, color: textColor),
-          ),
+        Container(
+          width: 6,
+          height: 6,
+          decoration:
+              BoxDecoration(color: MyTheme.accent, shape: BoxShape.circle),
         ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 12.5, color: textColor),
+        ),
+        const SizedBox(width: 2),
         Transform.scale(
-          scale: 0.72,
+          scale: 0.62,
           child: Switch(
             value: value,
             activeColor: Colors.white,
             activeTrackColor: MyTheme.accent,
+            inactiveThumbColor: Colors.white,
+            inactiveTrackColor: const Color(0xFFD9D9D9),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             onChanged: onChanged,
           ),
         ),
