@@ -43,7 +43,7 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
     try {
       await windowManager.setSize(const Size(376, 470));
       await windowManager.center();
-      await windowManager.setTitle(bind.mainGetAppNameSync());
+      await windowManager.setTitle(appName);
     } catch (_) {}
   }
 
@@ -63,7 +63,7 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
     });
   }
 
-  String get _runKey => bind.mainGetAppNameSync();
+  String get _runKey => appName;
 
   Future<bool> _queryAutoStart() async {
     if (!isWindows) {
@@ -108,7 +108,8 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
   Future<void> _onFixedPwdChanged(bool on) async {
     setState(() => _fixedPwd = on);
     if (on) {
-      await setPasswordDialog(notEmptyCallback: _reloadFlags);
+      // setPasswordDialog 返回 void，不能 await
+      setPasswordDialog(notEmptyCallback: _reloadFlags);
     } else {
       try {
         await bind.mainSetPermanentPasswordWithResult(password: "");
