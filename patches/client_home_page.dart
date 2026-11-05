@@ -1,5 +1,7 @@
 // 控制端主页：左侧本机识别码/一次性密码，右侧远程连接 + 屏幕墙入口 + 收藏列表。
 // 由 patch_client_ui.py 注入到 flutter/lib/desktop/pages/ 下，由 DesktopTabPage 在非被控端模式下使用。
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -25,19 +27,30 @@ class _ClientHomePageState extends State<ClientHomePage> {
   final _idController = IDTextEditingController();
   final _idFocusNode = FocusNode();
   bool _showPwd = true;
+  Timer? _idTimer;
 
   @override
   void initState() {
     super.initState();
     // 预载收藏列表，屏幕墙与下方收藏区共用这份数据
     bind.mainLoadFavPeers();
+    // 原版首页靠 1s 定时器刷新本机 ID，替换页面后必须自己拉，否则一直显示「...」
+    _idTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _refreshLocalId());
     _idFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
   }
 
+  Future<void> _refreshLocalId() async {
+    try {
+      await gFFI.serverModel.fetchID();
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
+    _idTimer?.cancel();
     _idController.dispose();
     _idFocusNode.dispose();
     super.dispose();
