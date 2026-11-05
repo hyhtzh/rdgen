@@ -78,8 +78,8 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
       return;
     }
     try {
-      await windowManager.setSize(const Size(320, 372));
-      await windowManager.setMinimumSize(const Size(320, 340));
+      await windowManager.setSize(const Size(320, 344));
+      await windowManager.setMinimumSize(const Size(320, 320));
       await windowManager.center();
       await windowManager.setTitle(appName);
     } catch (_) {}
