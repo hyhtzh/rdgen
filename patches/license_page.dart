@@ -13,7 +13,6 @@ class _LC {
   static const sub = Color(0xFF6B7280);
   static const line = Color(0xFFE3E8F0);
   static const red = Color(0xFFE23B3B);
-  static const green = Color(0xFF16A34A);
 }
 
 class LicenseGate extends StatefulWidget {
