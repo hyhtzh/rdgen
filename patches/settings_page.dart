@@ -17,7 +17,7 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
-const _kBrandUrl = 'https://rd.wh2028.cn';
+const _kBrandUrl = 'http://www.hydesk.cn';
 
 /// 配色，与首页保持一致
 class _SC {
