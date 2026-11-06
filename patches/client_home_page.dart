@@ -20,7 +20,7 @@ import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
-const _kBrandUrl = 'https://rd.wh2028.cn';
+const _kBrandUrl = 'http://www.hydesk.cn';
 
 /// 设计稿取色
 class _C {
