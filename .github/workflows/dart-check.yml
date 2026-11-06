@@ -48,9 +48,7 @@ jobs:
         working-directory: src/flutter
         run: |
           set +e
-          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/pages/simple_host_page.dart 2>&1 | tee /tmp/analyze.log
+          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/pages/simple_host_page.dart lib/utils/multi_window_manager.dart lib/main.dart lib/consts.dart 2>&1 | tee /tmp/analyze.log
           echo "---- errors only ----"
           grep -E "^\s+(error|warning)" /tmp/analyze.log | head -80
           exit 0
-
-# reindex
