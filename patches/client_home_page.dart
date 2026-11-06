@@ -32,9 +32,9 @@ class _C {
   static const text = Color(0xFF333333);
   static const sub = Color(0xFF7A7A7A);
   static const line = Color(0xFFE7E7E7);
-  static const warnBg = Color(0xFFFEF8E7);
-  static const warnBorder = Color(0xFFF3E2B4);
-  static const warnText = Color(0xFF8A6A2F);
+  static const warnBg = Color(0xFFFFF8E1);
+  static const warnText = Color(0xFF6B5900);
+  static const warnIcon = Color(0xFFB79A2E);
   static const titleBg = Color(0xFFF7F7F7);
   static const hover = Color(0xFFF5F8FD);
 }
@@ -640,11 +640,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   Widget _buildWarning() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(11, 9, 11, 9),
+      padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
       decoration: BoxDecoration(
         color: _C.warnBg,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: _C.warnBorder),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -652,7 +651,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           const Padding(
             padding: EdgeInsets.only(top: 1),
             child: Icon(Icons.warning_amber_rounded,
-                size: 15, color: Color(0xFFE0A100)),
+                size: 15, color: _C.warnIcon),
           ),
           const SizedBox(width: 6),
           const Expanded(
@@ -661,9 +660,16 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               '未经授权远程控制、监视他人电脑属于违法犯罪行为，一切违规使用后果由使用者自行承担。',
               style: TextStyle(
                 fontSize: 12,
-                height: 1.6,
-                // 显式常规字重：Windows 上中文没有 w500 字形，继承到中等字重会渲染成粗体
-                fontWeight: FontWeight.w400,
+                height: 1.65,
+                // Windows 中文只有常规/Light 两档字形，w300 配上雅黑 Light 才是真的细，
+                // 只写 w300 会回退到常规，看起来仍然偏粗。
+                fontWeight: FontWeight.w300,
+                fontFamilyFallback: [
+                  'Microsoft YaHei Light',
+                  'Microsoft YaHei UI Light',
+                  'Microsoft YaHei',
+                  'PingFang SC',
+                ],
                 color: _C.warnText,
               ),
             ),
