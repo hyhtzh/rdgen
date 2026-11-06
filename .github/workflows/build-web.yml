@@ -67,3 +67,4 @@ jobs:
         with:
             name: web
             path: flutter/build/rustdesk-${{ env.VERSION }}-${{ env.RELEASE_NAME }}.tar.gz
+# reindex

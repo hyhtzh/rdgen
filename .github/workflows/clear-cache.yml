@@ -35,3 +35,4 @@ jobs:
           accessed: true # Purge caches by their last accessed time (default)
           created: false # Purge caches by their created time (default)
           max-age: 1 # in seconds
+# reindex
