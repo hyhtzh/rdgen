@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -38,6 +39,19 @@ class _C {
   static const hover = Color(0xFFF5F8FD);
 }
 
+/// 原版 DesktopHomePage.initState 里 `Get.put<RxBool>(svcStopped, tag: 'stop-service')`，
+/// 设置页 _General 用 `Get.find<RxBool>(tag: 'stop-service')` 直接取。
+/// 我们把首页整个换掉了，没人再注册 → find 抛异常 → 设置页右侧内容区是 ErrorWidget，
+/// release 下就表现为一片空白（左侧导航还在，因为它在异常页面之外）。
+void ensureStopServiceState() {
+  if (Get.isRegistered<RxBool>(tag: kOptionStopService)) return;
+  final stopped = false.obs;
+  Get.put<RxBool>(stopped, tag: kOptionStopService);
+  mainGetBoolOption(kOptionStopService).then((v) {
+    stopped.value = v;
+  }, onError: (Object _) {});
+}
+
 class ClientHomePage extends StatefulWidget {
   const ClientHomePage({Key? key}) : super(key: key);
 
@@ -62,6 +76,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     super.initState();
     bind.mainLoadFavPeers();
     bind.mainLoadRecentPeers();
+    // 设置页依赖的全局状态，原版由 DesktopHomePage 注册，这里必须补上
+    ensureStopServiceState();
     _loadLocalIp();
     // 屏幕墙进程如果是被任务栏 X 直接关掉的，低帧率配置可能没恢复，这里兜底
     WallFps.restore();
@@ -646,6 +662,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               style: TextStyle(
                 fontSize: 12,
                 height: 1.6,
+                // 显式常规字重：Windows 上中文没有 w500 字形，继承到中等字重会渲染成粗体
+                fontWeight: FontWeight.w400,
                 color: _C.warnText,
               ),
             ),
@@ -1014,6 +1032,8 @@ class SettingsRoute extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 双保险：即使这个页面不是从首页进来的，也保证设置页要的全局状态已注册
+    ensureStopServiceState();
     return Scaffold(
       backgroundColor: Colors.white,
       body: Column(
