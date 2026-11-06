@@ -86,13 +86,20 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     super.initState();
     bind.mainLoadFavPeers();
     WallFps.begin();
-    // 子窗口默认拦了系统关闭信号，这里放开，任务栏 X 才能正常关掉墙
+    // 子窗口默认拦了系统关闭信号，这里放开，任务栏 X 才能正常关掉墙。
+    // 窗口刚创建时 method channel 可能还没就绪，首帧后再补一次。
+    _releasePreventClose();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _releasePreventClose();
+    });
+  }
+
+  void _releasePreventClose() {
     final id = _windowId;
-    if (id != null) {
-      try {
-        WindowController.fromWindowId(id).setPreventClose(false);
-      } catch (_) {}
-    }
+    if (id == null) return;
+    try {
+      WindowController.fromWindowId(id).setPreventClose(false);
+    } catch (_) {}
   }
 
   @override
