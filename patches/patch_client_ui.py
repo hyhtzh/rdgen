@@ -5,7 +5,8 @@
 用法: python patch_client_ui.py <rustdesk 源码根目录>
 
 做四件事：
-1. 把 client_home_page.dart / screen_wall_page.dart 复制到 flutter/lib/desktop/pages/；
+1. 把 client_home_page.dart / screen_wall_page.dart / settings_page.dart /
+   address_book_page.dart 复制到 flutter/lib/desktop/pages/；
 2. main.dart：补 import、把 `? const DesktopTabPage()` 换成 `? const ClientHomePage()`；
 3. main.dart / consts.dart：新增 WindowType.ScreenWall 分支，让屏幕墙跑在独立子窗口里；
 4. utils/multi_window_manager.dart：补枚举、窗口列表、`newScreenWall()`。
@@ -26,6 +27,7 @@ PAGES = [
     'client_home_page.dart',
     'screen_wall_page.dart',
     'settings_page.dart',
+    'address_book_page.dart',
 ]
 
 SCREEN_WALL_APP_TYPE = 'kAppTypeScreenWall'
