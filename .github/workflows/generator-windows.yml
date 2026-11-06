@@ -211,6 +211,10 @@ jobs:
           sed -i -e "s|^version = \".*\"|version = \"$AV\"|" ./Cargo.toml
           sed -i "/name = \"rustdesk\"/ {n; s/version = \".*\"/version = \"$AV\"/}" ./Cargo.lock
           grep '^version = ' ./Cargo.toml
+          # MSBuild imports the env var VERSION as the $(Version) property, and a
+          # branch name such as "master" is not a valid NuGet version, which makes
+          # "nuget restore" fail for the WiX MSI project. Keep the numeric version.
+          echo "MSI_VERSION=$AV" >> "$GITHUB_ENV"
 
       - name: Apply allow_custom_update patch
         continue-on-error: true
@@ -767,6 +771,8 @@ jobs:
       - name: Build msi
         continue-on-error: true
         if: env.UPLOAD_ARTIFACT == 'true'
+        env:
+          VERSION: ${{ env.MSI_VERSION }}
         run: |
           pushd ./res/msi
           python preprocess.py --app-name "${{ env.appname }}" --arp -d ../../rustdesk
@@ -775,6 +781,7 @@ jobs:
           cp ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/rustdesk-latest.msi
           mv ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/rustdesk.msi
           sha256sum ../../SignOutput/rustdesk.msi
+          test -f ../../SignOutput/rustdesk.msi || echo "::warning::MSI was not produced - check restore / WiX build"
 
       - name: zip exe and msi
         continue-on-error: true
