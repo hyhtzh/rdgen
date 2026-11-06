@@ -14,6 +14,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
 /// 授权服务地址（nginx 反代到本机授权服务）
