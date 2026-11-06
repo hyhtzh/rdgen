@@ -199,8 +199,10 @@ jobs:
           # send it, so fall back to .github/version.txt to keep the version
           # increasing (an MSI with the same version will not overwrite files).
           AV="${{ inputs.app_version }}"
-          if [ -z "$AV" ] && [ -f .github/version.txt ]; then
-            AV="$(tr -d ' \r\n\t' < .github/version.txt)"
+          if [ -z "$AV" ]; then
+            # The rustdesk checkout replaces the repo root, so .github/version.txt
+            # from this generator repo is not on disk any more: fetch it remotely.
+            AV="$(curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/.github/version.txt" | tr -d ' \r\n\t' || true)"
           fi
           if [ -z "$AV" ]; then
             echo "no app_version available, keep upstream version"
