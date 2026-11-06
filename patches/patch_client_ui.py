@@ -25,6 +25,7 @@ WALL_IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/screen_wall_page.d
 PAGES = [
     'client_home_page.dart',
     'screen_wall_page.dart',
+    'settings_page.dart',
 ]
 
 SCREEN_WALL_APP_TYPE = 'kAppTypeScreenWall'
