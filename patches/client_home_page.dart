@@ -17,6 +17,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
+import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
@@ -636,12 +637,15 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             break;
         }
       },
-      itemBuilder: (context) => const [
-        PopupMenuItem(value: 'file', child: Text('传输文件')),
-        PopupMenuItem(value: 'terminal', child: Text('终端 (beta)')),
-        PopupMenuItem(value: 'approval', child: Text('请求授权连接')),
-        PopupMenuDivider(),
-        PopupMenuItem(value: 'quit', child: Text('退出程序')),
+      // 标准版不下发 file_transfer / terminal，这里直接不显示入口
+      itemBuilder: (context) => [
+        if (licenseFeature('file_transfer'))
+          const PopupMenuItem(value: 'file', child: Text('传输文件')),
+        if (licenseFeature('terminal'))
+          const PopupMenuItem(value: 'terminal', child: Text('终端 (beta)')),
+        const PopupMenuItem(value: 'approval', child: Text('请求授权连接')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'quit', child: Text('退出程序')),
       ],
       child: Container(
         decoration: BoxDecoration(
