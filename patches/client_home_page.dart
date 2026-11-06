@@ -16,6 +16,7 @@ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
 import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
@@ -65,7 +66,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   final _searchController = TextEditingController();
 
   Timer? _idTimer;
-  int _tab = 1; // 0 最近, 1 收藏
+  int _tab = 1; // 0 最近, 1 收藏, 2 地址簿
   bool _grid = false;
   bool _asc = true;
   bool _showSearch = true;
@@ -76,6 +77,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     super.initState();
     bind.mainLoadFavPeers();
     bind.mainLoadRecentPeers();
+    AddressBookStore.instance.load();
     // 设置页依赖的全局状态，原版由 DesktopHomePage 注册，这里必须补上
     ensureStopServiceState();
     _loadLocalIp();
@@ -287,6 +289,14 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     connect(context, p.id, password: p.password.isEmpty ? null : p.password);
   }
 
+  Future<void> _addAddressEntry() async {
+    if (_tab != 2) setState(() => _tab = 2);
+    final entry = await showAddressEntryDialog(context);
+    if (entry == null) return;
+    await AddressBookStore.instance.upsert(entry);
+    showToast('已加入地址簿');
+  }
+
   @override
   Widget build(BuildContext context) {
     // 兜底：显式清掉可能从上层继承下来的文字装饰（下划线等），避免整页文字带横线
@@ -301,7 +311,14 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             Container(height: 1, color: _C.line),
             _buildToolbar(),
             if (_showSearch) _buildSearchRow(),
-            Expanded(child: _buildPeerArea()),
+            Expanded(
+              child: _tab == 2
+                  ? AddressBookView(
+                      query: _searchController.text,
+                      onConnect: (id) => connect(context, id),
+                    )
+                  : _buildPeerArea(),
+            ),
             _buildStatusBar(),
           ],
         ),
@@ -689,33 +706,41 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         children: [
           _tabIcon(Icons.history, '最近', 0),
           _tabIcon(Icons.star_border, '收藏', 1),
+          _tabIcon(Icons.contacts_outlined, '地址簿', 2),
           const SizedBox(width: 4),
           _plainToolIcon(Icons.grid_view_rounded, '屏幕墙', _openWall),
           _plainToolIcon(Icons.settings_outlined, '设置', _openSettings),
           const Spacer(),
-          _plainToolIcon(
-            Icons.search,
-            '搜索',
-            () => setState(() => _showSearch = !_showSearch),
-            active: _showSearch,
-          ),
-          _plainToolIcon(Icons.refresh, '刷新', () {
-            bind.mainLoadFavPeers();
-            bind.mainLoadRecentPeers();
-            _refreshLocalId();
-          }),
-          _plainToolIcon(
-            _grid ? Icons.view_list_rounded : Icons.grid_on_rounded,
-            _grid ? '列表' : '网格',
-            () => setState(() => _grid = !_grid),
-            active: _grid,
-          ),
-          _plainToolIcon(
-            Icons.swap_vert,
-            _asc ? '倒序' : '正序',
-            () => setState(() => _asc = !_asc),
-            active: !_asc,
-          ),
+          if (_tab == 2) ...[
+            _plainToolIcon(Icons.add, '添加设备', _addAddressEntry),
+            _plainToolIcon(Icons.search, '搜索', () {
+              setState(() => _showSearch = !_showSearch);
+            }, active: _showSearch),
+          ] else ...[
+            _plainToolIcon(
+              Icons.search,
+              '搜索',
+              () => setState(() => _showSearch = !_showSearch),
+              active: _showSearch,
+            ),
+            _plainToolIcon(Icons.refresh, '刷新', () {
+              bind.mainLoadFavPeers();
+              bind.mainLoadRecentPeers();
+              _refreshLocalId();
+            }),
+            _plainToolIcon(
+              _grid ? Icons.view_list_rounded : Icons.grid_on_rounded,
+              _grid ? '列表' : '网格',
+              () => setState(() => _grid = !_grid),
+              active: _grid,
+            ),
+            _plainToolIcon(
+              Icons.swap_vert,
+              _asc ? '倒序' : '正序',
+              () => setState(() => _asc = !_asc),
+              active: !_asc,
+            ),
+          ],
         ],
       ),
     );
@@ -729,7 +754,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       child: InkWell(
         onTap: () {
           setState(() => _tab = index);
-          index == 0 ? bind.mainLoadRecentPeers() : bind.mainLoadFavPeers();
+          if (index == 0) {
+            bind.mainLoadRecentPeers();
+          } else if (index == 1) {
+            bind.mainLoadFavPeers();
+          } else {
+            AddressBookStore.instance.load();
+          }
         },
         child: Container(
           width: 38,
