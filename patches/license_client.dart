@@ -350,3 +350,16 @@ class LicenseClient {
     }
   }
 }
+
+/// 当前授权的功能开关，给界面决定入口是否可见。
+///
+/// 背景：标准版与专业版的差别就在 features 里这几项。服务端按卡库来源
+/// （std / pro）下发，这里只读缓存，不发网络请求。
+/// 没拿到 config（未激活、或者是老版本客户端）时一律放行——
+/// 真正的拦截在 LicenseGate，功能层不该成为第二个门禁。
+bool licenseFeature(String key) {
+  final cfg = LicenseClient.instance.savedConfigMap;
+  final f = cfg['features'];
+  if (f is Map && f.containsKey(key)) return f[key] == true;
+  return true;
+}
