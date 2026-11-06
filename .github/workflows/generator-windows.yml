@@ -463,9 +463,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-windows-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
+          key: vcpkg-windows-v2-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
           restore-keys: |
-            vcpkg-windows-${{ env.VCPKG_COMMIT_ID }}-
+            vcpkg-windows-v2-${{ env.VCPKG_COMMIT_ID }}-
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -499,7 +499,7 @@ jobs:
         continue-on-error: true
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-windows-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
+          key: vcpkg-windows-v2-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
           
       - name: magick stuff
         if: ${{ env.iconlink_url != 'false' }}
