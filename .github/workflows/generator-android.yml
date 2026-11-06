@@ -197,8 +197,9 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          # inputs.app_version 由 rdgen 生成器传入；部分部署版本的表单没有该字段，
-          # 此时回退到仓库内 .github/version.txt，保证每轮构建版本号递增（MSI 才会覆盖旧版）。
+          # app_version comes from the rdgen generator; some deployments do not
+          # send it, so fall back to .github/version.txt to keep the version
+          # increasing (an MSI with the same version will not overwrite files).
           AV="${{ inputs.app_version }}"
           if [ -z "$AV" ] && [ -f .github/version.txt ]; then
             AV="$(tr -d ' \r\n\t' < .github/version.txt)"
