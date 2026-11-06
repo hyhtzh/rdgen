@@ -1,0 +1,3 @@
+name: echo test
+on:/n  workflow_dispatch:/njobs:/n  t:/n    runs-on: ubuntu-latest
+    steps:/n      - run: echo hi
