@@ -193,11 +193,22 @@ jobs:
 
       - name: Set custom app version
         continue-on-error: true
-        if: ${{ inputs.app_version != '' }}
         shell: bash
         run: |
-          sed -i -e 's|^version = ".*"|version = "${{ inputs.app_version }}"|' ./Cargo.toml
-          sed -i '/name = "rustdesk"/ {n; s/version = ".*"/version = "${{ inputs.app_version }}"/}' ./Cargo.lock
+          # inputs.app_version 由 rdgen 生成器传入；部分部署版本的表单没有该字段，
+          # 此时回退到仓库内 .github/version.txt，保证每轮构建版本号递增（MSI 才会覆盖旧版）。
+          AV="${{ inputs.app_version }}"
+          if [ -z "$AV" ] && [ -f .github/version.txt ]; then
+            AV="$(tr -d ' \r\n\t' < .github/version.txt)"
+          fi
+          if [ -z "$AV" ]; then
+            echo "no app_version available, keep upstream version"
+            grep '^version = ' ./Cargo.toml
+            exit 0
+          fi
+          echo "app version -> $AV"
+          sed -i -e "s|^version = \".*\"|version = \"$AV\"|" ./Cargo.toml
+          sed -i "/name = \"rustdesk\"/ {n; s/version = \".*\"/version = \"$AV\"/}" ./Cargo.lock
           grep '^version = ' ./Cargo.toml
 
       - name: Apply allow_custom_update patch
