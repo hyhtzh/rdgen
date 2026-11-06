@@ -44,7 +44,7 @@ class ClientHomePage extends StatefulWidget {
   State<ClientHomePage> createState() => _ClientHomePageState();
 }
 
-class _ClientHomePageState extends State<ClientHomePage> {
+class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   final _idController = IDTextEditingController();
   final _idFocusNode = FocusNode();
   final _searchController = TextEditingController();
@@ -62,6 +62,8 @@ class _ClientHomePageState extends State<ClientHomePage> {
     bind.mainLoadFavPeers();
     bind.mainLoadRecentPeers();
     _loadLocalIp();
+    // 主窗口设了 preventClose，必须自己接管关闭事件，否则任务栏的 X 也点不动
+    windowManager.addListener(this);
     // 原版首页靠 1s 定时器刷新本机 ID，替换页面后必须自己拉
     _idTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => _refreshLocalId());
@@ -72,11 +74,40 @@ class _ClientHomePageState extends State<ClientHomePage> {
 
   @override
   void dispose() {
+    windowManager.removeListener(this);
     _idTimer?.cancel();
     _idController.dispose();
     _idFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  // ---------------- 窗口控制 ----------------
+
+  @override
+  void onWindowClose() async {
+    await _closeWindow();
+  }
+
+  /// 关闭 = 收进系统托盘（RustDesk 桌面端的默认行为），托盘菜单里可以真正退出
+  Future<void> _closeWindow() async {
+    try {
+      await windowManager.hide();
+    } catch (_) {
+      try {
+        await windowManager.setPreventClose(false);
+        await windowManager.close();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _quitApp() async {
+    try {
+      await windowManager.setPreventClose(false);
+    } catch (_) {}
+    try {
+      await windowManager.destroy();
+    } catch (_) {}
   }
 
   Future<void> _refreshLocalId() async {
@@ -207,9 +238,11 @@ class _ClientHomePageState extends State<ClientHomePage> {
   }
 
   void _openSettings() {
-    if (DesktopSettingPage.tabKeys.isNotEmpty) {
-      DesktopSettingPage.switch2page(DesktopSettingPage.tabKeys[0]);
-    }
+    // 原版靠 DesktopTabPage.onAddSetting 往标签页里塞设置页，我们换掉了整个首页，
+    // 标签栏不存在了，switch2page() 里 Get 找不到控制器会直接 return —— 必须自己推路由。
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => const SettingsRoute(),
+    ));
   }
 
   void _openWall() {
@@ -224,18 +257,22 @@ class _ClientHomePageState extends State<ClientHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Colors.white,
-      child: Column(
-        children: [
-          _buildTitleBar(),
-          _buildHeader(),
-          Container(height: 1, color: _C.line),
-          _buildToolbar(),
-          if (_showSearch) _buildSearchRow(),
-          Expanded(child: _buildPeerArea()),
-          _buildStatusBar(),
-        ],
+    // 兜底：显式清掉可能从上层继承下来的文字装饰（下划线等），避免整页文字带横线
+    return DefaultTextStyle.merge(
+      style: const TextStyle(decoration: TextDecoration.none),
+      child: Container(
+        color: Colors.white,
+        child: Column(
+          children: [
+            _buildTitleBar(),
+            _buildHeader(),
+            Container(height: 1, color: _C.line),
+            _buildToolbar(),
+            if (_showSearch) _buildSearchRow(),
+            Expanded(child: _buildPeerArea()),
+            _buildStatusBar(),
+          ],
+        ),
       ),
     );
   }
@@ -275,13 +312,10 @@ class _ClientHomePageState extends State<ClientHomePage> {
               try {
                 await windowManager.minimize();
               } catch (_) {}
-            }),
-            _winButton(Icons.crop_square, _toggleMaximize, size: 12),
-            _winButton(Icons.close, () async {
-              try {
-                await windowManager.close();
-              } catch (_) {}
-            }),
+            }, tooltip: '最小化'),
+            _winButton(Icons.crop_square, _toggleMaximize,
+                size: 12, tooltip: '最大化 / 还原'),
+            _winButton(Icons.close, _closeWindow, tooltip: '关闭到托盘'),
             const SizedBox(width: 4),
           ],
         ),
@@ -299,14 +333,21 @@ class _ClientHomePageState extends State<ClientHomePage> {
     } catch (_) {}
   }
 
-  Widget _winButton(IconData icon, VoidCallback onTap, {double size = 14}) {
-    return SizedBox(
+  Widget _winButton(IconData icon, VoidCallback onTap,
+      {double size = 14, String? tooltip}) {
+    final btn = SizedBox(
       width: 34,
       height: 28,
       child: InkWell(
         onTap: onTap,
         child: Icon(icon, size: size, color: const Color(0xFF616161)),
       ),
+    );
+    if (tooltip == null) return btn;
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 400),
+      child: btn,
     );
   }
 
@@ -525,6 +566,10 @@ class _ClientHomePageState extends State<ClientHomePage> {
       position: PopupMenuPosition.under,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       onSelected: (v) {
+        if (v == 'quit') {
+          _quitApp();
+          return;
+        }
         final id = _idController.id;
         if (id.isEmpty) {
           showToast('请输入远程识别码');
@@ -546,6 +591,8 @@ class _ClientHomePageState extends State<ClientHomePage> {
         PopupMenuItem(value: 'file', child: Text('传输文件')),
         PopupMenuItem(value: 'terminal', child: Text('终端 (beta)')),
         PopupMenuItem(value: 'approval', child: Text('请求授权连接')),
+        PopupMenuDivider(),
+        PopupMenuItem(value: 'quit', child: Text('退出程序')),
       ],
       child: Container(
         decoration: BoxDecoration(
@@ -939,6 +986,86 @@ class _ClientHomePageState extends State<ClientHomePage> {
           ),
           child: Icon(icon, size: 16, color: const Color(0xFF757575)),
         ),
+      ),
+    );
+  }
+}
+
+/// 设置页路由：原版是塞进 DesktopTabPage 的标签页里，我们换掉了整个首页，
+/// 标签栏不存在，所以改成独立页面压栈，顶部自绘一条返回栏（无边框窗口没有系统标题栏）。
+class SettingsRoute extends StatelessWidget {
+  const SettingsRoute({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: Column(
+        children: [
+          _bar(context),
+          Expanded(
+            child: DesktopSettingPage(initialTabkey: SettingsTabKey.general),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bar(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanStart: (_) async {
+        try {
+          await windowManager.startDragging();
+        } catch (_) {}
+      },
+      child: Container(
+        height: 40,
+        decoration: const BoxDecoration(
+          color: _C.titleBg,
+          border: Border(bottom: BorderSide(color: _C.line)),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 8),
+            InkWell(
+              onTap: () => Navigator.of(context).maybePop(),
+              borderRadius: BorderRadius.circular(6),
+              child: const SizedBox(
+                width: 30,
+                height: 26,
+                child: Icon(Icons.arrow_back,
+                    size: 18, color: Color(0xFF616161)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Text('设置',
+                style: TextStyle(fontSize: 13.5, color: _C.text)),
+            const Spacer(),
+            _winBtn(Icons.remove, () async {
+              try {
+                await windowManager.minimize();
+              } catch (_) {}
+            }),
+            _winBtn(Icons.close, () async {
+              try {
+                await windowManager.hide();
+              } catch (_) {}
+            }),
+            const SizedBox(width: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _winBtn(IconData icon, VoidCallback onTap) {
+    return SizedBox(
+      width: 34,
+      height: 28,
+      child: InkWell(
+        onTap: onTap,
+        child: Icon(icon, size: 14, color: const Color(0xFF616161)),
       ),
     );
   }
