@@ -571,6 +571,23 @@ jobs:
           sed -i '/ic_launcher_background/d' ./flutter/android/app/src/main/res/values/colors.xml
       ##########################################################
 
+      - name: Apply license gate
+        shell: bash
+        run: |
+          set -e
+          mkdir -p flutter/lib/desktop/pages ui
+          curl -sSL -o flutter/lib/desktop/pages/license_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart
+          curl -sSL -o flutter/lib/desktop/pages/license_client.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart
+          curl -sSL -o ui/license_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart
+          curl -sSL -o ui/license_client.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart
+          curl -sSL -o patch_license.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
+          python3 patch_license.py . android
+
       - name: Build rustdesk lib
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
