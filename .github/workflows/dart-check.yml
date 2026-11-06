@@ -52,3 +52,5 @@ jobs:
           echo "---- errors only ----"
           grep -E "^\s+(error|warning)" /tmp/analyze.log | head -80
           exit 0
+
+# reindex
