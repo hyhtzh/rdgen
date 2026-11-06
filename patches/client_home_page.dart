@@ -17,6 +17,7 @@ import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
+import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
 const _kBrandUrl = 'https://rd.wh2028.cn';
 
@@ -62,6 +63,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     bind.mainLoadFavPeers();
     bind.mainLoadRecentPeers();
     _loadLocalIp();
+    // 屏幕墙进程如果是被任务栏 X 直接关掉的，低帧率配置可能没恢复，这里兜底
+    WallFps.restore();
     // 主窗口设了 preventClose，必须自己接管关闭事件，否则任务栏的 X 也点不动
     windowManager.addListener(this);
     // 原版首页靠 1s 定时器刷新本机 ID，替换页面后必须自己拉
@@ -246,6 +249,19 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   }
 
   void _openWall() {
+    // 屏幕墙要开成独立窗口，不能盖住控制端首页（desktop_multi_window 会拉起子进程）。
+    // 子窗口创建失败时退化成压栈页，至少还能用。
+    _openWallInNewWindow();
+  }
+
+  Future<void> _openWallInNewWindow() async {
+    try {
+      await rustDeskWinManager.newScreenWall();
+      return;
+    } catch (e) {
+      debugPrint('open screen wall window failed: $e');
+    }
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const ScreenWallPage()),
     );
