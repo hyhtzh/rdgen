@@ -8,7 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart' show setPasswordDialog;
-import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+import 'package:flutter_hbb/desktop/pages/settings_page.dart' show SettingsRoute;
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 
@@ -169,11 +169,12 @@ class _SimpleHostPageState extends State<SimpleHostPage> {
   }
 
   void _openSettings() {
-    try {
-      Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) =>
-              DesktopSettingPage(initialTabkey: SettingsTabKey.safety)));
-    } catch (_) {}
+    // 原版 DesktopSettingPage 依赖 DesktopHomePage 启动时注册的一堆 GetX/Provider 状态，
+    // 被控端首页已被替换成 SimpleHostPage，那些状态从来没建过，进去必定整页空白。
+    // 改用与控制端同一套自绘设置页，只调 bind 接口，不依赖上游任何状态。
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => const SettingsRoute(initialTab: 1),
+    ));
   }
 
   Future<void> _closeApp() async {
