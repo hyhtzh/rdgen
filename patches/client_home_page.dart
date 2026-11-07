@@ -549,6 +549,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       );
     },
   );
+  }
 
   void _showLicenseDetail() {
     showDialog(
