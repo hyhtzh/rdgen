@@ -6,6 +6,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher_string.dart';
 
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
 
@@ -40,11 +41,14 @@ class _LicenseGateState extends State<LicenseGate> {
     _check();
     // 运行中定期复检：后台解绑/停用/重置后，最多 5 分钟内锁定正在使用的客户端
     _timer = Timer.periodic(const Duration(minutes: 5), (_) => _check());
+    // 授权详情弹窗里点了「解绑设备」→ 立即回到激活页
+    LicenseClient.instance.revoked.addListener(_check);
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    LicenseClient.instance.revoked.removeListener(_check);
     super.dispose();
   }
 
@@ -229,6 +233,18 @@ class _ActivateCardState extends State<_ActivateCard> {
     }
   }
 
+  Future<void> _buy() async {
+    try {
+      await launchUrlString(kPurchaseUrl, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      // 打不开浏览器（少见）：把地址放剪贴板兜底
+      Clipboard.setData(const ClipboardData(text: kPurchaseUrl));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('已复制购买地址：$kPurchaseUrl'),
+          duration: Duration(seconds: 3)));
+    }
+  }
+
   Future<void> _copyMachine() async {
     if (_machine.isEmpty) return;
     Clipboard.setData(ClipboardData(text: _machine));
@@ -379,7 +395,26 @@ class _ActivateCardState extends State<_ActivateCard> {
                           fontWeight: FontWeight.w500)),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 42,
+            child: OutlinedButton.icon(
+              onPressed: _busy ? null : _buy,
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: _LC.blue),
+                shape:
+                    RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              icon: const Icon(Icons.shopping_cart_outlined,
+                  size: 17, color: _LC.blue),
+              label: const Text('购买授权',
+                  style: TextStyle(
+                      fontSize: 14.5,
+                      color: _LC.blue,
+                      fontWeight: FontWeight.w500)),
+            ),
+          ),
+          const SizedBox(height: 14),
           Container(height: 1, color: const Color(0xFFF0F3F8)),
           const SizedBox(height: 12),
           Row(
@@ -408,7 +443,7 @@ class _ActivateCardState extends State<_ActivateCard> {
             ],
           ),
           const SizedBox(height: 6),
-          const Text('没有授权码？请联系客服购买，报机器码即可绑定本机。',
+          const Text('没有授权码？点击「购买授权」在线购买，或联系客服。',
               style: TextStyle(fontSize: 11.5, color: Color(0xFF9AA3B2))),
         ],
       ),
