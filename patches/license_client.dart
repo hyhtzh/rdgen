@@ -33,6 +33,7 @@ const _kCode = 'license-code';
 const _kConfig = 'license-config';
 const _kPlan = 'license-plan';
 const _kDevices = 'license-devices';
+const _kCardType = 'license-cardtype';
 
 class LicenseException implements Exception {
   /// 机器可读原因：invalid_code / expired / disabled / seat_limit /
@@ -142,6 +143,7 @@ class LicenseClient {
     await _set(_kExpire, '');
     await _set(_kLastOk, '');
     await _set(_kCode, '');
+    await _set(_kCardType, '');
   }
 
   // ---------------- 下发参数 ----------------
@@ -178,7 +180,12 @@ class LicenseClient {
       await _set(_kDevices,
           '${used is num ? used.toInt() : -1}|${max is num ? max.toInt() : 0}');
     }
+    final ct = (data['card_type'] ?? '').toString();
+    if (ct.isNotEmpty) await _set(_kCardType, ct);
   }
+
+  /// 卡类型（月卡 / 季卡 / 年卡 / 永久卡…），服务端按台账时长下发，取不到就是空
+  String get savedCardType => _get(_kCardType);
 
   /// 剩余天数（按缓存的到期日算，到期日为空返回 -1）
   int get daysLeft {
