@@ -591,3 +591,28 @@ bool licenseFeature(String key) {
   }
   return !kPaidFeatures.contains(key);
 }
+
+/// 品牌图标（48×48 PNG 内嵌）。首页标题栏、激活页、连接区共用这一份，
+/// 调用方不需要处理资源缺失。
+/// 构建产物里 assets/icon.png 并不在 flutter 的资源清单里（清单只有 icon.svg），
+/// 真机上 Image.asset 会直接抛资源缺失、退化成蓝色方块，所以这里走内存解码。
+const _kBrandLogoB64 =
+    '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';
+
+Widget brandLogo(double size) {
+  try {
+    return Image.memory(
+      base64Decode(_kBrandLogoB64),
+      width: size,
+      height: size,
+      filterQuality: FilterQuality.high,
+      gaplessPlayback: true,
+    );
+  } catch (_) {
+    return Container(
+      width: size,
+      height: size,
+      color: const Color(0xFF1B72D6),
+    );
+  }
+}
