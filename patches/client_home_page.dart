@@ -1341,7 +1341,80 @@ class _LicenseDetailDialog extends StatelessWidget {
             _kv('剩余天数', days >= 0 ? '$days 天' : '—'),
             _kv('设备占用',
                 used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
-            const SizedBox(height: 6),
+            const SizedBox(height: 10),
+            StatefulBuilder(builder: (ctx, setLocal) {
+              final addons = _c.savedAddons;
+              final blocked = _c.blockedAddons;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text('附加功能',
+                          style: TextStyle(fontSize: 12.5, color: _C.sub)),
+                      const Spacer(),
+                      InkWell(
+                        onTap: () => _redeemAddon(ctx, () => setLocal(() {})),
+                        child: const Text('兑换附加包',
+                            style: TextStyle(
+                                fontSize: 12.5, color: Color(0xFF1B72D6))),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (addons.isEmpty)
+                    Text(
+                        blocked.isEmpty
+                            ? '未开通（屏幕墙 16/32/64 屏与群控需单独购买，绑定授权码后可随设备迁移）'
+                            : '本机暂无可用附加包（已购的已达 3 台上限）',
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFF8A94A6)))
+                  else
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: addons.map((a) {
+                        final exp = (a['expire_at'] ?? '').toString();
+                        final label =
+                            (a['name'] ?? a['key'] ?? '').toString();
+                        final used = a['devices'] ?? 0;
+                        final maxDev = a['max_devices'] ?? 3;
+                        final meta = [
+                          if (exp.isNotEmpty) exp.split(' ').first,
+                          '$used/$maxDev 台',
+                          if (a['limited_by_license'] == true) '随主授权',
+                        ].join(' · ');
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEAF6EE),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '$label · $meta',
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFF2FA45C)),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  if (blocked.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    ...blocked.map((a) => Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            '${a["name"] ?? a["key"]}：本机不在已占用的 ${a["max_devices"] ?? 3} 台内，'
+                            '需先在旧设备解绑',
+                            style: const TextStyle(
+                                fontSize: 11.5, color: Color(0xFFC8811A)),
+                          ),
+                        )),
+                  ],
+                ],
+              );
+            }),
+            const SizedBox(height: 12),
             const Text('激活码',
                 style: TextStyle(fontSize: 12.5, color: _C.sub)),
             const SizedBox(height: 6),
@@ -1455,15 +1528,107 @@ class _LicenseDetailDialog extends StatelessWidget {
   }
 
   Future<void> _upgrade(BuildContext context) async {
+    await gotoShop(context);
+  }
+
+  /// 兑换附加包：输入购买屏幕墙档位 / 群控后拿到的授权码。
+  /// 附加包不动主授权，只把对应功能开关点亮，成功后刷新弹窗里的已购列表。
+  Future<void> _redeemAddon(BuildContext context, VoidCallback refresh,
+      {String? productId}) async {
+    final ctrl = TextEditingController();
+    final act = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('兑换附加包',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('输入购买屏幕墙档位或群控后拿到的授权码，开通后立即生效。\n'
+                '权限绑定当前授权码，换设备后重新激活同一授权码仍然有效。',
+                style: TextStyle(fontSize: 13, color: _C.sub, height: 1.6)),
+            const SizedBox(height: 8),
+            // 没买过的用户也要有明确出口，别只给一个输入框
+            InkWell(
+              onTap: () => Navigator.of(ctx).pop('buy'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Text('还没有授权码？',
+                        style: TextStyle(fontSize: 12.5, color: _C.sub)),
+                    Text('去商城购买 →',
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            color: Color(0xFF1B72D6),
+                            fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              style: const TextStyle(fontSize: 13.5, letterSpacing: 0.6),
+              decoration: const InputDecoration(
+                hintText: 'XXXX-XXXX-XXXX-XXXX',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('cancel'),
+            child: const Text('取消', style: TextStyle(color: _C.sub)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop('ok'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1B72D6),
+              elevation: 0,
+            ),
+            child: const Text('立即开通',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (act == 'buy') {
+      if (!context.mounted) return;
+      await gotoShop(context, productId: productId);
+      return;
+    }
+    if (act != 'ok') return;
+    final code = ctrl.text.trim();
+    if (code.isEmpty) {
+      if (!context.mounted) return;
+      showToast('请先填写附加包授权码；还没有码可点弹窗里的「去商城购买」');
+      return;
+    }
     try {
-      await launchUrlString(kPurchaseUrl,
-          mode: LaunchMode.externalApplication);
-    } catch (_) {
-      Clipboard.setData(const ClipboardData(text: kPurchaseUrl));
-      if (context.mounted) {
-        Navigator.of(context).pop();
-        showToast('已复制购买地址：$kPurchaseUrl');
-      }
+      final r = await LicenseClient.instance.activate(code);
+      if (!context.mounted) return;
+      refresh();
+      final eff = r.addonEffectiveExpire.isNotEmpty
+          ? r.addonEffectiveExpire
+          : r.addonExpire;
+      final effDay = eff.isEmpty ? '' : eff.split(' ').first;
+      showToast(r.isAddon
+          ? '已开通：${r.addonName}（已绑定当前授权码'
+              '${effDay.isEmpty ? "" : "，${r.addonExpiresWithLicense ? "随主授权至" : "至"} $effDay"}）'
+          : '授权已更新');
+    } on LicenseException catch (e) {
+      if (!context.mounted) return;
+      showToast(e.msg);
+    } catch (e) {
+      if (!context.mounted) return;
+      showToast('开通失败：$e');
     }
   }
 
