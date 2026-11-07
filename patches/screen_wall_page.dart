@@ -349,7 +349,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           const SizedBox(width: 8),
           ..._kCapacities.map(_capacityChip),
           const SizedBox(width: 10),
-          if (_capacity == 9) _groupChip(),
+          if (_capacity >= 9) _groupChip(),
           const Spacer(),
           if (_groupOn) ...[
             const Icon(Icons.wifi_tethering,
@@ -405,8 +405,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   void _toggleGroup() {
-    if (!_groupOn && !licenseFeature('group9')) {
-      _showUpgradeDialog('群控（最多 9 台同时广播）');
+    // 定价：9 屏（含）以下免费；9 屏以上按 20 元/月收费
+    if (!_groupOn && _capacity > 9 && !licenseFeature('group')) {
+      _showUpgradeDialog('9 屏以上群控（20 元/月）');
       return;
     }
     setState(() {
@@ -457,12 +458,15 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   void _pickCapacity(int value) {
-    if ((value == 32 && !licenseFeature('wall32')) ||
+    // 定价：9 屏以下免费；16 屏 4 元/月、32 屏 12 元/月、64 屏 20 元/月
+    if ((value == 16 && !licenseFeature('wall16')) ||
+        (value == 32 && !licenseFeature('wall32')) ||
         (value == 64 && !licenseFeature('wall64'))) {
-      _showUpgradeDialog('$value 屏布局');
+      final price = value == 16 ? '4' : (value == 32 ? '12' : '20');
+      _showUpgradeDialog('$value 屏布局（$price 元/月）');
       return;
     }
-    if (value != 9 && _groupOn) {
+    if (value < 9 && _groupOn) {
       setState(() {
         _groupOn = false;
         _groupPrimary = '';
@@ -617,95 +621,80 @@ class _WallTileState extends State<_WallTile> {
         border: Border.all(color: Colors.white.withOpacity(0.06)),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _buildPreview(),
-                // 顶部状态条
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  top: 0,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          _buildPreview(),
+          // 顶部状态条（识别码与状态并入这里，画面撑满整格）
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.55),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
                     decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.55),
-                          Colors.transparent,
-                        ],
+                      color: peer.online ? _C.green : Colors.grey,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: BoxDecoration(
-                            color: peer.online ? _C.green : Colors.grey,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 5),
-                        Expanded(
-                          child: Text(
-                            name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.white,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                        InkWell(
-                          onTap: widget.onOpen,
-                          child: const Padding(
-                            padding: EdgeInsets.all(2),
-                            child: Icon(Icons.open_in_full,
-                                size: 14, color: Colors.white70),
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            height: 26,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            color: _C.tileBar,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
+                  const SizedBox(width: 6),
+                  Text(
                     peer.id,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 11,
-                      color: Colors.white54,
-                      letterSpacing: 0.4,
+                      fontSize: 10,
+                      color: Colors.white38,
+                      letterSpacing: 0.3,
                     ),
                   ),
-                ),
-                Text(
-                  widget.live ? '预览中' : (peer.password.isEmpty ? '未存密码' : '已暂停'),
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    color: widget.live ? _C.green : Colors.white38,
+                  const SizedBox(width: 6),
+                  Text(
+                    widget.live
+                        ? '预览中'
+                        : (peer.password.isEmpty ? '未存密码' : '已暂停'),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: widget.live ? _C.green : Colors.white38,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 4),
+                  InkWell(
+                    onTap: widget.onOpen,
+                    child: const Padding(
+                      padding: EdgeInsets.all(2),
+                      child: Icon(Icons.open_in_full,
+                          size: 14, color: Colors.white70),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
