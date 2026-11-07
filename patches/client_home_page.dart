@@ -170,6 +170,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   // 批量模式：勾选多台设备一次性加入屏幕墙（最近/收藏页）
   bool _batch = false;
   final Set<String> _batchSel = {};
+  // 鼠标悬停的设备：网格卡片上浮出「×」删除按钮（桌面端没有长按菜单）
+  String? _hoverId;
 
   @override
   void initState() {
@@ -1148,6 +1150,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             icon: const Icon(Icons.tv, size: 15),
             label: const Text('添加到屏幕墙', style: TextStyle(fontSize: 12.5)),
           ),
+          TextButton.icon(
+            onPressed: _deleteSelected,
+            icon: const Icon(Icons.delete_outline,
+                size: 15, color: Color(0xFFE23B3B)),
+            label: const Text('删除',
+                style: TextStyle(fontSize: 12.5, color: Color(0xFFE23B3B))),
+          ),
           TextButton(
             onPressed: () => setState(() {
               _batch = false;
@@ -1183,6 +1192,88 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       return;
     }
     showToast(n == 0 ? '该设备已在屏幕墙里' : '已加入屏幕墙');
+  }
+
+  // ---------------- 删除设备 ----------------
+  //
+  // 与原生一致：最近列表用 mainRemovePeer 从最近记录里删，收藏用 mainStoreFav
+  // 重写收藏名单。只动本机列表，不会卸载对方、也不影响授权绑定。
+
+  String get _listName => _tab == 1 ? '收藏' : '最近';
+
+  Future<bool?> _confirmDelete(String title, String body) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontSize: 15)),
+        content: Text(body,
+            style: const TextStyle(fontSize: 13, color: Color(0xFF666666))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消', style: TextStyle(fontSize: 13)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除',
+                style: TextStyle(fontSize: 13, color: Color(0xFFE23B3B))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _removeIds(List<String> ids) async {
+    if (ids.isEmpty) return;
+    if (_tab == 1) {
+      final favs = (await bind.mainGetFav()).toList();
+      final before = favs.length;
+      favs.removeWhere(ids.contains);
+      if (favs.length != before) {
+        await bind.mainStoreFav(favs: favs);
+        bind.mainLoadFavPeers();
+      }
+    } else {
+      for (final id in ids) {
+        await bind.mainRemovePeer(id: id);
+      }
+      bind.mainLoadRecentPeers();
+    }
+  }
+
+  Future<void> _deletePeer(Peer p) async {
+    final name = p.alias.isNotEmpty ? p.alias : formatAbId(p.id);
+    final ok = await _confirmDelete('删除「$name」？',
+        '只从本机$_listName列表移除，不影响对方设备，也不会解绑授权。');
+    if (ok != true) return;
+    try {
+      await _removeIds([p.id]);
+      if (!mounted) return;
+      showToast('已删除');
+    } catch (_) {
+      if (!mounted) return;
+      showToast('删除失败，请重试');
+    }
+  }
+
+  Future<void> _deleteSelected() async {
+    final ids = _batchSel.toList();
+    if (ids.isEmpty) return;
+    final ok = await _confirmDelete('删除所选的 ${ids.length} 台设备？',
+        '只从本机$_listName列表移除，不影响对方设备，也不会解绑授权。');
+    if (ok != true) return;
+    try {
+      await _removeIds(ids);
+      if (!mounted) return;
+      showToast('已删除 ${ids.length} 台');
+      setState(() {
+        _batch = false;
+        _batchSel.clear();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      showToast('删除失败，请重试');
+    }
   }
 
   Widget _buildPeerArea() {
@@ -1308,6 +1399,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _addOneToWall(p.id);
                   } else if (v == 'copy') {
                     _copy(p.id);
+                  } else if (v == 'delete') {
+                    _deletePeer(p);
                   }
                 },
                 itemBuilder: (_) => const [
@@ -1325,6 +1418,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       height: 36,
                       child: Text('复制识别码',
                           style: TextStyle(fontSize: 13))),
+                  PopupMenuDivider(height: 1),
+                  PopupMenuItem(
+                      value: 'delete',
+                      height: 36,
+                      child: Text('删除',
+                          style: TextStyle(
+                              fontSize: 13, color: Color(0xFFE23B3B)))),
                 ],
               ),
             ),
@@ -1348,71 +1448,93 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       itemBuilder: (context, i) {
         final p = list[i];
         final checked = _batchSel.contains(p.id);
-        return InkWell(
-          onTap: () {
-            if (_batch) {
-              setState(() =>
-                  checked ? _batchSel.remove(p.id) : _batchSel.add(p.id));
-            } else {
-              _connectPeer(p);
-            }
+        return MouseRegion(
+          onEnter: (_) {
+            if (_hoverId != p.id) setState(() => _hoverId = p.id);
           },
-          borderRadius: BorderRadius.circular(7),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(7),
-              border: Border.all(
-                  color: checked ? _C.blue : _C.line,
-                  width: checked ? 1.4 : 1),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    _avatar(p, size: 22),
-                    const SizedBox(width: 7),
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: peerStatusColor(p),
-                        shape: BoxShape.circle,
+          onExit: (_) {
+            if (_hoverId == p.id) setState(() => _hoverId = null);
+          },
+          child: InkWell(
+            onTap: () {
+              if (_batch) {
+                setState(() =>
+                    checked ? _batchSel.remove(p.id) : _batchSel.add(p.id));
+              } else {
+                _connectPeer(p);
+              }
+            },
+            borderRadius: BorderRadius.circular(7),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(7),
+                border: Border.all(
+                    color: checked ? _C.blue : _C.line,
+                    width: checked ? 1.4 : 1),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      _avatar(p, size: 22),
+                      const SizedBox(width: 7),
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: peerStatusColor(p),
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 5),
-                    Expanded(
-                      child: Text(
-                        p.alias.isEmpty ? p.id : p.alias,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                            color: _C.text),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          p.alias.isEmpty ? p.id : p.alias,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: _C.text),
+                        ),
                       ),
-                    ),
-                    if (_batch)
-                      Icon(
-                        checked
-                            ? Icons.check_box
-                            : Icons.check_box_outline_blank,
-                        size: 16,
-                        color: checked ? _C.blue : const Color(0xFFB0B0B0),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  p.id,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11.5, color: _C.sub),
-                ),
-              ],
+                      if (_batch)
+                        Icon(
+                          checked
+                              ? Icons.check_box
+                              : Icons.check_box_outline_blank,
+                          size: 16,
+                          color: checked ? _C.blue : const Color(0xFFB0B0B0),
+                        )
+                      else if (_hoverId == p.id)
+                        Tooltip(
+                          message: '从这个列表删除',
+                          waitDuration: const Duration(milliseconds: 600),
+                          child: InkWell(
+                            onTap: () => _deletePeer(p),
+                            borderRadius: BorderRadius.circular(9),
+                            child: const Padding(
+                              padding: EdgeInsets.only(left: 4),
+                              child: Icon(Icons.close_rounded,
+                                  size: 13, color: Color(0xFF9E9E9E)),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    p.id,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11.5, color: _C.sub),
+                  ),
+                ],
+              ),
             ),
           ),
         );
