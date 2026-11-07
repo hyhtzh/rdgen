@@ -162,6 +162,45 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     if (mounted) setState(() {});
   }
 
+  /// 从墙里移除一台设备（墙就是收藏夹，移除即取消收藏）
+  Future<void> _removePeer(Peer peer) async {
+    final name = peer.alias.isNotEmpty
+        ? peer.alias
+        : (peer.hostname.isNotEmpty ? peer.hostname : peer.id);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('从屏幕墙移除',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Text('移除后「$name」不再显示在墙上（同时取消收藏，不影响已保存的密码）。',
+            style: const TextStyle(fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消', style: TextStyle(color: Color(0xFF9AA3AF)))),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE23B3B), elevation: 0),
+            child: const Text('移除', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final n = await removePeersFromScreenWall([peer.id]);
+    if (!mounted) return;
+    if (n < 0) {
+      showToast('移除失败，请重试');
+      return;
+    }
+    _wallPages.remove(peer.id);
+    await _syncFavPeers(force: true);
+    if (mounted) setState(() {});
+    showToast('已从屏幕墙移除');
+  }
+
   void _releasePreventClose() {
     final id = _windowId;
     if (id == null) return;
@@ -228,6 +267,22 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     ];
     if (all.length <= _capacity) return all;
     return all.sublist(0, _capacity);
+  }
+
+  /// 收藏模型里的 Peer 通常不带密码（密码存在「最近连接」里），
+  /// 拿不到就直接判成「未存密码」，实时预览永远起不来。
+  /// 这里回落一次最近连接的密码，存过就能直接出画面。
+  String _pwOf(Peer p) {
+    if (p.password.isNotEmpty) return p.password;
+    final key = p.id.replaceAll(' ', '');
+    try {
+      for (final r in gFFI.recentPeersModel.peers) {
+        if (r.id.replaceAll(' ', '') == key && r.password.isNotEmpty) {
+          return r.password;
+        }
+      }
+    } catch (_) {}
+    return '';
   }
 
   // ---------------- 窗口动作 ----------------
@@ -770,15 +825,18 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             itemCount: peers.length,
             itemBuilder: (context, index) {
               final peer = peers[index];
+              final pw = _pwOf(peer);
               return _WallTile(
                 key: ValueKey('wall_${peer.id}'),
                 peer: peer,
-                live: _live && peer.password.isNotEmpty,
+                password: pw,
+                live: _live && pw.isNotEmpty,
                 onOpen: () => connect(
                   context,
                   peer.id,
-                  password: peer.password.isEmpty ? null : peer.password,
+                  password: pw.isEmpty ? null : pw,
                 ),
+                onRemove: () => _removePeer(peer),
                 onGroupPointer: _groupOn
                     ? (id, down) => _groupPointer(id, down)
                     : null,
@@ -810,8 +868,14 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
 class _WallTile extends StatefulWidget {
   final Peer peer;
+
+  /// 该设备的保存密码（可能来自最近连接；空表示没存过）
+  final String password;
   final bool live;
   final VoidCallback onOpen;
+
+  /// 从墙里移除这台设备
+  final VoidCallback onRemove;
 
   /// 群控：down/up=按下/抬起；id 为本格识别码
   final void Function(String id, bool down)? onGroupPointer;
@@ -819,8 +883,10 @@ class _WallTile extends StatefulWidget {
   const _WallTile({
     Key? key,
     required this.peer,
+    required this.password,
     required this.live,
     required this.onOpen,
+    required this.onRemove,
     this.onGroupPointer,
   }) : super(key: key);
 
@@ -881,7 +947,9 @@ class _WallTileState extends State<_WallTile> {
                     width: 6,
                     height: 6,
                     decoration: BoxDecoration(
-                      color: peer.online ? _C.green : Colors.grey,
+                      color: peer.online
+                          ? const Color(0xFF3DBE5B)
+                          : const Color(0xFFE23B3B),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -911,19 +979,36 @@ class _WallTileState extends State<_WallTile> {
                   Text(
                     widget.live
                         ? '预览中'
-                        : (peer.password.isEmpty ? '未存密码' : '已暂停'),
+                        : (widget.password.isEmpty ? '未存密码' : '已暂停'),
                     style: TextStyle(
                       fontSize: 10,
                       color: widget.live ? _C.green : Colors.white38,
                     ),
                   ),
                   const SizedBox(width: 4),
-                  InkWell(
-                    onTap: widget.onOpen,
-                    child: const Padding(
-                      padding: EdgeInsets.all(2),
-                      child: Icon(Icons.open_in_full,
-                          size: 14, color: Colors.white70),
+                  Tooltip(
+                    message: '进入控制',
+                    waitDuration: const Duration(milliseconds: 400),
+                    child: InkWell(
+                      onTap: widget.onOpen,
+                      child: const Padding(
+                        padding: EdgeInsets.all(2),
+                        child: Icon(Icons.open_in_full,
+                            size: 14, color: Colors.white70),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  Tooltip(
+                    message: '从屏幕墙移除',
+                    waitDuration: const Duration(milliseconds: 400),
+                    child: InkWell(
+                      onTap: widget.onRemove,
+                      child: const Padding(
+                        padding: EdgeInsets.all(2),
+                        child: Icon(Icons.close_rounded,
+                            size: 15, color: Colors.white70),
+                      ),
                     ),
                   ),
                 ],
@@ -937,18 +1022,40 @@ class _WallTileState extends State<_WallTile> {
 
   Widget _buildPreview() {
     if (!widget.live || _toolbarState == null) {
+      final p = widget.peer;
+      final String hint;
+      if (!p.online) {
+        hint = '设备离线';
+      } else if (widget.password.isEmpty) {
+        hint = '未保存密码';
+      } else {
+        hint = '已暂停预览';
+      }
       return InkWell(
         onTap: widget.onOpen,
-        child: const Center(
-          child: Icon(Icons.desktop_windows_outlined,
-              size: 32, color: Colors.white24),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.desktop_windows_outlined,
+                  size: 30, color: Colors.white24),
+              const SizedBox(height: 6),
+              Text(hint,
+                  style: const TextStyle(fontSize: 11, color: Colors.white38)),
+              const SizedBox(height: 2),
+              Text(widget.password.isEmpty ? '双击连接，勾选记住密码后自动出画面' : '双击进入控制',
+                  textAlign: TextAlign.center,
+                  style:
+                      const TextStyle(fontSize: 10, color: Colors.white24)),
+            ],
+          ),
         ),
       );
     }
     final page = RemotePage(
       key: ValueKey('page_${widget.peer.id}'),
       id: widget.peer.id,
-      password: widget.peer.password,
+      password: widget.password,
       toolbarState: _toolbarState!,
     );
     // 群控广播需要拿到每个会话的 FFI（RemotePage.ffi），注册进全局表
