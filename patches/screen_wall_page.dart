@@ -352,7 +352,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           if (_capacity == 9) _groupChip(),
           const Spacer(),
           if (_groupOn) ...[
-            const Icon(Icons.broadcast_rounded,
+            const Icon(Icons.wifi_tethering,
                 size: 13, color: Color(0xFF2FA45C)),
             const SizedBox(width: 5),
             const Text('群控中 · 键盘与鼠标点击广播到其余在线格子（点击某格设为主控）',
@@ -388,7 +388,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.broadcast_rounded,
+            Icon(Icons.wifi_tethering,
                 size: 12,
                 color: _groupOn ? Colors.white : _C.sub),
             const SizedBox(width: 4),
