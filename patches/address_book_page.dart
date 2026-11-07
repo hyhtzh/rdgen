@@ -531,34 +531,68 @@ class _AddressBookViewState extends State<AddressBookView> {
       padding: const EdgeInsets.symmetric(vertical: 4),
       itemCount: list.length,
       separatorBuilder: (_, __) => const Divider(
-          height: 1, thickness: 1, color: Color(0xFFF2F2F2), indent: 58),
+          height: 1, thickness: 1, color: Color(0xFFF4F5F7), indent: 72),
       itemBuilder: (context, i) => _row(list[i]),
     );
   }
 
+  /// 头像底色：按名称哈希取一个固定颜色，同一台设备每次进来颜色一样
+  static const List<Color> _avatarColors = [
+    Color(0xFFE2A39A),
+    Color(0xFFE9A9C7),
+    Color(0xFFCFC79A),
+    Color(0xFFB9A6E3),
+    Color(0xFFA9C6A7),
+    Color(0xFF9FBBD8),
+    Color(0xFFE0B389),
+    Color(0xFFA8BFC6),
+  ];
+
+  static Color _avatarColor(String seed) {
+    if (seed.isEmpty) return _avatarColors.first;
+    var h = 0;
+    for (final c in seed.runes) {
+      h = (h * 31 + c) & 0x7fffffff;
+    }
+    return _avatarColors[h % _avatarColors.length];
+  }
+
   Widget _row(AbEntry e) {
     final online = _onlineOf(e.id);
+    final store = AddressBookStore.instance;
+    // 首字做头像文字：中文取第一个汉字，英文/数字取首字符
+    final seed = e.display.isEmpty ? e.id : e.display;
+    final letter = seed.isEmpty ? '?' : seed.substring(0, 1);
+    final user = store.username.isEmpty ? '' : store.username;
+    final second = user.isEmpty
+        ? formatAbId(e.id)
+        : '$user@${formatAbId(e.id)}';
     return InkWell(
       onTap: () => widget.onConnect(e.id),
       hoverColor: _AC.hover,
       child: Container(
-        height: 56,
-        padding: const EdgeInsets.only(left: 16, right: 8),
+        height: 62,
+        padding: const EdgeInsets.only(left: 16, right: 6),
         child: Row(
           children: [
             Container(
-              width: 32,
-              height: 32,
+              width: 44,
+              height: 44,
               decoration: BoxDecoration(
-                color: online
-                    ? _AC.blue.withOpacity(0.1)
-                    : const Color(0xFFF0F0F0),
-                shape: BoxShape.circle,
+                color: _avatarColor(seed),
+                borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(Icons.contacts_outlined,
-                  size: 17, color: online ? _AC.blue : const Color(0xFF9E9E9E)),
+              alignment: Alignment.center,
+              child: Text(
+                letter.toUpperCase(),
+                style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 14),
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -566,9 +600,20 @@ class _AddressBookViewState extends State<AddressBookView> {
                 children: [
                   Row(
                     children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: online
+                              ? const Color(0xFF3DBE5B)
+                              : const Color(0xFFC6CBD4),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 7),
                       Flexible(
                         child: Text(
-                          e.display,
+                          seed,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -593,38 +638,14 @@ class _AddressBookViewState extends State<AddressBookView> {
                       ],
                     ],
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 3),
                   Text(
-                    e.note.isEmpty
-                        ? formatAbId(e.id)
-                        : '${formatAbId(e.id)} · ${e.note}',
+                    e.note.isEmpty ? second : '$second · ${e.note}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 12, color: _AC.sub),
                   ),
                 ],
-              ),
-            ),
-            Text(
-              online ? '在线' : '离线',
-              style: TextStyle(
-                fontSize: 12,
-                color: online ? _AC.green : const Color(0xFFAAAAAA),
-              ),
-            ),
-            const SizedBox(width: 12),
-            SizedBox(
-              height: 30,
-              child: TextButton(
-                onPressed: () => widget.onConnect(e.id),
-                style: TextButton.styleFrom(
-                  backgroundColor: _AC.blue.withOpacity(0.08),
-                  foregroundColor: _AC.blue,
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(5)),
-                ),
-                child: const Text('连接', style: TextStyle(fontSize: 12.5)),
               ),
             ),
             SizedBox(
