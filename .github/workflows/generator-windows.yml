@@ -206,6 +206,32 @@ jobs:
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
           python patch_license.py . desktop
 
+      - name: High DPI awareness (windows)
+        shell: bash
+        run: |
+          python - <<'PY'
+          p = './src/main.rs'
+          s = open(p, encoding='utf-8').read()
+          if 'must be set before any window' in s:
+              print('dpi awareness already patched, skip')
+          else:
+              # Flutter 版 main 还没有 DPI 声明（sciter 分支才有），补上；
+              # exe 内嵌的 manifest 来自 nwg，不含 dpiAware，高分屏缩放下整个界面被拉伸发虚。
+              old = '''    if !common::global_init() {
+        eprintln!("Global initialization failed.");
+        return;
+    }'''
+              new = old + '''
+    // 必须在任何窗口创建前设置，晚于此调用会被忽略
+    #[cfg(windows)]
+    unsafe {
+        winapi::um::shellscalingapi::SetProcessDpiAwareness(2);
+    }'''
+              assert old in s, 'main.rs flutter main anchor not found'
+              open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+              print('dpi awareness patched')
+          PY
+
       - name: Set custom app version
         continue-on-error: true
         shell: bash
@@ -534,8 +560,20 @@ jobs:
           path: C:\vcpkg\installed
           key: vcpkg-windows-v2-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
           
+      - name: ensure magick
+        if: true  # 图标转换依赖 ImageMagick，runner 上没有就现装
+        shell: pwsh
+        run: |
+          if (-not (Get-Command magick -ErrorAction SilentlyContinue)) {
+            Write-Host "ImageMagick not found, installing via choco"
+            choco install imagemagick -y --no-progress
+            $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+            $env:Path = "$machine;" + $env:Path
+          }
+          magick -version
+
       - name: magick stuff
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 5
@@ -543,7 +581,7 @@ jobs:
           retry_wait_seconds: 15
           shell: pwsh
           command: |
-            Invoke-WebRequest -Uri ${{ env.iconlink_url }}/get_png?filename=${{ env.iconlink_file }}"&"uuid=${{ env.iconlink_uuid }} -OutFile ./res/iconx.png 
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/icon.png" -OutFile ./res/iconx.png 
             mv ./res/icon.ico ./res/icon.ico.bak
             mv ./res/icon.png ./res/icon.png.bak
             mv ./res/tray-icon.ico ./res/tray-icon.ico.bak
@@ -564,7 +602,7 @@ jobs:
 
 
       - name: ui.rs icon
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         continue-on-error: true
         shell: bash
         run: |
@@ -620,7 +658,7 @@ jobs:
       #           </security>' ./flutter/windows/runner/runner.exe.manifest
 
       - name: replace flutter icons
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         continue-on-error: true
         run: |
           cd ./flutter
@@ -690,7 +728,7 @@ jobs:
           }
 
       - name: icon stuff
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         continue-on-error: true
         run: |
           mv ./rustdesk/data/flutter_assets/assets/icon.svg ./rustdesk/data/flutter_assets/assets/icon.svg.bak
