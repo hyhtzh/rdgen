@@ -20,6 +20,7 @@ import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
+import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
 
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）
 const _kCapacities = [4, 9, 16, 32, 64];
@@ -362,6 +363,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           const Text('双击卡片进入控制',
               style: TextStyle(fontSize: 11.5, color: Color(0xFF6B7280))),
           const SizedBox(width: 6),
+          _iconButton(Icons.playlist_add_check, '添加设备到屏幕墙',
+              _showAddPeersDialog),
           _iconButton(Icons.refresh, '刷新', () {
             bind.mainLoadFavPeers();
             setState(() {});
@@ -517,6 +520,61 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         ),
       ),
     );
+  }
+
+  // ---------------- 添加设备 ----------------
+
+  /// 屏幕墙窗口内直接加设备：候选 = 最近连接 + 收藏 + 地址簿（按识别码去重），
+  /// 勾选后批量写入收藏并刷新墙。
+  Future<void> _showAddPeersDialog() async {
+    try {
+      bind.mainLoadRecentPeers();
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 400));
+    try {
+      await AddressBookStore.instance.load();
+    } catch (_) {}
+    final Map<String, _AddCandidate> map = {};
+    void put(String id, String alias, String note) {
+      final key = id.replaceAll(' ', '');
+      if (key.isEmpty) return;
+      final existing = map[key];
+      if (existing == null || (existing.alias.isEmpty && alias.isNotEmpty)) {
+        map[key] = _AddCandidate(id: key, alias: alias, note: note);
+      }
+    }
+
+    for (final p in gFFI.recentPeersModel.peers) {
+      put(p.id, p.alias, p.hostname);
+    }
+    for (final p in gFFI.favoritePeersModel.peers) {
+      put(p.id, p.alias, p.hostname);
+    }
+    for (final e in AddressBookStore.instance.entries) {
+      put(e.id, e.alias, e.note);
+    }
+    List<String> favs = [];
+    try {
+      favs = (await bind.mainGetFav()).toList();
+    } catch (_) {}
+    final favSet = favs.map((s) => s.replaceAll(' ', '')).toSet();
+    final candidates = map.values.toList()
+      ..sort((a, b) => a.display.compareTo(b.display));
+    if (!mounted) return;
+    final sel = await showDialog<Set<String>>(
+      context: context,
+      builder: (_) => _AddPeersDialog(candidates: candidates, favSet: favSet),
+    );
+    if (sel == null || sel.isEmpty) return;
+    final n = await addPeersToScreenWall(sel.toList());
+    if (!mounted) return;
+    if (n < 0) {
+      showToast('添加失败，请重试');
+    } else if (n == 0) {
+      showToast('所选设备都已在屏幕墙里');
+    } else {
+      showToast('已把 $n 台设备加入屏幕墙');
+    }
   }
 
   // ---------------- 网格 ----------------
@@ -731,6 +789,185 @@ class _WallTileState extends State<_WallTile> {
         onPointerUp:
             widget.onGroupPointer == null ? null : (_) => widget.onGroupPointer!(widget.peer.id, false),
         child: ClipRect(child: page),
+      ),
+    );
+  }
+}
+
+/// 「添加设备到屏幕墙」的可选项（识别码去重后的统一视图）
+class _AddCandidate {
+  final String id;
+  final String alias;
+  final String note;
+  _AddCandidate({required this.id, required this.alias, required this.note});
+  String get display => alias.isEmpty ? formatAbId(id) : alias;
+}
+
+/// 屏幕墙窗口内批量添加设备：搜索 + 复选框列表，已在墙里的设备置灰不可选
+class _AddPeersDialog extends StatefulWidget {
+  final List<_AddCandidate> candidates;
+  final Set<String> favSet;
+
+  const _AddPeersDialog({required this.candidates, required this.favSet});
+
+  @override
+  State<_AddPeersDialog> createState() => _AddPeersDialogState();
+}
+
+class _AddPeersDialogState extends State<_AddPeersDialog> {
+  final Set<String> _sel = {};
+  String _q = '';
+
+  List<_AddCandidate> get _filtered {
+    final q = _q.trim().toLowerCase();
+    if (q.isEmpty) return widget.candidates;
+    return widget.candidates
+        .where((c) =>
+            c.id.contains(q) ||
+            c.display.toLowerCase().contains(q) ||
+            c.note.toLowerCase().contains(q))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('添加设备到屏幕墙',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      contentPadding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+      content: SizedBox(
+        width: 430,
+        height: 420,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              onChanged: (v) => setState(() => _q = v),
+              style: const TextStyle(fontSize: 13),
+              decoration: InputDecoration(
+                isDense: true,
+                prefixIcon:
+                    const Icon(Icons.search, size: 17, color: Colors.grey),
+                hintText: '搜索名称 / 识别码 / 备注',
+                hintStyle: const TextStyle(fontSize: 12.5, color: Colors.grey),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(6),
+                  borderSide: const BorderSide(color: Color(0xFFDDDDDD)),
+                ),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              child: _filtered.isEmpty
+                  ? const Center(
+                      child: Text('没有找到设备',
+                          style: TextStyle(fontSize: 13, color: Colors.grey)),
+                    )
+                  : ListView.builder(
+                      itemCount: _filtered.length,
+                      itemBuilder: (context, i) =>
+                          _row(context, _filtered[i]),
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消', style: TextStyle(fontSize: 13.5)),
+        ),
+        TextButton(
+          onPressed: _sel.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(_sel),
+          child: Text(_sel.isEmpty ? '添加' : '添加（${_sel.length} 台）',
+              style: const TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF1B72D6))),
+        ),
+      ],
+    );
+  }
+
+  Widget _row(BuildContext context, _AddCandidate c) {
+    final inWall = widget.favSet.contains(c.id);
+    final checked = _sel.contains(c.id);
+    return InkWell(
+      onTap: inWall
+          ? null
+          : () => setState(
+              () => checked ? _sel.remove(c.id) : _sel.add(c.id)),
+      child: Container(
+        height: 52,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 30,
+              child: inWall
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: Icon(Icons.check_circle,
+                          size: 17, color: Color(0xFFB8C4D4)),
+                    )
+                  : Checkbox(
+                      value: checked,
+                      onChanged: (v) => setState(() => v == true
+                          ? _sel.add(c.id)
+                          : _sel.remove(c.id)),
+                    ),
+            ),
+            const SizedBox(width: 6),
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: abAvatarColor(c.display),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.desktop_windows_outlined,
+                  size: 19, color: Colors.white),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    c.display,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
+                        color: inWall
+                            ? const Color(0xFF9AA4B2)
+                            : const Color(0xFF333333)),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    c.note.isEmpty ? formatAbId(c.id) : '${formatAbId(c.id)} · ${c.note}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12, color: Color(0xFF7A7A7A)),
+                  ),
+                ],
+              ),
+            ),
+            if (inWall)
+              const Text('已在屏幕墙',
+                  style: TextStyle(
+                      fontSize: 11.5, color: Color(0xFF9AA4B2))),
+          ],
+        ),
       ),
     );
   }
