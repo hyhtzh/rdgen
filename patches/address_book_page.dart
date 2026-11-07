@@ -1,16 +1,21 @@
-// 地址簿：本地保存的设备清单（识别码 + 名称 + 分组 + 备注）。
+// 地址簿：账号登录 + 云端同步版。
 //
-// 为什么不用上游 AddressBook（flutter/lib/common/widgets/address_book.dart）：
-// 那个页面要求 gFFI.userModel.isLogin，必须有 RustDesk API Server（Pro 或自建 api）
-// 才能用；我们只部署了 hbbs/hbbr，接上去只会看到「登录」按钮。
-// 所以这里做成本地版：数据存 local option（key = address-book-v1，JSON 数组），
-// 不联网、不需要账号，点行直接发起连接。
+// 数据存在授权服务（hd.fcpx0.cn/license/api/ab/*）里，同一个账号在任何一台
+// 激活过的电脑上登录都能看到同一份设备清单。
+// 设计要点：
+//   - 本地始终保留一份缓存（local option = address-book-v2），断网也能看、能连；
+//   - 打开页面先显示缓存，后台拉云端，按识别码合并（本地新增的不丢）；
+//   - 增删改后整体推送到云端（条目量小，全量替换最不容易出 bug）；
+//   - 推送失败不阻塞本地操作，顶部出现「同步失败」提示条，点一下重试。
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
@@ -51,16 +56,27 @@ class AbEntry {
   String get display => alias.isEmpty ? id : alias;
 }
 
-/// 地址簿数据源。单例 + ChangeNotifier，切 tab 不丢状态。
+/// 地址簿数据源 + 账号状态。单例 + ChangeNotifier，切 tab 不丢状态。
 class AddressBookStore extends ChangeNotifier {
   AddressBookStore._();
 
   static final AddressBookStore instance = AddressBookStore._();
 
-  static const _kKey = 'address-book-v1';
+  static const _kKey = 'address-book-v2';
+  static const _kUser = 'ab-user';
+  static const _kToken = 'ab-token';
 
   final List<AbEntry> entries = [];
   bool loaded = false;
+  bool syncing = false;
+  String syncError = '';
+
+  String _username = '';
+  String _token = '';
+
+  String get username => _username;
+  bool get signedIn => _token.isNotEmpty;
+  bool get needsSync => syncError.isNotEmpty;
 
   /// 分组（去重、保序），空分组不返回
   List<String> get tags {
@@ -75,10 +91,152 @@ class AddressBookStore extends ChangeNotifier {
   int countOf(String tag) =>
       tag.isEmpty ? entries.length : entries.where((e) => e.tag == tag).length;
 
+  String _get(String key) {
+    try {
+      return bind.mainGetLocalOption(key: key) ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _set(String key, String value) async {
+    try {
+      await bind.mainSetLocalOption(key: key, value: value);
+    } catch (_) {}
+  }
+
+  // ---------------- 账号 ----------------
+
+  Future<bool> login(String username, String password) async {
+    final d = await _post('login', {'username': username, 'password': password});
+    if (d['ok'] != true) throw Exception((d['msg'] ?? '登录失败').toString());
+    await _adopt(d['username']?.toString() ?? username, d['token']?.toString() ?? '');
+    return true;
+  }
+
+  Future<bool> register(String username, String password) async {
+    final d =
+        await _post('register', {'username': username, 'password': password});
+    if (d['ok'] != true) throw Exception((d['msg'] ?? '注册失败').toString());
+    await _adopt(d['username']?.toString() ?? username, d['token']?.toString() ?? '');
+    return true;
+  }
+
+  Future<void> logout() async {
+    _username = '';
+    _token = '';
+    await _set(_kUser, '');
+    await _set(_kToken, '');
+    syncError = '';
+    notifyListeners();
+  }
+
+  Future<void> _adopt(String username, String token) async {
+    _username = username;
+    _token = token;
+    await _set(_kUser, username);
+    await _set(_kToken, token);
+    loaded = false;
+    await load(force: true);
+  }
+
+  // ---------------- 云端 ----------------
+
+  Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body,
+      {int timeoutSec = 12}) async {
+    final r = await http
+        .post(Uri.parse('$kLicenseBase/api/ab/$path'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body))
+        .timeout(Duration(seconds: timeoutSec));
+    return jsonDecode(utf8.decode(r.bodyBytes)) as Map<String, dynamic>;
+  }
+
+  /// 云端拉取 + 与本地缓存合并（并集，识别码去重，云端已删除的条目
+  /// 只要本地还在就保留——删除是明确动作，靠推送覆盖）
+  Future<void> _pullMerge() async {
+    final d = await _post('list', {'token': _token});
+    if (d['expired'] == true) {
+      await logout();
+      return;
+    }
+    if (d['ok'] != true) {
+      throw Exception((d['msg'] ?? '同步失败').toString());
+    }
+    final list = d['contacts'];
+    if (list is List) {
+      final cloud = <String, AbEntry>{};
+      for (final raw in list) {
+        if (raw is Map) {
+          final m = Map<String, dynamic>.from(raw);
+          final e = AbEntry(
+            id: (m['code'] ?? '').toString(),
+            alias: (m['name'] ?? '').toString(),
+            tag: (m['group'] ?? '').toString(),
+            note: (m['note'] ?? '').toString(),
+          );
+          if (e.id.isNotEmpty) cloud[e.id] = e;
+        }
+      }
+      for (final e in entries) {
+        // 本地有的云端没有：视为本地新增（或云端被另一台删了，以本地为准，推送后一致）
+        cloud.putIfAbsent(e.id, () => e);
+      }
+      entries
+        ..clear()
+        ..addAll(cloud.values.toList()
+          ..sort((a, b) => a.id.compareTo(b.id)));
+    }
+  }
+
+  Future<bool> _push() async {
+    final d = await _post('save', {
+      'token': _token,
+      'contacts': entries.map((e) => {
+            'code': e.id,
+            'name': e.alias,
+            'group': e.tag,
+            'note': e.note,
+          }).toList(),
+    }, timeoutSec: 15);
+    if (d['expired'] == true) {
+      await logout();
+      return false;
+    }
+    return d['ok'] == true;
+  }
+
+  /// 增删改后调用：先写本地缓存（立即生效），再后台推送云端
+  Future<void> _persist() async {
+    await _set(
+        _kKey, jsonEncode(entries.map((e) => e.toJson()).toList()));
+    notifyListeners();
+    if (!signedIn) return;
+    syncing = true;
+    notifyListeners();
+    try {
+      final ok = await _push();
+      syncError = ok ? '' : '保存到云端失败，请稍后重试';
+    } catch (_) {
+      syncError = '网络异常，改动只保存在本机，联网后点击重试';
+    }
+    syncing = false;
+    notifyListeners();
+  }
+
+  Future<void> retrySync() async {
+    syncError = '';
+    await _persist();
+  }
+
+  // ---------------- 本地缓存 ----------------
+
   Future<void> load({bool force = false}) async {
     if (loaded && !force) return;
+    _username = _get(_kUser);
+    _token = _get(_kToken);
     try {
-      final raw = bind.mainGetLocalOption(key: _kKey);
+      final raw = _get(_kKey);
       if (raw.isNotEmpty) {
         final list = jsonDecode(raw);
         if (list is List) {
@@ -90,23 +248,27 @@ class AddressBookStore extends ChangeNotifier {
         }
       }
     } catch (e) {
-      debugPrint('address book load failed: $e');
+      debugPrint('address book cache load failed: $e');
     }
     loaded = true;
     notifyListeners();
+    if (signedIn) {
+      syncing = true;
+      notifyListeners();
+      try {
+        await _pullMerge();
+        syncError = '';
+        await _set(
+            _kKey, jsonEncode(entries.map((e) => e.toJson()).toList()));
+      } catch (_) {
+        syncError = '无法连接同步服务，显示的是本机缓存';
+      }
+      syncing = false;
+      notifyListeners();
+    }
   }
 
-  Future<void> save() async {
-    try {
-      await bind.mainSetLocalOption(
-        key: _kKey,
-        value: jsonEncode(entries.map((e) => e.toJson()).toList()),
-      );
-    } catch (e) {
-      debugPrint('address book save failed: $e');
-    }
-    notifyListeners();
-  }
+  // ---------------- 增删改 ----------------
 
   /// [oldId] 用于改识别码时定位原条目
   Future<void> upsert(AbEntry entry, {String? oldId}) async {
@@ -117,12 +279,12 @@ class AddressBookStore extends ChangeNotifier {
     } else {
       entries.add(entry);
     }
-    await save();
+    await _persist();
   }
 
   Future<void> remove(String id) async {
     entries.removeWhere((e) => e.id == id);
-    await save();
+    await _persist();
   }
 
   bool exists(String id, {String? exceptId}) =>
@@ -186,17 +348,63 @@ class _AddressBookViewState extends State<AddressBookView> {
       animation: AddressBookStore.instance,
       builder: (context, _) {
         final store = AddressBookStore.instance;
+        if (!store.signedIn) return _LoginCard();
         final list = _visible();
-        if (store.entries.isEmpty) return _empty();
-        return Row(
+        return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _tagPane(store),
-            Container(width: 1, color: _AC.line),
-            Expanded(child: list.isEmpty ? _noMatch() : _list(list)),
+            if (store.needsSync) _syncBar(store),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _tagPane(store),
+                  Container(width: 1, color: _AC.line),
+                  Expanded(
+                      child: list.isEmpty ? _empty(store) : _list(list)),
+                ],
+              ),
+            ),
           ],
         );
       },
+    );
+  }
+
+  Widget _syncBar(AddressBookStore store) {
+    return InkWell(
+      onTap: () => store.retrySync(),
+      child: Container(
+        height: 30,
+        color: const Color(0xFFFFF6E5),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            const Icon(Icons.cloud_off_outlined,
+                size: 14, color: Color(0xFFB45309)),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(store.syncError,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 12, color: Color(0xFFB45309))),
+            ),
+            if (store.syncing)
+              const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child:
+                      CircularProgressIndicator(strokeWidth: 1.6))
+            else
+              const Text('重试',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFFB45309),
+                      fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -207,11 +415,72 @@ class _AddressBookViewState extends State<AddressBookView> {
     return Container(
       width: 152,
       color: _AC.pane,
-      child: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _tagRow('全部设备', '', store.entries.length),
-          for (final t in tags) _tagRow(t, t, store.countOf(t)),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              children: [
+                _tagRow('全部设备', '', store.entries.length),
+                for (final t in tags) _tagRow(t, t, store.countOf(t)),
+              ],
+            ),
+          ),
+          Container(height: 1, color: _AC.line),
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.person_outline,
+                    size: 14, color: _AC.sub),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    store.username.isEmpty ? '已登录' : store.username,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 11.5, color: _AC.sub),
+                  ),
+                ),
+                InkWell(
+                  onTap: () async {
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('退出登录',
+                            style: TextStyle(fontSize: 16)),
+                        content: const Text(
+                            '退出后地址簿仍保留在本机缓存，重新登录同一账号即可恢复同步。',
+                            style: TextStyle(fontSize: 13.5)),
+                        actions: [
+                          TextButton(
+                              onPressed: () =>
+                                  Navigator.of(ctx).pop(false),
+                              child: const Text('取消')),
+                          TextButton(
+                              onPressed: () =>
+                                  Navigator.of(ctx).pop(true),
+                              child: const Text('退出',
+                                  style: TextStyle(
+                                      color: Color(0xFFE23B3B)))),
+                        ],
+                      ),
+                    );
+                    if (ok == true) {
+                      setState(() => _tag = '');
+                      await AddressBookStore.instance.logout();
+                    }
+                  },
+                  child: const Text('退出',
+                      style: TextStyle(
+                          fontSize: 11.5, color: _AC.blue)),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -388,7 +657,7 @@ class _AddressBookViewState extends State<AddressBookView> {
     );
   }
 
-  Widget _empty() {
+  Widget _empty(AddressBookStore store) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -399,33 +668,31 @@ class _AddressBookViewState extends State<AddressBookView> {
           const Text('地址簿还是空的',
               style: TextStyle(fontSize: 14, color: _AC.text)),
           const SizedBox(height: 4),
-          const Text('点右上角的「+」把常用设备存进来',
-              style: TextStyle(fontSize: 12, color: _AC.sub)),
-          const SizedBox(height: 14),
-          SizedBox(
-            height: 32,
-            child: TextButton.icon(
-              onPressed: () => _add(context),
-              icon: const Icon(Icons.add, size: 15),
-              label: const Text('添加设备', style: TextStyle(fontSize: 12.5)),
-              style: TextButton.styleFrom(
-                backgroundColor: _AC.blue,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(5)),
+          Text(
+            store.syncing ? '正在同步云端数据…' : '点右上角的「+」把常用设备存进来',
+            style: const TextStyle(fontSize: 12, color: _AC.sub),
+          ),
+          if (!store.syncing) ...[
+            const SizedBox(height: 14),
+            SizedBox(
+              height: 32,
+              child: TextButton.icon(
+                onPressed: () => _add(context),
+                icon: const Icon(Icons.add, size: 15),
+                label:
+                    const Text('添加设备', style: TextStyle(fontSize: 12.5)),
+                style: TextButton.styleFrom(
+                  backgroundColor: _AC.blue,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(5)),
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
-    );
-  }
-
-  Widget _noMatch() {
-    return const Center(
-      child: Text('没有匹配的设备',
-          style: TextStyle(fontSize: 13, color: _AC.sub)),
     );
   }
 
@@ -446,6 +713,209 @@ class _AddressBookViewState extends State<AddressBookView> {
   /// 直接比较会永远判成离线。
   static String _norm(String s) => s.replaceAll(' ', '').trim();
 }
+
+// ---------------------------------------------------------------- 登录卡片
+
+/// 未登录时显示的登录/注册卡片
+class _LoginCard extends StatefulWidget {
+  @override
+  State<_LoginCard> createState() => _LoginCardState();
+}
+
+class _LoginCardState extends State<_LoginCard> {
+  final _user = TextEditingController();
+  final _pwd = TextEditingController();
+  final _pwd2 = TextEditingController();
+  bool _register = false;
+  bool _busy = false;
+  String _error = '';
+  bool _showPwd = false;
+
+  @override
+  void dispose() {
+    _user.dispose();
+    _pwd.dispose();
+    _pwd2.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_busy) return;
+    final u = _user.text.trim();
+    final p = _pwd.text;
+    if (u.isEmpty || p.isEmpty) {
+      setState(() => _error = '请填写账号和密码');
+      return;
+    }
+    if (_register && p != _pwd2.text) {
+      setState(() => _error = '两次输入的密码不一致');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    try {
+      final store = AddressBookStore.instance;
+      if (_register) {
+        await store.register(u, p);
+      } else {
+        await store.login(u, p);
+      }
+      // 成功后 store 会 notifyListeners，界面自动切换
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 320,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _AC.line),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Icon(
+              _register ? Icons.person_add_alt_1_outlined : Icons.person_outline,
+              size: 34,
+              color: _AC.blue,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _register ? '注册地址簿账号' : '登录地址簿',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w600, color: _AC.text),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '登录后设备清单云端保存，换电脑登录也都在',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: _AC.sub),
+            ),
+            const SizedBox(height: 18),
+            _input(_user, '账号（字母 / 数字 / 中文）',
+                icon: Icons.person_outline, first: true),
+            const SizedBox(height: 10),
+            _input(_pwd, '密码（至少 6 位）',
+                icon: Icons.lock_outline,
+                obscure: !_showPwd,
+                suffix: IconButton(
+                  splashRadius: 16,
+                  icon: Icon(
+                      _showPwd
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                      size: 17,
+                      color: _AC.sub),
+                  onPressed: () => setState(() => _showPwd = !_showPwd),
+                )),
+            if (_register) ...[
+              const SizedBox(height: 10),
+              _input(_pwd2, '确认密码',
+                  icon: Icons.lock_outline, obscure: true),
+            ],
+            if (_error.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(_error,
+                  style:
+                      const TextStyle(fontSize: 12.5, color: Color(0xFFE23B3B))),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 38,
+              child: ElevatedButton(
+                onPressed: _busy ? null : _submit,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _AC.blue,
+                  disabledBackgroundColor: const Color(0xFF9DC0EA),
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: _busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : Text(_register ? '注册并登录' : '登录',
+                        style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() {
+                        _register = !_register;
+                        _error = '';
+                      }),
+              child: Text(
+                _register ? '已有账号？返回登录' : '没有账号？注册一个',
+                style: const TextStyle(fontSize: 12.5, color: _AC.blue),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _input(TextEditingController c, String hint,
+      {IconData? icon, bool obscure = false, Widget? suffix, bool first = false}) {
+    return SizedBox(
+      height: 38,
+      child: TextField(
+        controller: c,
+        obscureText: obscure,
+        onSubmitted: (_) => _submit(),
+        autofocus: first,
+        style: const TextStyle(fontSize: 13.5, color: _AC.text),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 12.5, color: Color(0xFFB0B8C4)),
+          prefixIcon: icon == null
+              ? null
+              : Icon(icon, size: 17, color: _AC.sub),
+          prefixIconConstraints:
+              const BoxConstraints(minWidth: 36, minHeight: 36),
+          suffixIcon: suffix,
+          suffixIconConstraints:
+              const BoxConstraints(minWidth: 36, minHeight: 36),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+          filled: true,
+          fillColor: const Color(0xFFF8FAFD),
+          isDense: true,
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: _AC.line),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: _AC.blue, width: 1.3),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------- 动作
 
 void _copyId(String id) {
   Clipboard.setData(ClipboardData(text: id));
@@ -470,7 +940,7 @@ Future<void> _confirmDelete(BuildContext context, AbEntry e) async {
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('删除设备', style: TextStyle(fontSize: 16)),
-      content: Text('确定从地址簿删除「${e.display}」吗？',
+      content: Text('确定从地址簿删除「${e.display}」吗？删除会同步到所有登录这台账号的设备。',
           style: const TextStyle(fontSize: 13.5)),
       actions: [
         TextButton(
