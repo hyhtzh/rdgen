@@ -11,8 +11,6 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:url_launcher/url_launcher_string.dart';
-
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
@@ -410,7 +408,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   void _toggleGroup() {
     // 定价：4 屏（含）以下群控免费；4 屏以上按 20 元/月收费
     if (!_groupOn && _capacity > 4 && !licenseFeature('group')) {
-      _showUpgradeDialog('群控（20 元/月）');
+      _showUpgradeDialog('群控（20 元/月）', 'paGroup');
       return;
     }
     setState(() {
@@ -420,30 +418,130 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     _setGroupListeners(_groupOn);
   }
 
+  /// 已经买过卡密的用户，不必绕到授权详情，就地兑换
+  Future<void> _redeemCode({String? productId}) async {
+    final ctrl = TextEditingController();
+    final act = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Text('兑换附加包',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('输入屏幕墙档位或群控的授权码，开通后立即生效。',
+                style: TextStyle(fontSize: 13, color: _C.sub, height: 1.6)),
+            const SizedBox(height: 8),
+            // 没买过的用户也要有明确出口，别只给一个输入框
+            InkWell(
+              onTap: () => Navigator.of(ctx).pop('buy'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('还没有授权码？',
+                        style: TextStyle(fontSize: 12.5, color: _C.sub)),
+                    Text('去商城购买 →',
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            color: Color(0xFF1B72D6),
+                            fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'XXXX-XXXX-XXXX-XXXX',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('cancel'),
+            child: Text('取消', style: TextStyle(color: _C.sub)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop('ok'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1B72D6),
+              elevation: 0,
+            ),
+            child: const Text('立即开通',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (act == 'buy') {
+      if (!mounted) return;
+      await gotoShop(context, productId: productId);
+      return;
+    }
+    if (act != 'ok') return;
+    final code = ctrl.text.trim();
+    if (code.isEmpty) {
+      // 以前这里是静默 return，用户以为按钮坏了
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('请先填写附加包授权码；还没有码可点弹窗里的「去商城购买」'),
+          duration: Duration(seconds: 3)));
+      return;
+    }
+    try {
+      final r = await LicenseClient.instance.activate(code);
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(r.isAddon ? '已开通：${r.addonName}，请重新点击档位' : '授权已更新'),
+          duration: const Duration(seconds: 3)));
+    } on LicenseException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.msg), duration: const Duration(seconds: 3)));
+    }
+  }
+
   /// 收费档位 / 功能 未授权时弹的引导框
-  void _showUpgradeDialog(String what) {
+  void _showUpgradeDialog(String what, String productId) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         title: Text('该功能需要升级授权',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-        content: Text('$what属于付费功能，当前授权不包含。升级后即可使用，点击购买前往官方购买页。',
+        content: Text(
+            '$what属于付费功能，当前授权不包含。\n\n购买拿到授权码后，在「授权详情 → 兑换附加包」里输入即可开通，立即生效，不需要重新激活主授权。附加包绑定当前授权码，换设备后重新激活同一授权码依然可用。',
             style: TextStyle(fontSize: 13, height: 1.6)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: Text('取消', style: TextStyle(color: _C.sub)),
           ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _redeemCode(productId: productId);
+            },
+            child: Text('已购买，兑换',
+                style: TextStyle(
+                    color: Color(0xFF2FA45C), fontWeight: FontWeight.w600)),
+          ),
           ElevatedButton(
             onPressed: () async {
               Navigator.of(ctx).pop();
-              try {
-                await launchUrlString(kPurchaseUrl,
-                    mode: LaunchMode.externalApplication);
-              } catch (_) {
-                Clipboard.setData(ClipboardData(text: kPurchaseUrl));
-              }
+              if (!mounted) return;
+              // 统一走 gotoShop：浏览器唤不起时复制链接并弹窗，不会点了没反应
+              await gotoShop(context, productId: productId);
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: Color(0xFF1B72D6),
@@ -466,7 +564,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         (value == 32 && !licenseFeature('wall32')) ||
         (value == 64 && !licenseFeature('wall64'))) {
       final price = value == 16 ? '4' : (value == 32 ? '12' : '20');
-      _showUpgradeDialog('$value 屏布局（$price 元/月）');
+      _showUpgradeDialog('$value 屏布局（$price 元/月）', 'pa$value');
       return;
     }
     // 切到 4 屏以上且没有群控授权时，自动关掉群控，避免白用
