@@ -561,7 +561,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   void _showLicenseDetail() {
     showDialog(
       context: context,
-      builder: (ctx) => _LicenseDetailDialog(),
+      builder: (ctx) => const _LicenseDetailDialog(),
     );
   }
 
@@ -1286,10 +1286,31 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 }
 
 /// 授权详情弹窗：套餐 / 到期 / 设备占用 / 激活码，支持续费升级与本机解绑。
-class _LicenseDetailDialog extends StatelessWidget {
+class _LicenseDetailDialog extends StatefulWidget {
+  const _LicenseDetailDialog();
+
+  @override
+  State<_LicenseDetailDialog> createState() => _LicenseDetailDialogState();
+}
+
+class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
   final LicenseClient _c = LicenseClient.instance;
 
-  _LicenseDetailDialog();
+  @override
+  void initState() {
+    super.initState();
+    // 附加包可能刚在屏幕墙子窗口里激活，本进程读到的配置还是旧快照
+    // （两个窗口是不同进程，Rust 侧的本地配置不互通）；
+    // 打开详情时主动拉一次，避免「已开通却显示未开通」。
+    _refreshConfig();
+  }
+
+  Future<void> _refreshConfig() async {
+    try {
+      await _c.check();
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
 
   String get _plan =>
       _c.savedPlanName.isEmpty ? '已授权' : _c.savedPlanName;
@@ -1354,7 +1375,10 @@ class _LicenseDetailDialog extends StatelessWidget {
                           style: TextStyle(fontSize: 12.5, color: _C.sub)),
                       const Spacer(),
                       InkWell(
-                        onTap: () => _redeemAddon(ctx, () => setLocal(() {})),
+                        onTap: () => _redeemAddon(ctx, () {
+                          setLocal(() {});
+                          _refreshConfig();
+                        }),
                         child: const Text('兑换附加包',
                             style: TextStyle(
                                 fontSize: 12.5, color: Color(0xFF1B72D6))),
