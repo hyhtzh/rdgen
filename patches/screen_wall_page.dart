@@ -637,7 +637,8 @@ class _WallTileState extends State<_WallTile> {
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: [
-                    Colors.black.withOpacity(0.55),
+                    Colors.black.withOpacity(0.72),
+                    Colors.black.withOpacity(0.28),
                     Colors.transparent,
                   ],
                 ),
@@ -670,7 +671,7 @@ class _WallTileState extends State<_WallTile> {
                     peer.id,
                     style: const TextStyle(
                       fontSize: 10,
-                      color: Colors.white38,
+                      color: Colors.white70,
                       letterSpacing: 0.3,
                     ),
                   ),
