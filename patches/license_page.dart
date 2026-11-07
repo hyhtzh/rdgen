@@ -450,3 +450,138 @@ class _ActivateCardState extends State<_ActivateCard> {
     );
   }
 }
+
+/// 安卓端「授权详情」弹窗：移动端设置页入口调用（桌面端在首页授权卡里）。
+///
+/// 展示版本类型 / 授权类型 / 到期时间 / 剩余天数 / 设备占用 / 激活码，
+/// 并提供购买授权与本机解绑。解绑后 LicenseGate 的 revoked 监听会自动弹激活页。
+Future<void> showMobileLicenseDetail(BuildContext context) async {
+  final c = LicenseClient.instance;
+  final planName = c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName;
+  String planType;
+  switch (c.savedPlan) {
+    case 'std':
+      planType = '标准版';
+      break;
+    case 'pro':
+      planType = '专业版';
+      break;
+    case 'manual':
+      planType = '手工授权';
+      break;
+    default:
+      planType = c.savedPlan.isEmpty ? '—' : c.savedPlan;
+  }
+  final days = c.daysLeft;
+  final used = c.savedDevicesUsed;
+  final max = c.savedDevicesMax;
+  final code = c.savedCode;
+  final expDay = c.savedExpire.isEmpty ? '' : c.savedExpire.split(' ').first;
+
+  Widget kv(String k, String v, {Color color = _LC.text, bool bold = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+              width: 92,
+              child: Text(k,
+                  style: const TextStyle(fontSize: 13, color: _LC.sub))),
+          Expanded(
+            child: Text(v,
+                style: TextStyle(
+                    fontSize: 13.5,
+                    color: color,
+                    fontWeight: bold ? FontWeight.w600 : FontWeight.w400)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> buy() async {
+    try {
+      await launchUrlString(kPurchaseUrl, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      Clipboard.setData(const ClipboardData(text: kPurchaseUrl));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('已复制购买地址：$kPurchaseUrl'),
+          duration: const Duration(seconds: 3)));
+    }
+  }
+
+  Future<void> unbind() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('解绑本机设备',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: const Text(
+            '解绑后本机授权被移除，软件将回到激活界面（不影响其他设备）。确定解绑？',
+            style: TextStyle(fontSize: 13.5, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消', style: TextStyle(color: _LC.sub)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('确定解绑',
+                style: TextStyle(color: _LC.red, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await c.localDeactivate();
+    if (context.mounted) Navigator.of(context).pop();
+  }
+
+  await showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('授权详情',
+          style:
+              TextStyle(fontSize: 16.5, fontWeight: FontWeight.w600, color: _LC.text)),
+      contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 8),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            kv('版本类型', planType, bold: true),
+            kv('授权类型', planName, color: const Color(0xFF2FA45C), bold: true),
+            kv('到期时间', expDay.isEmpty ? '—' : expDay),
+            kv('剩余天数', days >= 0 ? '$days 天' : '—'),
+            kv('设备占用', used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
+            kv('激活码', code.isEmpty ? '—' : code),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('关闭', style: TextStyle(fontSize: 13.5, color: _LC.sub)),
+        ),
+        TextButton(
+          onPressed: buy,
+          child: const Text('购买授权',
+              style: TextStyle(
+                  fontSize: 13.5,
+                  color: _LC.blue,
+                  fontWeight: FontWeight.w500)),
+        ),
+        TextButton(
+          onPressed: unbind,
+          child: const Text('解绑设备',
+              style: TextStyle(
+                  fontSize: 13.5,
+                  color: _LC.red,
+                  fontWeight: FontWeight.w500)),
+        ),
+      ],
+    ),
+  );
+}
