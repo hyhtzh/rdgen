@@ -3,12 +3,14 @@
 // 中部：工具条 + 搜索 + 设备列表（最近 / 收藏），底部状态条。
 // 由 patch_client_ui.py 注入到 flutter/lib/desktop/pages/ 下。
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:window_size/window_size.dart' as window_size;
 
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
@@ -109,12 +111,114 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     WallFps.restore();
     // 主窗口设了 preventClose，必须自己接管关闭事件，否则任务栏的 X 也点不动
     windowManager.addListener(this);
+    // 跨窗口指令（屏幕墙双击进入控制、文件传输窗口…）原来由 DesktopHomePage
+    // 注册；首页被整个替换后 handler 跟着没了，必须在客户端首页重新装上，
+    // 否则子窗口发来的 connect 请求全部石沉大海——表现就是「双击没反应」。
+    _installWindowHandler();
     // 原版首页靠 1s 定时器刷新本机 ID，替换页面后必须自己拉
     _idTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => _refreshLocalId());
     _idFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
+  }
+
+  // ---------------- 跨窗口消息 ----------------
+
+  void _installWindowHandler() {
+    rustDeskWinManager.setMethodHandler((call, fromWindowId) async {
+      try {
+        switch (call.method) {
+          case kWindowMainWindowOnTop:
+            await windowOnTop(null);
+            break;
+          case kWindowRefreshCurrentUser:
+            gFFI.userModel.refreshCurrentUser();
+            break;
+          case kWindowGetScreenList:
+            final screens = await window_size.getScreenList();
+            return jsonEncode(screens
+                .map((s) => {
+                      'x': s.frame.left,
+                      'y': s.frame.top,
+                      'width': s.frame.width,
+                      'height': s.frame.height,
+                      'visibleFrame': {
+                        'l': s.visibleFrame.left,
+                        't': s.visibleFrame.top,
+                        'r': s.visibleFrame.right,
+                        'b': s.visibleFrame.bottom,
+                      },
+                      'scaleFactor': s.scaleFactor,
+                    })
+                .toList());
+          case kWindowActionRebuild:
+            reloadCurrentWindow();
+            break;
+          case kWindowEventShow:
+            await rustDeskWinManager
+                .registerActiveWindow(call.arguments['id'] as int);
+            break;
+          case kWindowEventHide:
+            await rustDeskWinManager
+                .unregisterActiveWindow(call.arguments['id'] as int);
+            break;
+          case 'wall_get_peers':
+            // 屏幕墙进程定时来问一次：别名/在线/密码
+            return _wallPeersJson();
+          case kWindowConnect:
+            final a = call.arguments as Map;
+            await connectMainDesktop(
+              a['id'] as String,
+              isFileTransfer: a['isFileTransfer'] ?? false,
+              isViewCamera: a['isViewCamera'] ?? false,
+              isTerminal: a['isTerminal'] ?? false,
+              isTcpTunneling: a['isTcpTunneling'] ?? false,
+              isRDP: a['isRDP'] ?? false,
+              password: a['password'],
+              forceRelay: a['forceRelay'] ?? false,
+              connToken: a['connToken'],
+              loginMethod: (a['loginMethod'] ?? '') as String,
+            );
+            break;
+          default:
+            break;
+        }
+      } catch (e) {
+        debugPrint('main window handler ${call.method} failed: $e');
+      }
+      return null;
+    });
+  }
+
+  // ---------------- 屏幕墙数据 ----------------
+
+  /// 屏幕墙跑在独立进程里，收藏模型在那边是空的（推送事件只到主窗口）。
+  /// 它每隔几秒通过跨窗口 call 来找主窗口要一次快照：
+  /// 别名、在线状态、密码都在这份 JSON 里。
+  String _wallPeersJson() {
+    try {
+      final pwOf = <String, String>{};
+      for (final r in gFFI.recentPeersModel.peers) {
+        if (r.password.isNotEmpty) {
+          pwOf[r.id.replaceAll(' ', '')] = r.password;
+        }
+      }
+      final list = <Map<String, dynamic>>[];
+      for (final p in gFFI.favoritePeersModel.peers) {
+        final id = p.id.replaceAll(' ', '');
+        list.add({
+          'id': id,
+          'alias': p.alias,
+          'hostname': p.hostname,
+          'online': p.online,
+          'password': p.password.isNotEmpty ? p.password : (pwOf[id] ?? ''),
+        });
+      }
+      return jsonEncode({'peers': list});
+    } catch (_) {
+      return '{"peers":[]}';
+    }
   }
 
   @override
