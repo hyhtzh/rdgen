@@ -102,7 +102,6 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   final Map<String, bool> _hasSavedPw = {};
 
   // ---- 群控（9 宫格）：键盘 + 鼠标点击广播 ----
-  final Map<String, RemotePage> _pages = {};
   bool _groupOn = false;
   String _groupPrimary = '';
 
@@ -1168,13 +1167,19 @@ class _WallTileState extends State<_WallTile> {
     _fitTimer = Timer.periodic(const Duration(milliseconds: 700), (t) async {
       _fitTries++;
       final page = _wallPages[widget.peer.id];
-      int sid = 0;
+      // sessionId 是 UuidValue，会话还没建好时是 nil uuid；为了同时兼容
+      // 预览桩（int），这里用 dynamic 再接一次字符串判断。
+      dynamic sid;
       try {
-        sid = page?.ffi.sessionId ?? 0;
+        sid = page?.ffi.sessionId;
       } catch (_) {
-        sid = 0;
+        sid = null;
       }
-      if (sid != 0) {
+      final tag = '$sid';
+      final ready = sid != null &&
+          tag != '0' &&
+          tag != '00000000-0000-0000-0000-000000000000';
+      if (ready) {
         try {
           await bind.sessionSetViewStyle(
               sessionId: sid, value: kRemoteViewStyleAdaptive);
