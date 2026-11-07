@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -85,6 +86,21 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   bool _live = true;
   bool _fullscreen = false;
 
+  /// 被放大成整屏的那一格（空 = 正常网格）。
+  /// 双击任意小窗进入，双击画面/点标题栏「还原」退出。
+  String _zoomId = '';
+
+  /// 每个格子的 GlobalKey：放大 / 还原时把同一个 Element 搬到新位置，
+  /// 会话不会被销毁重建（否则每双击一次都要重新握手、重新出画面）。
+  final Map<String, GlobalKey> _tileKeys = {};
+
+  GlobalKey _tileKey(String id) => _tileKeys.putIfAbsent(id, () => GlobalKey());
+
+  /// 主窗口侧（Rust 配置里）是否已经存过这台设备的密码。
+  /// 屏幕墙进程读不到主窗口的收藏模型，但 `mainPeerHasPassword` 是本地同步查询，
+  /// 主窗口能免密直连的设备，墙里同样能免密拉流。
+  final Map<String, bool> _hasSavedPw = {};
+
   // ---- 群控（9 宫格）：键盘 + 鼠标点击广播 ----
   final Map<String, RemotePage> _pages = {};
   bool _groupOn = false;
@@ -143,6 +159,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     await _pullWallSnap();
     if (!mounted) return;
     setState(() => _rebuildFavStubs(ids));
+    unawaited(_probeSavedPw());
     if (!changed) return;
     // 事件可能只送到主窗口的引擎，稍等再看一眼，仍没有就用快照/裸 id 兜底
     await Future.delayed(const Duration(milliseconds: 700));
@@ -173,6 +190,32 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   // ---------------- 主窗口数据 ----------------
+
+  /// 主窗口能免密直连的设备 = Rust 配置里已经存过密码。
+  /// 墙这边拿不到那个密码明文（也不该拿），但可以问「存过没有」，
+  /// 存过就直接开会话、让 Rust 自己用保存的密码登录 —— 这就是
+  /// 「直接调用主窗口的访问密码数据」，用户不必在墙里再输一遍。
+  Future<void> _probeSavedPw() async {
+    var dirty = false;
+    for (final p in _peers) {
+      final id = p.id.replaceAll(' ', '');
+      // 已经确认为 true 的不再重复问（密码只会从无到有）
+      if (_hasSavedPw[id] == true) continue;
+      bool has = false;
+      try {
+        has = await bind.mainPeerHasPassword(id: id);
+      } catch (_) {}
+      if (_hasSavedPw[id] != has) {
+        _hasSavedPw[id] = has;
+        dirty = true;
+      }
+    }
+    if (dirty && mounted) setState(() {});
+  }
+
+  /// 这一格能不能直接出画面：本机有密码，或 Rust 里存过密码
+  bool _canPreview(Peer p) =>
+      _pwOf(p).isNotEmpty || _hasSavedPw[p.id.replaceAll(' ', '')] == true;
 
   Map<String, _WallSnapPeer> _snap = {};
   Map<String, String> _pwCache = {};
@@ -443,7 +486,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         body: Column(
           children: [
             _buildTitleBar(),
-            _buildToolbar(),
+            // 放大单屏时把工具条也收起来：用户要看的是整块远端桌面
+            if (_zoomId.isEmpty) _buildToolbar(),
             Expanded(child: _buildBody()),
           ],
         ),
@@ -486,19 +530,44 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                   size: 10, color: Colors.white),
             ),
             const SizedBox(width: 8),
-            const Text('屏幕墙',
-                style: TextStyle(fontSize: 12.5, color: _C.text)),
+            Text(_zoomId.isEmpty ? '屏幕墙' : '屏幕墙 · 放大',
+                style: const TextStyle(fontSize: 12.5, color: _C.text)),
             const SizedBox(width: 8),
-            AnimatedBuilder(
-              animation: gFFI.favoritePeersModel,
-              builder: (context, _) {
-                // 数量按「墙里实际铺出来的格子」算：收藏模型还没同步到本窗口时
-                // 会显示 0，但格子其实已经用占位排出来了，看起来就像坏了。
-                final n = _peers.length;
-                return Text('$n 台设备',
-                    style: const TextStyle(fontSize: 11.5, color: _C.sub));
-              },
-            ),
+            if (_zoomId.isEmpty)
+              AnimatedBuilder(
+                animation: gFFI.favoritePeersModel,
+                builder: (context, _) {
+                  // 数量按「墙里实际铺出来的格子」算：收藏模型还没同步到本窗口时
+                  // 会显示 0，但格子其实已经用占位排出来了，看起来就像坏了。
+                  final n = _peers.length;
+                  return Text('$n 台设备',
+                      style: const TextStyle(fontSize: 11.5, color: _C.sub));
+                },
+              )
+            else
+              InkWell(
+                onTap: _unzoom,
+                borderRadius: BorderRadius.circular(4),
+                child: Container(
+                  height: 20,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1F232A),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: _C.line),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.grid_view_rounded, size: 11, color: _C.sub),
+                      SizedBox(width: 4),
+                      Text('还原小窗',
+                          style: TextStyle(fontSize: 11, color: _C.sub)),
+                    ],
+                  ),
+                ),
+              ),
             const Spacer(),
             if (_isChildWindow) ...[
               _winButton(
@@ -909,7 +978,26 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     }
   }
 
-  // ---------------- 网格 ----------------
+  // ---------------- 网格 / 放大 ----------------
+
+  void _zoom(String id) {
+    if (_zoomId == id) return;
+    setState(() => _zoomId = id.replaceAll(' ', ''));
+  }
+
+  void _unzoom() {
+    if (_zoomId.isEmpty) return;
+    setState(() => _zoomId = '');
+  }
+
+  void _toggleZoom(String id) {
+    final key = id.replaceAll(' ', '');
+    if (_zoomId == key) {
+      _unzoom();
+    } else {
+      _zoom(key);
+    }
+  }
 
   Widget _buildBody() {
     return AnimatedBuilder(
@@ -917,6 +1005,14 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       builder: (context, _) {
         final peers = _peers;
         if (peers.isEmpty) return _buildEmpty();
+        if (_zoomId.isNotEmpty) {
+          final hit = peers.where((p) => p.id.replaceAll(' ', '') == _zoomId);
+          if (hit.isNotEmpty) return _buildZoomed(hit.first);
+          // 设备被移出墙了，放大状态自动作废
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _zoomId.isNotEmpty) _unzoom();
+          });
+        }
         return Padding(
           padding: const EdgeInsets.all(12),
           child: GridView.builder(
@@ -927,29 +1023,40 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
               childAspectRatio: 16 / 10.4,
             ),
             itemCount: peers.length,
-            itemBuilder: (context, index) {
-              final peer = peers[index];
-              final pw = _pwOf(peer);
-              return _WallTile(
-                key: ValueKey('wall_${peer.id}'),
-                peer: peer,
-                password: pw,
-                live: _live && pw.isNotEmpty,
-                onOpen: () => connect(
-                  context,
-                  peer.id,
-                  password: pw.isEmpty ? null : pw,
-                ),
-                onRemove: () => _removePeer(peer),
-                onSetPassword: () => _askPassword(peer),
-                onGroupPointer: _groupOn
-                    ? (id, down) => _groupPointer(id, down)
-                    : null,
-              );
-            },
+            itemBuilder: (context, index) => _tile(peers[index], zoomed: false),
           ),
         );
       },
+    );
+  }
+
+  /// 单屏放大：整块 body 只放这一路，上下各留 6px
+  Widget _buildZoomed(Peer peer) {
+    return Padding(
+      padding: const EdgeInsets.all(6),
+      child: _tile(peer, zoomed: true),
+    );
+  }
+
+  Widget _tile(Peer peer, {required bool zoomed}) {
+    final pw = _pwOf(peer);
+    return _WallTile(
+      // 同一个 GlobalKey：放大/还原时搬的是同一个 Element，会话不重建
+      key: _tileKey(peer.id.replaceAll(' ', '')),
+      peer: peer,
+      password: pw,
+      live: _live && _canPreview(peer),
+      zoomed: zoomed,
+      onOpen: () => connect(
+        context,
+        peer.id,
+        password: pw.isEmpty ? null : pw,
+      ),
+      onToggleZoom: () => _toggleZoom(peer.id),
+      onRemove: () => _removePeer(peer),
+      onSetPassword: () => _askPassword(peer),
+      onGroupPointer:
+          _groupOn ? (id, down) => _groupPointer(id, down) : null,
     );
   }
 
@@ -976,8 +1083,18 @@ class _WallTile extends StatefulWidget {
 
   /// 该设备的保存密码（可能来自最近连接；空表示没存过）
   final String password;
+
+  /// 是否开一路预览会话（墙里连上就出画面）
   final bool live;
+
+  /// 是否处于「放大成整屏」状态
+  final bool zoomed;
+
+  /// 打开独立的控制窗口（有完整工具栏的那种）
   final VoidCallback onOpen;
+
+  /// 双击画面：放大 / 还原
+  final VoidCallback onToggleZoom;
 
   /// 从墙里移除这台设备
   final VoidCallback onRemove;
@@ -993,7 +1110,9 @@ class _WallTile extends StatefulWidget {
     required this.peer,
     required this.password,
     required this.live,
+    required this.zoomed,
     required this.onOpen,
+    required this.onToggleZoom,
     required this.onRemove,
     required this.onSetPassword,
     this.onGroupPointer,
@@ -1006,152 +1125,237 @@ class _WallTile extends StatefulWidget {
 class _WallTileState extends State<_WallTile> {
   ToolbarState? _toolbarState;
 
+  /// 远端会话建立后把缩放方式强制成「自适应」：
+  /// 原生默认可能就是 1:1（original），一格只有 200px 宽时只会露出
+  /// 远端桌面的左上角一块，用户就看不到整个屏幕了。
+  Timer? _fitTimer;
+  int _fitTries = 0;
+
+  /// 手写双击识别：RemotePage 内部有手势竞争，外层 GestureDetector.onDoubleTap
+  /// 抢不到事件（这也是之前「双击没反应」的原因），所以用 Listener 自己数。
+  DateTime _lastDownAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Offset _lastDownPos = Offset.zero;
+
+  bool _hover = false;
+
   @override
   void initState() {
     super.initState();
-    if (widget.live) {
-      _toolbarState = ToolbarState();
-      _toolbarState!.hide.value = true;
-    }
+    if (widget.live) _ensureSession();
   }
 
   @override
   void didUpdateWidget(covariant _WallTile oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 密码是后来才拿到的（收藏模型先到、最近连接后到）时，这里要把会话补建出来，
-    // 否则格子会一直停在「未保存密码」的占位画面上。
+    // 密码是后来才拿到的（主窗口快照晚到、或 Rust 里本来就有保存密码）时，
+    // 这里把会话补建出来，否则格子会一直停在占位画面上。
     if (widget.live && _toolbarState == null) {
-      _toolbarState = ToolbarState();
-      _toolbarState!.hide.value = true;
+      _ensureSession();
     }
+  }
+
+  void _ensureSession() {
+    _toolbarState ??= ToolbarState();
+    _toolbarState!.hide.value = true;
+    // 注册进「墙预览」集合：这条会话的工具栏一律不渲染
+    kWallToolbarStates.add(_toolbarState!);
+    _startFitLoop();
+  }
+
+  void _startFitLoop() {
+    _fitTimer?.cancel();
+    _fitTries = 0;
+    _fitTimer = Timer.periodic(const Duration(milliseconds: 700), (t) async {
+      _fitTries++;
+      final page = _wallPages[widget.peer.id];
+      int sid = 0;
+      try {
+        sid = page?.ffi.sessionId ?? 0;
+      } catch (_) {
+        sid = 0;
+      }
+      if (sid != 0) {
+        try {
+          await bind.sessionSetViewStyle(
+              sessionId: sid, value: kRemoteViewStyleAdaptive);
+          try {
+            page?.ffi.canvasModel.updateViewStyle();
+          } catch (_) {}
+        } catch (_) {}
+        t.cancel();
+        return;
+      }
+      if (_fitTries > 20) t.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    _fitTimer?.cancel();
+    final ts = _toolbarState;
+    if (ts != null) kWallToolbarStates.remove(ts);
+    _wallPages.remove(widget.peer.id);
+    super.dispose();
+  }
+
+  String get _name {
+    final p = widget.peer;
+    if (p.alias.isNotEmpty) return p.alias;
+    if (p.hostname.isNotEmpty) return p.hostname;
+    return formatAbId(p.id);
+  }
+
+  /// 双击判定：两次按下间隔 < 420ms 且落点相距 < 40px
+  void _onDown(PointerDownEvent e) {
+    final now = DateTime.now();
+    final isDouble = now.difference(_lastDownAt).inMilliseconds < 420 &&
+        (e.localPosition - _lastDownPos).distance < 40;
+    _lastDownAt = isDouble ? DateTime.fromMillisecondsSinceEpoch(0) : now;
+    _lastDownPos = e.localPosition;
+    if (isDouble) widget.onToggleZoom();
   }
 
   @override
   Widget build(BuildContext context) {
-    final peer = widget.peer;
-    // 小窗标题：优先显示用户自己起的名字，没名字才退到识别码
-    final name = peer.alias.isNotEmpty
-        ? peer.alias
-        : (peer.hostname.isNotEmpty ? peer.hostname : formatAbId(peer.id));
     return Container(
       decoration: BoxDecoration(
         color: _C.tile,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
+        border: Border.all(
+          color: widget.zoomed ? _C.accent.withOpacity(0.55) : Colors.white.withOpacity(0.06),
+        ),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Stack(
-        fit: StackFit.expand,
+      child: Column(
         children: [
-          _buildPreview(),
-          // 顶部状态条（识别码与状态并入这里，画面撑满整格）
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.black.withOpacity(0.72),
-                    Colors.black.withOpacity(0.28),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: peer.online
-                          ? const Color(0xFF3DBE5B)
-                          : const Color(0xFFE23B3B),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    widget.live
-                        ? '预览中'
-                        : (widget.password.isEmpty ? '未存密码' : '已暂停'),
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: widget.live ? _C.green : Colors.white38,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Tooltip(
-                    message: '进入控制',
-                    waitDuration: const Duration(milliseconds: 400),
-                    child: InkWell(
-                      onTap: widget.onOpen,
-                      child: const Padding(
-                        padding: EdgeInsets.all(2),
-                        child: Icon(Icons.open_in_full,
-                            size: 14, color: Colors.white70),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 2),
-                  Tooltip(
-                    message: '从屏幕墙移除',
-                    waitDuration: const Duration(milliseconds: 400),
-                    child: InkWell(
-                      onTap: widget.onRemove,
-                      child: const Padding(
-                        padding: EdgeInsets.all(2),
-                        child: Icon(Icons.close_rounded,
-                            size: 15, color: Colors.white70),
-                      ),
-                    ),
-                  ),
-                ],
+          // 标题条在画面外面：画面区一整块都是远端桌面，不再被渐变遮住顶部
+          MouseRegion(
+            onEnter: (_) => setState(() => _hover = true),
+            onExit: (_) => setState(() => _hover = false),
+            child: _buildTileBar(),
+          ),
+          Expanded(child: ColoredBox(color: Colors.black, child: _buildPreview())),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTileBar() {
+    final online = widget.peer.online;
+    return Container(
+      height: 22,
+      color: _C.tileBar,
+      padding: const EdgeInsets.only(left: 7, right: 2),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: online ? const Color(0xFF3DBE5B) : const Color(0xFFE23B3B),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              _name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11.5,
+                color: Colors.white,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
+          if (_hover)
+            Text(
+              widget.live ? '预览中' : (online ? '待连接' : '离线'),
+              style: TextStyle(
+                fontSize: 9.5,
+                color: widget.live ? _C.green : Colors.white38,
+              ),
+            ),
+          const SizedBox(width: 2),
+          _barButton(
+            widget.zoomed ? Icons.fullscreen_exit : Icons.fullscreen,
+            widget.zoomed ? '还原小窗' : '放大这一屏',
+            widget.onToggleZoom,
+            // 放大按钮常驻：小窗里最常用的就是这个
+            alwaysShow: true,
+          ),
+          _barButton(Icons.open_in_full, '打开控制窗口（带工具栏）', widget.onOpen),
+          _barButton(Icons.close_rounded, '从屏幕墙移除', widget.onRemove),
         ],
+      ),
+    );
+  }
+
+  Widget _barButton(IconData icon, String tip, VoidCallback onTap,
+      {bool alwaysShow = false}) {
+    if (!_hover && !alwaysShow) return const SizedBox.shrink();
+    return Tooltip(
+      message: tip,
+      waitDuration: const Duration(milliseconds: 500),
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          width: 20,
+          height: 22,
+          child: Icon(icon, size: 13, color: Colors.white70),
+        ),
       ),
     );
   }
 
   Widget _buildPreview() {
     if (!widget.live || _toolbarState == null) {
-      final p = widget.peer;
-      final bool needPw = p.online && widget.password.isEmpty;
-      final String hint;
-      if (!p.online) {
-        hint = '设备离线';
-      } else if (widget.password.isEmpty) {
-        hint = '这条设备还没保存密码';
-      } else {
-        hint = '已暂停预览';
-      }
-      return InkWell(
-        onTap: needPw ? () => widget.onSetPassword() : widget.onOpen,
+      return _buildPlaceholder();
+    }
+    final page = RemotePage(
+      key: ValueKey('page_${widget.peer.id}'),
+      id: widget.peer.id,
+      // 空密码就不传：让 Rust 用本机保存的密码登录（= 主窗口那份密码），
+      // 主窗口能免密直连的设备，墙里也不会再问一遍。
+      password: widget.password.isEmpty ? null : widget.password,
+      toolbarState: _toolbarState!,
+    );
+    // 群控广播需要拿到每个会话的 FFI（RemotePage.ffi），注册进全局表
+    _wallPages[widget.peer.id] = page;
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) {
+        _onDown(e);
+        widget.onGroupPointer?.call(widget.peer.id, true);
+      },
+      onPointerUp: (_) => widget.onGroupPointer?.call(widget.peer.id, false),
+      child: ClipRect(child: page),
+    );
+  }
+
+  Widget _buildPlaceholder() {
+    final p = widget.peer;
+    final needPw = p.online && widget.password.isEmpty;
+    final String hint;
+    if (!p.online) {
+      hint = '设备离线';
+    } else if (needPw) {
+      hint = '还没保存密码';
+    } else {
+      hint = '预览已暂停';
+    }
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: _onDown,
+      child: InkWell(
+        onTap: needPw ? widget.onSetPassword : widget.onToggleZoom,
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(needPw ? Icons.key_outlined : Icons.desktop_windows_outlined,
-                  size: 30, color: Colors.white24),
+                  size: widget.zoomed ? 42 : 28, color: Colors.white24),
               const SizedBox(height: 6),
               Text(hint,
                   style: const TextStyle(fontSize: 11, color: Colors.white38)),
@@ -1168,37 +1372,17 @@ class _WallTileState extends State<_WallTile> {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     textStyle: const TextStyle(fontSize: 11.5),
                   ),
-                  child: const Text('输入密码后预览'),
+                  child: const Text('输入密码'),
                 )
               else
                 Text(
-                  p.online ? '双击进入控制' : '双击尝试连接',
+                  '双击放大 / 还原',
                   textAlign: TextAlign.center,
-                  style:
-                      const TextStyle(fontSize: 10, color: Colors.white24),
+                  style: const TextStyle(fontSize: 10, color: Colors.white24),
                 ),
             ],
           ),
         ),
-      );
-    }
-    final page = RemotePage(
-      key: ValueKey('page_${widget.peer.id}'),
-      id: widget.peer.id,
-      password: widget.password,
-      toolbarState: _toolbarState!,
-    );
-    // 群控广播需要拿到每个会话的 FFI（RemotePage.ffi），注册进全局表
-    _wallPages[widget.peer.id] = page;
-    return GestureDetector(
-      onDoubleTap: widget.onOpen,
-      child: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerDown:
-            widget.onGroupPointer == null ? null : (_) => widget.onGroupPointer!(widget.peer.id, true),
-        onPointerUp:
-            widget.onGroupPointer == null ? null : (_) => widget.onGroupPointer!(widget.peer.id, false),
-        child: ClipRect(child: page),
       ),
     );
   }
