@@ -290,15 +290,9 @@ class _ActivateCardState extends State<_ActivateCard> {
         children: [
           Row(
             children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: _LC.blue,
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: const Icon(Icons.desktop_windows_rounded,
-                    size: 20, color: Colors.white),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(9),
+                child: brandLogo(38),
               ),
               const SizedBox(width: 11),
               Column(
