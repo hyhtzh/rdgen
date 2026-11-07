@@ -302,6 +302,60 @@ String formatAbId(String id) {
   return buf.toString();
 }
 
+/// 原生风格头像底色：按名称哈希取固定颜色，同一台设备每次进来颜色一样。
+/// 地址簿、首页设备列表共用（顶层公开，client_home_page.dart 直接引用）。
+const List<Color> kAbAvatarColors = [
+  Color(0xFFE2A39A),
+  Color(0xFFE9A9C7),
+  Color(0xFFCFC79A),
+  Color(0xFFB9A6E3),
+  Color(0xFFA9C6A7),
+  Color(0xFF9FBBD8),
+  Color(0xFFE0B389),
+  Color(0xFFA8BFC6),
+];
+
+Color abAvatarColor(String seed) {
+  if (seed.isEmpty) return kAbAvatarColors.first;
+  var h = 0;
+  for (final c in seed.runes) {
+    h = (h * 31 + c) & 0x7fffffff;
+  }
+  return kAbAvatarColors[h % kAbAvatarColors.length];
+}
+
+/// 把一批识别码加入屏幕墙。屏幕墙显示的就是「收藏」设备列表，
+/// 所以加墙 = 写入收藏 + 通知刷新。返回实际新增台数，-1 表示失败。
+/// 地址簿、首页最近/收藏列表共用。
+Future<int> addPeersToScreenWall(List<String> ids) async {
+  final clean = ids
+      .map((s) => s.replaceAll(' ', ''))
+      .where((s) => s.isNotEmpty)
+      .toList();
+  if (clean.isEmpty) return 0;
+  List<String> favs;
+  try {
+    favs = (await bind.mainGetFav()).toList();
+  } catch (_) {
+    return -1;
+  }
+  var added = 0;
+  for (final id in clean) {
+    if (!favs.contains(id)) {
+      favs.add(id);
+      added++;
+    }
+  }
+  if (added == 0) return 0;
+  try {
+    await bind.mainStoreFav(favs: favs);
+    bind.mainLoadFavPeers();
+  } catch (_) {
+    return -1;
+  }
+  return added;
+}
+
 /// 内嵌在首页设备区里的地址簿视图
 class AddressBookView extends StatefulWidget {
   final String query;
@@ -319,6 +373,8 @@ class AddressBookView extends StatefulWidget {
 
 class _AddressBookViewState extends State<AddressBookView> {
   String _tag = '';
+  bool _batch = false;
+  final Set<String> _sel = {};
 
   @override
   void initState() {
@@ -354,6 +410,7 @@ class _AddressBookViewState extends State<AddressBookView> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (store.needsSync) _syncBar(store),
+            _batchBar(list),
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -526,6 +583,94 @@ class _AddressBookViewState extends State<AddressBookView> {
     );
   }
 
+  /// 列表顶部条：普通态显示设备数 + 批量管理入口；批量态显示全选/加墙/取消
+  Widget _batchBar(List<AbEntry> list) {
+    final allSel = list.isNotEmpty && list.every((e) => _sel.contains(e.id));
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.only(left: 14, right: 8),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(bottom: BorderSide(color: _AC.line)),
+      ),
+      child: _batch
+          ? Row(
+              children: [
+                Text('已选 ${_sel.length} 台',
+                    style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: _AC.text)),
+                const Spacer(),
+                TextButton(
+                  onPressed: () => setState(() {
+                    if (allSel) {
+                      _sel.clear();
+                    } else {
+                      _sel.addAll(list.map((e) => e.id));
+                    }
+                  }),
+                  child: Text(allSel ? '全不选' : '全选',
+                      style: const TextStyle(fontSize: 12.5)),
+                ),
+                TextButton.icon(
+                  onPressed: _sel.isEmpty ? null : _addSelToWall,
+                  icon: const Icon(Icons.tv, size: 15),
+                  label: const Text('添加到屏幕墙',
+                      style: TextStyle(fontSize: 12.5)),
+                ),
+                TextButton(
+                  onPressed: () => setState(() {
+                    _batch = false;
+                    _sel.clear();
+                  }),
+                  child: const Text('取消',
+                      style: TextStyle(fontSize: 12.5, color: _AC.sub)),
+                ),
+              ],
+            )
+          : Row(
+              children: [
+                Text('共 ${list.length} 台设备',
+                    style: const TextStyle(fontSize: 12, color: _AC.sub)),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: list.isEmpty
+                      ? null
+                      : () => setState(() => _batch = true),
+                  icon: const Icon(Icons.playlist_add_check, size: 15),
+                  label:
+                      const Text('批量管理', style: TextStyle(fontSize: 12.5)),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Future<void> _addSelToWall() async {
+    final n = await addPeersToScreenWall(_sel.toList());
+    if (!mounted) return;
+    if (n < 0) {
+      showToast('添加失败，请重试');
+      return;
+    }
+    showToast(n == 0 ? '所选设备都已在屏幕墙里' : '已把 $n 台设备加入屏幕墙');
+    setState(() {
+      _batch = false;
+      _sel.clear();
+    });
+  }
+
+  Future<void> _addOneToWall(String id) async {
+    final n = await addPeersToScreenWall([id]);
+    if (!mounted) return;
+    if (n < 0) {
+      showToast('添加失败，请重试');
+      return;
+    }
+    showToast(n == 0 ? '该设备已在屏幕墙里' : '已加入屏幕墙');
+  }
+
   Widget _list(List<AbEntry> list) {
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -536,30 +681,10 @@ class _AddressBookViewState extends State<AddressBookView> {
     );
   }
 
-  /// 头像底色：按名称哈希取一个固定颜色，同一台设备每次进来颜色一样
-  static const List<Color> _avatarColors = [
-    Color(0xFFE2A39A),
-    Color(0xFFE9A9C7),
-    Color(0xFFCFC79A),
-    Color(0xFFB9A6E3),
-    Color(0xFFA9C6A7),
-    Color(0xFF9FBBD8),
-    Color(0xFFE0B389),
-    Color(0xFFA8BFC6),
-  ];
-
-  static Color _avatarColor(String seed) {
-    if (seed.isEmpty) return _avatarColors.first;
-    var h = 0;
-    for (final c in seed.runes) {
-      h = (h * 31 + c) & 0x7fffffff;
-    }
-    return _avatarColors[h % _avatarColors.length];
-  }
-
   Widget _row(AbEntry e) {
     final online = _onlineOf(e.id);
     final store = AddressBookStore.instance;
+    final checked = _sel.contains(e.id);
     // 首字做头像文字：中文取第一个汉字，英文/数字取首字符
     final seed = e.display.isEmpty ? e.id : e.display;
     final letter = seed.isEmpty ? '?' : seed.substring(0, 1);
@@ -568,18 +693,35 @@ class _AddressBookViewState extends State<AddressBookView> {
         ? formatAbId(e.id)
         : '$user@${formatAbId(e.id)}';
     return InkWell(
-      onTap: () => widget.onConnect(e.id),
+      onTap: () {
+        if (_batch) {
+          setState(() => checked ? _sel.remove(e.id) : _sel.add(e.id));
+        } else {
+          widget.onConnect(e.id);
+        }
+      },
       hoverColor: _AC.hover,
       child: Container(
         height: 62,
         padding: const EdgeInsets.only(left: 16, right: 6),
         child: Row(
           children: [
+            if (_batch) ...[
+              SizedBox(
+                width: 30,
+                child: Checkbox(
+                  value: checked,
+                  onChanged: (v) => setState(
+                      () => v == true ? _sel.add(e.id) : _sel.remove(e.id)),
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
             Container(
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: _avatarColor(seed),
+                color: abAvatarColor(seed),
                 borderRadius: BorderRadius.circular(8),
               ),
               alignment: Alignment.center,
@@ -663,9 +805,12 @@ class _AddressBookViewState extends State<AddressBookView> {
                     _confirmDelete(context, e);
                   } else if (v == 'copy') {
                     _copyId(e.id);
+                  } else if (v == 'wall') {
+                    _addOneToWall(e.id);
                   }
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'wall', height: 36, child: Text('添加到屏幕墙', style: TextStyle(fontSize: 13))),
                   PopupMenuItem(value: 'edit', height: 36, child: Text('编辑', style: TextStyle(fontSize: 13))),
                   PopupMenuItem(value: 'copy', height: 36, child: Text('复制识别码', style: TextStyle(fontSize: 13))),
                   PopupMenuItem(value: 'delete', height: 36, child: Text('删除', style: TextStyle(fontSize: 13))),
