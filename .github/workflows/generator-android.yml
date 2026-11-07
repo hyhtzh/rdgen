@@ -333,7 +333,7 @@ jobs:
 
       ###########################################################echo "${{ env.iconbase64 }}" | base64 -d > ./res/icon.png
       - name: icon stuff
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 5
@@ -344,7 +344,7 @@ jobs:
             mv ./res/icon.ico ./res/icon.ico.bak
             mv ./res/icon.png ./res/icon.png.bak
             mv ./res/tray-icon.ico ./res/tray-icon.ico.bak
-            wget -T 30 -t 2 -O ./res/icon.png ${{ env.iconlink_url }}/get_png?filename=${{ env.iconlink_file }}"&"uuid=${{ env.iconlink_uuid }}
+            wget -T 30 -t 2 -O ./res/icon.png https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/icon.png
             mv ./res/32x32.png ./res/32x32.png.bak
             mv ./res/64x64.png ./res/64x64.png.bak
             mv ./res/128x128.png ./res/128x128.png.bak
@@ -562,7 +562,7 @@ jobs:
           sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
 
       - name: replace flutter icons
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         run: |
           pushd ./flutter
           flutter pub get
@@ -587,6 +587,26 @@ jobs:
           curl -sSL -o patch_license.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
           python3 patch_license.py . android
+
+      - name: Hide server settings (android)
+        shell: bash
+        run: |
+          set -e
+          python3 - <<'PY'
+          import re
+          p = './flutter/lib/mobile/pages/settings_page.dart'
+          s = open(p, encoding='utf-8').read()
+          # 中继/ID 服务器参数由编译期内置，不给用户看到（否则一改就连不回我们的服务器）
+          pat = re.compile(r"_hideServer =\s*\n\s*bind\.mainGetBuildinOption\(key: kOptionHideServerSetting\) == 'Y';")
+          s2, n = pat.subn("_hideServer = true; // 服务器参数编译期内置，不对用户展示", s, count=1)
+          if n != 1:
+              # 兜底：不同版本的赋值行格式可能略不同，只认 bind.mainGetBuildinOption 这一处
+              s2, n = re.subn(r"_hideServer\s*=\s*\n?\s*bind\.mainGetBuildinOption[^;]+;",
+                              "_hideServer = true; // patched", s, count=1)
+          assert n == 1, 'hideServer anchor not found — settings page format changed?'
+          open(p, 'w', encoding='utf-8').write(s2)
+          print('hide-server patched')
+          PY
 
       - name: Build rustdesk lib
         env:
@@ -625,7 +645,7 @@ jobs:
           path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
 
       - name: icons
-        if: ${{ env.iconlink_url != 'false' }}
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
         continue-on-error: true
         run: |
           mv ./flutter/assets/icon.svg ./flutter/assets/icon.svg.bak
