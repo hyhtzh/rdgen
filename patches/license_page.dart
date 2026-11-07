@@ -458,6 +458,8 @@ class _ActivateCardState extends State<_ActivateCard> {
 Future<void> showMobileLicenseDetail(BuildContext context) async {
   final c = LicenseClient.instance;
   final planName = c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName;
+  // 授权类型优先显示卡时长（季卡/年卡），取不到再退回套餐名
+  final cardName = c.savedCardType.isEmpty ? planName : c.savedCardType;
   String planType;
   switch (c.savedPlan) {
     case 'std':
@@ -552,7 +554,7 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             kv('版本类型', planType, bold: true),
-            kv('授权类型', planName, color: const Color(0xFF2FA45C), bold: true),
+            kv('授权类型', cardName, color: const Color(0xFF2FA45C), bold: true),
             kv('到期时间', expDay.isEmpty ? '—' : expDay),
             kv('剩余天数', days >= 0 ? '$days 天' : '—'),
             kv('设备占用', used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
