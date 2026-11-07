@@ -907,6 +907,17 @@ class _WallTileState extends State<_WallTile> {
   }
 
   @override
+  void didUpdateWidget(covariant _WallTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 密码是后来才拿到的（收藏模型先到、最近连接后到）时，这里要把会话补建出来，
+    // 否则格子会一直停在「未保存密码」的占位画面上。
+    if (widget.live && _toolbarState == null) {
+      _toolbarState = ToolbarState();
+      _toolbarState!.hide.value = true;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final peer = widget.peer;
     final name = peer.alias.isNotEmpty
