@@ -28,6 +28,21 @@ DESKTOP_NEW = '? LicenseGate(child: const ClientHomePage())'
 ANDROID_RE = re.compile(r'\n(\s*): HomePage\(\),')
 
 
+# 安卓：设置页「设置」分组顶部插入「授权详情」入口（弹窗本体在 license_page.dart）
+MOBILE_SETTINGS_REL = os.path.join('flutter', 'lib', 'mobile', 'pages',
+                                   'settings_page.dart')
+MOBILE_SETTINGS_IMPORT = \
+    "import 'package:flutter_hbb/desktop/pages/license_page.dart';"
+MOBILE_SETTINGS_ANCHOR = \
+    'SettingsSection(title: Text(translate("Settings")), tiles: ['
+MOBILE_SETTINGS_TILE = '''          SettingsTile(
+              title: Text('授权详情'),
+              leading: Icon(Icons.verified_user),
+              onPressed: (context) {
+                showMobileLicenseDetail(context);
+              }),'''
+
+
 def read(p):
     with open(p, encoding='utf-8') as f:
         return f.read()
@@ -36,6 +51,29 @@ def read(p):
 def write(p, s):
     with open(p, 'w', encoding='utf-8', newline='\n') as f:
         f.write(s)
+
+
+def patch_mobile_license_entry(root):
+    """安卓设置页加「授权详情」入口；找不到锚点直接报错，别出静默缺功能的包。"""
+    mp = os.path.join(root, MOBILE_SETTINGS_REL)
+    if not os.path.isfile(mp):
+        raise SystemExit('mobile settings page not found: %s' % mp)
+    s = read(mp)
+    if "showMobileLicenseDetail" in s:
+        print('skip mobile license entry (already patched)')
+        return
+    if MOBILE_SETTINGS_IMPORT not in s:
+        lines = s.split('\n')
+        idx = max(i for i, l in enumerate(lines) if l.strip().startswith('import '))
+        lines.insert(idx + 1, MOBILE_SETTINGS_IMPORT)
+        s = '\n'.join(lines)
+    if s.count(MOBILE_SETTINGS_ANCHOR) != 1:
+        raise SystemExit('mobile settings anchor not unique: %d'
+                         % s.count(MOBILE_SETTINGS_ANCHOR))
+    s = s.replace(MOBILE_SETTINGS_ANCHOR,
+                  MOBILE_SETTINGS_ANCHOR + '\n' + MOBILE_SETTINGS_TILE, 1)
+    write(mp, s)
+    print('patch: mobile settings license entry')
 
 
 def main():
@@ -87,6 +125,7 @@ def main():
             if n != 1:
                 raise SystemExit('android anchor matched %d times, expected 1' % n)
             print('patch: home -> LicenseGate (android)')
+        patch_mobile_license_entry(root)
 
     write(main_dart, src)
     print('license gate applied (%s)' % mode)
