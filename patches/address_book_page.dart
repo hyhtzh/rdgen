@@ -198,11 +198,15 @@ class AddressBookStore extends ChangeNotifier {
   }
 
   bool _isAuthError(Map<String, dynamic> d) {
-    final e = (d['error'] ?? '').toString().toLowerCase();
+    final e = '${d['error'] ?? ''} ${d['message'] ?? ''} ${d['msg'] ?? ''}'
+        .toLowerCase();
     return e.contains('token') ||
         e.contains('auth') ||
         e.contains('login') ||
-        e.contains('unauthorized');
+        e.contains('unauthorized') ||
+        e.contains('未登录') ||
+        e.contains('登录已过期') ||
+        e.contains('重新登录');
   }
 
   /// 云端拉取 + 与本地缓存合并（并集，识别码去重，云端已删除的条目
