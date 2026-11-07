@@ -1,7 +1,8 @@
 // 地址簿：账号登录 + 云端同步版。
 //
-// 数据存在授权服务（hd.fcpx0.cn/license/api/ab/*）里，同一个账号在任何一台
-// 激活过的电脑上登录都能看到同一份设备清单。
+// 账号和设备清单存在地址簿服务 https://api.hydesk.cn（/api/login、/api/ab/*），
+// 同一个账号在任何一台电脑上登录都能看到同一份设备清单，也能用浏览器登录
+// https://api.hydesk.cn/ 直接管理。
 // 设计要点：
 //   - 本地始终保留一份缓存（local option = address-book-v2），断网也能看、能连；
 //   - 打开页面先显示缓存，后台拉云端，按识别码合并（本地新增的不丢）；
@@ -108,17 +109,25 @@ class AddressBookStore extends ChangeNotifier {
   // ---------------- 账号 ----------------
 
   Future<bool> login(String username, String password) async {
-    final d = await _post('login', {'username': username, 'password': password});
-    if (d['ok'] != true) throw Exception((d['msg'] ?? '登录失败').toString());
-    await _adopt(d['username']?.toString() ?? username, d['token']?.toString() ?? '');
+    final d = await _request('POST', '/api/login',
+        body: {'username': username, 'password': password});
+    if (d['ok'] != true) throw Exception(_errText(d, '登录失败'));
+    final token = (d['token'] ?? d['access_token'] ?? '').toString();
+    if (token.isEmpty) throw Exception('登录失败：服务未返回登录凭证');
+    await _adopt(username, token);
     return true;
   }
 
   Future<bool> register(String username, String password) async {
-    final d =
-        await _post('register', {'username': username, 'password': password});
-    if (d['ok'] != true) throw Exception((d['msg'] ?? '注册失败').toString());
-    await _adopt(d['username']?.toString() ?? username, d['token']?.toString() ?? '');
+    final d = await _request('POST', '/api/register',
+        body: {'username': username, 'password': password});
+    if (d['ok'] != true) throw Exception(_errText(d, '注册失败'));
+    final token = (d['token'] ?? d['access_token'] ?? '').toString();
+    if (token.isEmpty) {
+      // 有些部署注册后需要管理员开通，这时没有 token
+      throw Exception('注册成功，请登录（若提示账号未开通，请联系管理员）');
+    }
+    await _adopt(username, token);
     return true;
   }
 
@@ -142,38 +151,81 @@ class AddressBookStore extends ChangeNotifier {
 
   // ---------------- 云端 ----------------
 
-  Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body,
-      {int timeoutSec = 12}) async {
-    final r = await http
-        .post(Uri.parse('$kLicenseBase/api/ab/$path'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body))
-        .timeout(Duration(seconds: timeoutSec));
-    return jsonDecode(utf8.decode(r.bodyBytes)) as Map<String, dynamic>;
+  /// 统一请求：登录用 POST，读清单用 GET（带 Bearer），增删用 POST/DELETE。
+  Future<Map<String, dynamic>> _request(
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+    bool auth = false,
+    int timeoutSec = 12,
+  }) async {
+    final headers = <String, String>{'Content-Type': 'application/json'};
+    if (auth && _token.isNotEmpty) headers['Authorization'] = 'Bearer $_token';
+    final uri = Uri.parse('$kAbBase$path');
+    final dur = Duration(seconds: timeoutSec);
+    late final http.Response r;
+    switch (method) {
+      case 'GET':
+        r = await http.get(uri, headers: headers).timeout(dur);
+        break;
+      case 'DELETE':
+        r = await http.delete(uri, headers: headers).timeout(dur);
+        break;
+      default:
+        r = await http
+            .post(uri, headers: headers, body: jsonEncode(body ?? {}))
+            .timeout(dur);
+    }
+    final txt = utf8.decode(r.bodyBytes);
+    try {
+      final j = jsonDecode(txt);
+      if (j is Map) return Map<String, dynamic>.from(j);
+    } catch (_) {
+      // 掉到下面统一处理
+    }
+    if (r.statusCode == 401 || r.statusCode == 403) {
+      return {'ok': false, 'error': 'token_invalid', 'message': '登录已过期，请重新登录'};
+    }
+    return {
+      'ok': false,
+      'message': '地址簿服务返回异常（HTTP ${r.statusCode}）',
+    };
+  }
+
+  String _errText(Map<String, dynamic> d, String fallback) {
+    final m = (d['message'] ?? d['error'] ?? d['msg'] ?? '').toString().trim();
+    return m.isEmpty ? fallback : m;
+  }
+
+  bool _isAuthError(Map<String, dynamic> d) {
+    final e = (d['error'] ?? '').toString().toLowerCase();
+    return e.contains('token') ||
+        e.contains('auth') ||
+        e.contains('login') ||
+        e.contains('unauthorized');
   }
 
   /// 云端拉取 + 与本地缓存合并（并集，识别码去重，云端已删除的条目
   /// 只要本地还在就保留——删除是明确动作，靠推送覆盖）
   Future<void> _pullMerge() async {
-    final d = await _post('list', {'token': _token});
-    if (d['expired'] == true) {
-      await logout();
-      return;
-    }
+    final d = await _request('GET', '/api/ab/me', auth: true);
     if (d['ok'] != true) {
-      throw Exception((d['msg'] ?? '同步失败').toString());
+      if (_isAuthError(d)) {
+        await logout();
+        return;
+      }
+      throw Exception(_errText(d, '同步失败'));
     }
-    final list = d['contacts'];
+    final list = d['peers'];
     if (list is List) {
       final cloud = <String, AbEntry>{};
       for (final raw in list) {
         if (raw is Map) {
           final m = Map<String, dynamic>.from(raw);
           final e = AbEntry(
-            id: (m['code'] ?? '').toString(),
-            alias: (m['name'] ?? '').toString(),
-            tag: (m['group'] ?? '').toString(),
-            note: (m['note'] ?? '').toString(),
+            id: (m['id'] ?? '').toString().replaceAll(' ', ''),
+            alias: (m['alias'] ?? '').toString(),
+            tag: (m['tag'] ?? '').toString(),
           );
           if (e.id.isNotEmpty) cloud[e.id] = e;
         }
@@ -189,21 +241,68 @@ class AddressBookStore extends ChangeNotifier {
     }
   }
 
+  /// 以本地为准做一次对账：云端多出来的删掉，本地新增/改过的写上去。
   Future<bool> _push() async {
-    final d = await _post('save', {
-      'token': _token,
-      'contacts': entries.map((e) => {
-            'code': e.id,
-            'name': e.alias,
-            'group': e.tag,
-            'note': e.note,
-          }).toList(),
-    }, timeoutSec: 15);
-    if (d['expired'] == true) {
-      await logout();
+    final me = await _request('GET', '/api/ab/me', auth: true);
+    if (me['ok'] != true) {
+      if (_isAuthError(me)) {
+        await logout();
+        return false;
+      }
       return false;
     }
-    return d['ok'] == true;
+    final cloud = <String, AbEntry>{};
+    final cloudTags = <String>{};
+    final peers = me['peers'];
+    if (peers is List) {
+      for (final raw in peers) {
+        if (raw is Map) {
+          final m = Map<String, dynamic>.from(raw);
+          final id = (m['id'] ?? '').toString().replaceAll(' ', '');
+          if (id.isEmpty) continue;
+          cloud[id] = AbEntry(
+            id: id,
+            alias: (m['alias'] ?? '').toString(),
+            tag: (m['tag'] ?? '').toString(),
+          );
+        }
+      }
+    }
+    final tags = me['tags'];
+    if (tags is List) {
+      for (final t in tags) {
+        cloudTags.add(t.toString());
+      }
+    }
+
+    var ok = true;
+    final localIds = entries.map((e) => e.id).toSet();
+    for (final id in cloud.keys.toList()) {
+      if (!localIds.contains(id)) {
+        final r = await _request(
+            'DELETE', '/api/ab/peers?id=${Uri.encodeComponent(id)}',
+            auth: true);
+        if (r['ok'] != true) ok = false;
+      }
+    }
+    for (final e in entries) {
+      final old = cloud[e.id];
+      if (old == null || old.alias != e.alias || old.tag != e.tag) {
+        final r = await _request('POST', '/api/ab/peers', auth: true, body: {
+          'id': e.id,
+          'alias': e.alias,
+          'tag': e.tag,
+        });
+        if (r['ok'] != true) ok = false;
+      }
+      final t = e.tag.trim();
+      if (t.isNotEmpty && !cloudTags.contains(t)) {
+        // 分组不存在时顺手建一下，失败不影响设备同步
+        await _request('POST', '/api/ab/tags', auth: true, body: {'name': t});
+        cloudTags.add(t);
+      }
+    }
+    return ok;
   }
 
   /// 增删改后调用：先写本地缓存（立即生效），再后台推送云端
@@ -1015,6 +1114,12 @@ class _LoginCardState extends State<_LoginCard> {
               '登录后设备清单云端保存，换电脑登录也都在',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: _AC.sub),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '服务：api.hydesk.cn（也可用浏览器打开管理）',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Color(0xFF9AA1AD)),
             ),
             const SizedBox(height: 18),
             _input(_user, '账号（字母 / 数字 / 中文）',
