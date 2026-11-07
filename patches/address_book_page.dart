@@ -504,6 +504,14 @@ class _AddressBookViewState extends State<AddressBookView> {
   bool _batch = false;
   final Set<String> _sel = {};
 
+  /// 行首的状态点读的是收藏/最近模型里的 online，模型收到
+  /// callback_query_onlines 后会 notifyListeners，这里一并订阅才会跟着变红绿。
+  late final Listenable _ticker = Listenable.merge([
+    AddressBookStore.instance,
+    gFFI.favoritePeersModel,
+    gFFI.recentPeersModel,
+  ]);
+
   @override
   void initState() {
     super.initState();
@@ -529,7 +537,7 @@ class _AddressBookViewState extends State<AddressBookView> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: AddressBookStore.instance,
+      animation: _ticker,
       builder: (context, _) {
         final store = AddressBookStore.instance;
         if (!store.signedIn) return _LoginCard();
