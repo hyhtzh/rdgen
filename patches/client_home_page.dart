@@ -175,11 +175,16 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   // 鼠标悬停的设备：网格卡片上浮出「×」删除按钮（桌面端没有长按菜单）
   String? _hoverId;
 
+  /// 收藏夹名单（去掉空格后的识别码）。收藏夹就是屏幕墙的名单，
+  /// 所以「加入收藏夹」= 这台设备会出现在屏幕墙上，用户不用先开墙再加。
+  List<String> _favIds = [];
+
   @override
   void initState() {
     super.initState();
     bind.mainLoadFavPeers();
     bind.mainLoadRecentPeers();
+    _loadFavIds();
     AddressBookStore.instance.load();
     // 设置页依赖的全局状态，原版由 DesktopHomePage 注册，这里必须补上
     ensureStopServiceState();
@@ -1048,6 +1053,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             _batch = false;
             _batchSel.clear();
           });
+          // 收藏名单可能被屏幕墙那边改过（墙里移除设备 = 取消收藏），切页时对齐
+          _loadFavIds();
           if (index == 0) {
             bind.mainLoadRecentPeers();
           } else if (index == 1) {
@@ -1148,6 +1155,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 style: const TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
+            onPressed: _addSelectedToFav,
+            icon: const Icon(Icons.star_border_rounded, size: 16),
+            label: const Text('加入收藏夹', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
             onPressed: _addSelectedToWall,
             icon: const Icon(Icons.tv, size: 15),
             label: const Text('添加到屏幕墙', style: TextStyle(fontSize: 12.5)),
@@ -1180,6 +1192,98 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       return;
     }
     showToast(n == 0 ? '所选设备都已在屏幕墙里' : '已把 $n 台设备加入屏幕墙');
+    setState(() {
+      _batch = false;
+      _batchSel.clear();
+    });
+  }
+
+  // ---------------- 收藏夹 ----------------
+  //
+  // 收藏夹 = 屏幕墙的设备名单（墙就是按 mainGetFav 铺格子的）。
+  // 所以这里加一个「加入收藏夹」按钮，用户在首页就能把设备放进墙里，
+  // 不用先开屏幕墙再在墙里点「添加设备」。
+
+  static String _normId(String id) => id.replaceAll(' ', '').trim();
+
+  bool _isFav(String id) => _favIds.contains(_normId(id));
+
+  Future<void> _loadFavIds() async {
+    List<String> favs = [];
+    try {
+      favs = (await bind.mainGetFav()).toList();
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() => _favIds = favs.map(_normId).toList());
+  }
+
+  /// add 为 null 时按当前状态取反
+  Future<void> _toggleFav(List<String> ids, {bool? add}) async {
+    if (ids.isEmpty) return;
+    List<String> favs;
+    try {
+      favs = (await bind.mainGetFav()).toList();
+    } catch (_) {
+      if (!mounted) return;
+      showToast('操作失败，请重试');
+      return;
+    }
+    final want = ids.map(_normId).toSet();
+    final exist = favs.map(_normId).toSet();
+    final doAdd = add ?? !want.every(exist.contains);
+    if (doAdd) {
+      for (final id in want) {
+        if (!exist.contains(id)) favs.add(id);
+      }
+    } else {
+      favs.removeWhere((f) => want.contains(_normId(f)));
+    }
+    try {
+      await bind.mainStoreFav(favs: favs);
+      bind.mainLoadFavPeers();
+    } catch (_) {
+      if (!mounted) return;
+      showToast('操作失败，请重试');
+      return;
+    }
+    await _loadFavIds();
+    if (!mounted) return;
+    if (doAdd) {
+      showToast(want.length > 1
+          ? '已把 ${want.length} 台设备加入收藏夹'
+          : '已加入收藏夹，屏幕墙会显示这台设备');
+    } else {
+      showToast(want.length > 1 ? '已移出收藏夹' : '已移出收藏夹');
+    }
+  }
+
+  /// 收藏夹星标：实心=已在收藏夹（= 已在屏幕墙上），空心=没收藏，点一下切换
+  Widget _favStar(Peer p, {double size = 18}) {
+    final fav = _isFav(p.id);
+    return Tooltip(
+      message: fav ? '移出收藏夹（屏幕墙同步移除）' : '加入收藏夹（屏幕墙会显示这台设备）',
+      waitDuration: const Duration(milliseconds: 500),
+      child: InkWell(
+        onTap: () => _toggleFav([p.id]),
+        borderRadius: BorderRadius.circular(9),
+        child: SizedBox(
+          width: size + 12,
+          height: size + 8,
+          child: Icon(
+            fav ? Icons.star_rounded : Icons.star_border_rounded,
+            size: size,
+            color: fav ? const Color(0xFFF5A623) : const Color(0xFFBDBDBD),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addSelectedToFav() async {
+    final ids = _batchSel.toList();
+    if (ids.isEmpty) return;
+    await _toggleFav(ids, add: true);
+    if (!mounted) return;
     setState(() {
       _batch = false;
       _batchSel.clear();
@@ -1386,6 +1490,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 ],
               ),
             ),
+            _favStar(p, size: 19),
+            const SizedBox(width: 2),
             SizedBox(
               width: 32,
               height: 30,
@@ -1399,29 +1505,36 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _connectPeer(p);
                   } else if (v == 'wall') {
                     _addOneToWall(p.id);
+                  } else if (v == 'fav') {
+                    _toggleFav([p.id]);
                   } else if (v == 'copy') {
                     _copy(p.id);
                   } else if (v == 'delete') {
                     _deletePeer(p);
                   }
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
                       value: 'connect',
                       height: 36,
                       child: Text('连接', style: TextStyle(fontSize: 13))),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                       value: 'wall',
                       height: 36,
                       child: Text('添加到屏幕墙',
                           style: TextStyle(fontSize: 13))),
                   PopupMenuItem(
+                      value: 'fav',
+                      height: 36,
+                      child: Text(_isFav(p.id) ? '移出收藏夹' : '添加到收藏夹',
+                          style: const TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
                       value: 'copy',
                       height: 36,
                       child: Text('复制识别码',
                           style: TextStyle(fontSize: 13))),
-                  PopupMenuDivider(height: 1),
-                  PopupMenuItem(
+                  const PopupMenuDivider(height: 1),
+                  const PopupMenuItem(
                       value: 'delete',
                       height: 36,
                       child: Text('删除',
@@ -1512,6 +1625,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                           size: 16,
                           color: checked ? _C.blue : const Color(0xFFB0B0B0),
                         )
+                      else
+                        _favStar(p, size: 14),
                       else if (_hoverId == p.id)
                         Tooltip(
                           message: '从这个列表删除',
