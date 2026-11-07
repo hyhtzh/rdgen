@@ -471,7 +471,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         final plan = c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName;
         final days = c.daysLeft;
         final dayTxt = days >= 0 ? '剩 $days 天' : '生效中';
-        final exp = c.savedExpire.isEmpty ? '' : '${c.savedExpire.split(' ').first} 到期';
+        final expDay = c.savedExpire.isEmpty ? '' : c.savedExpire.split(' ').first;
+        final exp = expDay.isEmpty ? '' : '$expDay 到期';
         final sub = exp.isEmpty
             ? '授权生效中'
             : (days >= 0 ? '$exp · $dayTxt' : '$exp · 已到期');
