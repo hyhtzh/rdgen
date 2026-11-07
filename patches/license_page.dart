@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
+import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
 class _LC {
   static const blue = Color(0xFF1B72D6);
@@ -254,14 +255,24 @@ class _ActivateCardState extends State<_ActivateCard> {
     await gotoShop(context);
   }
 
-  /// 退出软件：桌面走 window_manager 关窗（Windows 上等于退出进程），
-  /// 移动端/异常情况退回 SystemNavigator.pop
+  /// 退出软件。
+  /// 主窗口开着 preventClose（关闭事件由页面自己接管），所以必须先放开再关，
+  /// 否则 windowManager.close() 会被直接忽略——表现就是「点了没反应」。
+  /// 另外先把子窗口（屏幕墙/连接窗）收掉，不然进程会残留。
   Future<void> _exitApp() async {
     try {
+      await rustDeskWinManager.closeAllSubWindows();
+    } catch (_) {}
+    try {
+      await windowManager.setPreventClose(false);
       await windowManager.close();
-    } catch (_) {
-      SystemNavigator.pop();
-    }
+      return;
+    } catch (_) {}
+    try {
+      await windowManager.destroy();
+      return;
+    } catch (_) {}
+    SystemNavigator.pop();
   }
 
   Future<void> _copyMachine() async {    if (_machine.isEmpty) return;
