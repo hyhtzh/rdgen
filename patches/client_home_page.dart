@@ -1124,6 +1124,20 @@ class _LicenseDetailDialog extends StatelessWidget {
   String get _plan =>
       _c.savedPlanName.isEmpty ? '已授权' : _c.savedPlanName;
 
+  /// 版本类型：标准版 / 专业版 / 手工授权（按套餐 id 显示）
+  String get _planType {
+    switch (_c.savedPlan) {
+      case 'std':
+        return '标准版';
+      case 'pro':
+        return '专业版';
+      case 'manual':
+        return '手工授权';
+      default:
+        return _c.savedPlan.isEmpty ? '—' : _c.savedPlan;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final days = _c.daysLeft;
@@ -1144,6 +1158,7 @@ class _LicenseDetailDialog extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            _kv('版本类型', _planType, bold: true),
             _kv('授权类型', _plan,
                 valueColor: const Color(0xFF2FA45C),
                 bold: true),
