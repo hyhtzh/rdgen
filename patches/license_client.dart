@@ -23,6 +23,10 @@ import 'package:flutter_hbb/models/platform_model.dart';
 /// 授权服务地址（nginx 反代到本机授权服务）
 const kLicenseBase = 'https://hd.fcpx0.cn/license';
 
+/// 地址簿服务（账号 + 云端设备清单）。
+/// 与授权服务分开部署：这里是用户的账号体系，授权那边只管激活码。
+const kAbBase = 'https://api.hydesk.cn';
+
 /// 购买授权的落地页（激活页「购买」与详情弹窗「续费升级」都跳这里）
 const kPurchaseUrl = 'https://1t.8kub.cn';
 
