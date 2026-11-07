@@ -1624,10 +1624,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                               : Icons.check_box_outline_blank,
                           size: 16,
                           color: checked ? _C.blue : const Color(0xFFB0B0B0),
-                        )
-                      else
-                        _favStar(p, size: 14),
-                      else if (_hoverId == p.id)
+                        ),
+                      // 收藏夹星标常驻：卡片上直接能点，不用开菜单
+                      if (!_batch) _favStar(p, size: 14),
+                      if (!_batch && _hoverId == p.id)
                         Tooltip(
                           message: '从这个列表删除',
                           waitDuration: const Duration(milliseconds: 600),
