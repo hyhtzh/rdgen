@@ -20,6 +20,7 @@ import 'package:flutter_hbb/desktop/pages/remote_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
+import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）
 const _kCapacities = [4, 9, 16, 32, 64];
@@ -123,7 +124,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   /// 按配置里的收藏 id 对齐本窗口的收藏列表。
   /// 先读 id（不依赖推送事件），变了就重新加载；事件没送到本引擎时，
-  /// 退化成用 id 造占位 Peer，至少让设备出现在墙里。
+  /// 退化成用「主窗口写下的快照」造 Peer（带别名/在线状态/密码），
+  /// 快照也没有才用裸 id 兜底。
   Future<void> _syncFavPeers({bool force = false}) async {
     List<String> ids;
     try {
@@ -131,25 +133,124 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     } catch (_) {
       return;
     }
-    if (!force && _favIdsSeen != null && _sameIds(ids, _favIdsSeen!)) return;
-    _favIdsSeen = ids;
+    final changed = _favIdsSeen == null || !_sameIds(ids, _favIdsSeen!);
+    if (changed || force) {
+      _favIdsSeen = ids;
+      try {
+        bind.mainLoadFavPeers();
+      } catch (_) {}
+    }
+    await _pullWallSnap();
+    if (!mounted) return;
+    setState(() => _rebuildFavStubs(ids));
+    if (!changed) return;
+    // 事件可能只送到主窗口的引擎，稍等再看一眼，仍没有就用快照/裸 id 兜底
+    await Future.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    setState(() => _rebuildFavStubs(ids));
+  }
+
+  void _rebuildFavStubs(List<String> ids) {
+    final loaded = gFFI.favoritePeersModel.peers
+        .map((p) => p.id.replaceAll(' ', ''))
+        .toSet();
+    _favStubs
+      ..clear()
+      ..addAll(ids
+          .where((id) => !loaded.contains(id.replaceAll(' ', '')))
+          .map((id) {
+        final key = id.replaceAll(' ', '');
+        final s = _snap[key];
+        if (s == null) return Peer.fromJson({'id': key});
+        final p = Peer.fromJson({
+          'id': key,
+          'alias': s.alias,
+          'hostname': s.hostname,
+        });
+        p.online = s.online;
+        return p;
+      }));
+  }
+
+  // ---------------- 主窗口数据 ----------------
+
+  Map<String, _WallSnapPeer> _snap = {};
+  Map<String, String> _pwCache = {};
+
+  /// 屏幕墙跑在独立进程里，收藏模型在本进程是空的（推送事件只送到主窗口），
+  /// 别名/在线状态/密码都靠跨窗口 call 回主窗口问一嘴。
+  Future<void> _pullWallSnap() async {
+    if (!_isChildWindow) return; // 在主窗口里跑，模型本来就有
     try {
-      bind.mainLoadFavPeers();
+      final r = await rustDeskWinManager.call(
+          WindowType.Main, 'wall_get_peers', '');
+      final res = r.result;
+      if (res is! String || res.isEmpty) return;
+      final j = jsonDecode(res);
+      final list = (j is Map) ? j['peers'] : null;
+      if (list is! List) return;
+      final next = <String, _WallSnapPeer>{};
+      for (final raw in list) {
+        if (raw is! Map) continue;
+        final m = Map<String, dynamic>.from(raw);
+        final id = (m['id'] ?? '').toString().replaceAll(' ', '');
+        if (id.isEmpty) continue;
+        next[id] = _WallSnapPeer(
+          id: id,
+          alias: (m['alias'] ?? '').toString(),
+          hostname: (m['hostname'] ?? '').toString(),
+          online: m['online'] == true,
+          password: (m['password'] ?? '').toString(),
+        );
+      }
+      _snap = next;
     } catch (_) {}
-    if (!mounted) return;
-    setState(() {});
-    // 事件可能只送到主窗口的引擎，稍等再看一眼，仍没有就用 id 兜底
-    await Future.delayed(const Duration(milliseconds: 900));
-    if (!mounted) return;
-    final loaded =
-        gFFI.favoritePeersModel.peers.map((p) => p.id).toList(growable: false);
-    setState(() {
-      _favStubs
-        ..clear()
-        ..addAll(ids
-            .where((id) => !loaded.contains(id))
-            .map((id) => Peer.fromJson({'id': id})));
-    });
+  }
+
+  /// 手输密码后存下来，下次进墙直接出画面
+  Future<void> _askPassword(Peer p) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('输入设备密码',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('「${p.alias.isEmpty ? formatAbId(p.id) : p.alias}」还没有保存密码，'
+                '输入后在墙里直接预览。',
+                style: const TextStyle(fontSize: 12.5, height: 1.6)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              obscureText: true,
+              decoration: const InputDecoration(
+                hintText: '设备密码 / 临时密码',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => Navigator.of(ctx).pop(true),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    final pw = ctrl.text.trim();
+    if (ok != true || pw.isEmpty) return;
+    _pwCache[p.id.replaceAll(' ', '')] = pw;
+    if (mounted) setState(() {});
   }
 
   bool _sameIds(List<String> a, List<String> b) =>
@@ -269,12 +370,13 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     return all.sublist(0, _capacity);
   }
 
-  /// 收藏模型里的 Peer 通常不带密码（密码存在「最近连接」里），
-  /// 拿不到就直接判成「未存密码」，实时预览永远起不来。
-  /// 这里回落一次最近连接的密码，存过就能直接出画面。
+  /// 密码可能在三处：Peer 自带 / 主窗口快照 / 本进程最近连接，
+  /// 最后还有用户在墙里手输的缓存。任何一处拿到就直接出画面。
   String _pwOf(Peer p) {
     if (p.password.isNotEmpty) return p.password;
     final key = p.id.replaceAll(' ', '');
+    final snapPw = _snap[key]?.password ?? '';
+    if (snapPw.isNotEmpty) return snapPw;
     try {
       for (final r in gFFI.recentPeersModel.peers) {
         if (r.id.replaceAll(' ', '') == key && r.password.isNotEmpty) {
@@ -282,7 +384,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         }
       }
     } catch (_) {}
-    return '';
+    return _pwCache[key] ?? '';
   }
 
   // ---------------- 窗口动作 ----------------
@@ -839,6 +941,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                   password: pw.isEmpty ? null : pw,
                 ),
                 onRemove: () => _removePeer(peer),
+                onSetPassword: () => _askPassword(peer),
                 onGroupPointer: _groupOn
                     ? (id, down) => _groupPointer(id, down)
                     : null,
@@ -879,6 +982,9 @@ class _WallTile extends StatefulWidget {
   /// 从墙里移除这台设备
   final VoidCallback onRemove;
 
+  /// 没存密码时，让用户手输一次
+  final VoidCallback onSetPassword;
+
   /// 群控：down/up=按下/抬起；id 为本格识别码
   final void Function(String id, bool down)? onGroupPointer;
 
@@ -889,6 +995,7 @@ class _WallTile extends StatefulWidget {
     required this.live,
     required this.onOpen,
     required this.onRemove,
+    required this.onSetPassword,
     this.onGroupPointer,
   }) : super(key: key);
 
@@ -922,9 +1029,10 @@ class _WallTileState extends State<_WallTile> {
   @override
   Widget build(BuildContext context) {
     final peer = widget.peer;
+    // 小窗标题：优先显示用户自己起的名字，没名字才退到识别码
     final name = peer.alias.isNotEmpty
         ? peer.alias
-        : (peer.hostname.isNotEmpty ? peer.hostname : peer.id);
+        : (peer.hostname.isNotEmpty ? peer.hostname : formatAbId(peer.id));
     return Container(
       decoration: BoxDecoration(
         color: _C.tile,
@@ -981,15 +1089,6 @@ class _WallTileState extends State<_WallTile> {
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    peer.id,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: Colors.white70,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
                     widget.live
                         ? '预览中'
                         : (widget.password.isEmpty ? '未存密码' : '已暂停'),
@@ -1036,30 +1135,48 @@ class _WallTileState extends State<_WallTile> {
   Widget _buildPreview() {
     if (!widget.live || _toolbarState == null) {
       final p = widget.peer;
+      final bool needPw = p.online && widget.password.isEmpty;
       final String hint;
       if (!p.online) {
         hint = '设备离线';
       } else if (widget.password.isEmpty) {
-        hint = '未保存密码';
+        hint = '这条设备还没保存密码';
       } else {
         hint = '已暂停预览';
       }
       return InkWell(
-        onTap: widget.onOpen,
+        onTap: needPw ? () => widget.onSetPassword() : widget.onOpen,
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.desktop_windows_outlined,
+              Icon(needPw ? Icons.key_outlined : Icons.desktop_windows_outlined,
                   size: 30, color: Colors.white24),
               const SizedBox(height: 6),
               Text(hint,
                   style: const TextStyle(fontSize: 11, color: Colors.white38)),
-              const SizedBox(height: 2),
-              Text(widget.password.isEmpty ? '双击连接，勾选记住密码后自动出画面' : '双击进入控制',
+              const SizedBox(height: 6),
+              if (needPw)
+                OutlinedButton(
+                  onPressed: widget.onSetPassword,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: BorderSide(color: Colors.white.withOpacity(0.35)),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    minimumSize: const Size(0, 28),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    textStyle: const TextStyle(fontSize: 11.5),
+                  ),
+                  child: const Text('输入密码后预览'),
+                )
+              else
+                Text(
+                  p.online ? '双击进入控制' : '双击尝试连接',
                   textAlign: TextAlign.center,
                   style:
-                      const TextStyle(fontSize: 10, color: Colors.white24)),
+                      const TextStyle(fontSize: 10, color: Colors.white24),
+                ),
             ],
           ),
         ),
@@ -1264,4 +1381,20 @@ class _AddPeersDialogState extends State<_AddPeersDialog> {
       ),
     );
   }
+}
+
+/// 主窗口落盘的收藏快照（屏幕墙进程读不到收藏模型，只能靠这份）
+class _WallSnapPeer {
+  final String id;
+  final String alias;
+  final String hostname;
+  final bool online;
+  final String password;
+  const _WallSnapPeer({
+    required this.id,
+    this.alias = '',
+    this.hostname = '',
+    this.online = false,
+    this.password = '',
+  });
 }
