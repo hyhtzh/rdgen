@@ -390,7 +390,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             AnimatedBuilder(
               animation: gFFI.favoritePeersModel,
               builder: (context, _) {
-                final n = gFFI.favoritePeersModel.peers.length;
+                // 数量按「墙里实际铺出来的格子」算：收藏模型还没同步到本窗口时
+                // 会显示 0，但格子其实已经用占位排出来了，看起来就像坏了。
+                final n = _peers.length;
                 return Text('$n 台设备',
                     style: const TextStyle(fontSize: 11.5, color: _C.sub));
               },
