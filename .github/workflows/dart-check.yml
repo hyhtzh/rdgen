@@ -42,6 +42,7 @@ jobs:
           cp patches/license_page.dart patches/license_client.dart src/flutter/lib/desktop/pages/
           python3 patches/patch_client_ui.py src
           python3 patches/patch_license.py src desktop
+          python3 patches/patch_toolbar_eye.py src
           grep -n "ClientHomePage" src/flutter/lib/main.dart
 
       - name: Pub get
@@ -52,7 +53,7 @@ jobs:
         working-directory: src/flutter
         run: |
           set +e
-          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/pages/simple_host_page.dart lib/desktop/pages/settings_page.dart lib/desktop/pages/address_book_page.dart lib/desktop/pages/license_page.dart lib/desktop/pages/license_client.dart lib/utils/multi_window_manager.dart lib/main.dart lib/consts.dart 2>&1 | tee /tmp/analyze.log
+          flutter analyze lib/desktop/pages/client_home_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/pages/simple_host_page.dart lib/desktop/pages/settings_page.dart lib/desktop/pages/address_book_page.dart lib/desktop/pages/license_page.dart lib/desktop/pages/license_client.dart lib/utils/multi_window_manager.dart lib/desktop/widgets/remote_toolbar.dart lib/main.dart lib/consts.dart 2>&1 | tee /tmp/analyze.log
           echo "---- errors only ----"
           grep -E "^\s+(error|warning)" /tmp/analyze.log | head -80
           exit 0
