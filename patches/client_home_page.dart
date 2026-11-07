@@ -3,7 +3,6 @@
 // 中部：工具条 + 搜索 + 设备列表（最近 / 收藏），底部状态条。
 // 由 patch_client_ui.py 注入到 flutter/lib/desktop/pages/ 下。
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,7 +21,7 @@ import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
-const _kBrandUrl = 'http://www.hydesk.cn';
+const _kBrandUrl = 'http://ww.hydesk.cn';
 
 /// 设计稿取色
 class _C {
@@ -71,7 +70,6 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   bool _grid = false;
   bool _asc = true;
   bool _showSearch = true;
-  String _localIp = '';
 
   @override
   void initState() {
@@ -81,7 +79,6 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     AddressBookStore.instance.load();
     // 设置页依赖的全局状态，原版由 DesktopHomePage 注册，这里必须补上
     ensureStopServiceState();
-    _loadLocalIp();
     // 屏幕墙进程如果是被任务栏 X 直接关掉的，低帧率配置可能没恢复，这里兜底
     WallFps.restore();
     // 主窗口设了 preventClose，必须自己接管关闭事件，否则任务栏的 X 也点不动
@@ -136,30 +133,6 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     try {
       await gFFI.serverModel.fetchID();
     } catch (_) {}
-  }
-
-  Future<void> _loadLocalIp() async {
-    String ip = '';
-    try {
-      final list = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-        includeLoopback: false,
-      );
-      for (final i in list) {
-        for (final a in i.addresses) {
-          if (a.isLoopback) continue;
-          final s = a.address;
-          if (s.startsWith('192.168.') || s.startsWith('10.')) {
-            ip = s;
-            break;
-          }
-          if (ip.isEmpty) ip = s;
-        }
-        if (ip.startsWith('192.168.') || ip.startsWith('10.')) break;
-      }
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() => _localIp = ip.isEmpty ? '-' : ip);
   }
 
   // ---------------- 数据 ----------------
@@ -482,26 +455,105 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               ),
             ),
             const SizedBox(height: 14),
-            Row(
-              children: const [
-                Icon(Icons.public, size: 16, color: _C.sub),
-                SizedBox(width: 7),
-                Text('IP 直连',
-                    style: TextStyle(fontSize: 13, color: _C.sub)),
-              ],
-            ),
-            const SizedBox(height: 2),
-            Text(
-              _localIp.isEmpty ? '获取中…' : _localIp,
-              style: const TextStyle(
-                fontSize: 19,
-                fontWeight: FontWeight.w400,
-                color: _C.text,
-              ),
-            ),
+            _buildLicenseCard(),
           ],
         );
       },
+    );
+  }
+
+  /// 授权信息卡：套餐类型 + 剩余天数，点「详情」看完整授权信息
+  Widget _buildLicenseCard() {
+    return AnimatedBuilder(
+      animation: LicenseClient.instance.revoked,
+      builder: (context, _) {
+        final c = LicenseClient.instance;
+        final plan = c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName;
+        final days = c.daysLeft;
+        final dayTxt = days >= 0 ? '剩 $days 天' : '生效中';
+        final exp = c.savedExpire.isEmpty ? '' : '${c.savedExpire.split(' ').first} 到期';
+        final sub = exp.isEmpty
+            ? '授权生效中'
+            : (days >= 0 ? '$exp · $dayTxt' : '$exp · 已到期');
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _showLicenseDetail,
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEDF7EE),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFCDEBD4)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 4,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2FA45C),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.verified_outlined,
+                                size: 15, color: Color(0xFF2FA45C)),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text('$plan · $dayTxt',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF1E6B3C))),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(sub,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11.5, color: Color(0xFF5C8A67))),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFCDEBD4)),
+                    ),
+                    child: const Text('详情',
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            color: Color(0xFF2FA45C),
+                            fontWeight: FontWeight.w500)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+
+  void _showLicenseDetail() {
+    showDialog(
+      context: context,
+      builder: (ctx) => _LicenseDetailDialog(),
     );
   }
 
@@ -1033,10 +1085,6 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 style: const TextStyle(fontSize: 12.5, color: _C.sub),
               ),
               const Spacer(),
-              Text(
-                _localIp.isEmpty ? '' : '本机 IP $_localIp',
-                style: const TextStyle(fontSize: 12, color: Color(0xFFAAAAAA)),
-              ),
             ],
           ),
         );
@@ -1063,5 +1111,203 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         ),
       ),
     );
+  }
+}
+
+/// 授权详情弹窗：套餐 / 到期 / 设备占用 / 激活码，支持续费升级与本机解绑。
+class _LicenseDetailDialog extends StatelessWidget {
+  final LicenseClient _c = LicenseClient.instance;
+
+  _LicenseDetailDialog();
+
+  String get _plan =>
+      _c.savedPlanName.isEmpty ? '已授权' : _c.savedPlanName;
+
+  @override
+  Widget build(BuildContext context) {
+    final days = _c.daysLeft;
+    final used = _c.savedDevicesUsed;
+    final max = _c.savedDevicesMax;
+    final code = _c.savedCode;
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+      contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+      title: const Text('授权详情',
+          style: TextStyle(
+              fontSize: 16.5, fontWeight: FontWeight.w600, color: _C.text)),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _kv('授权类型', _plan,
+                valueColor: const Color(0xFF2FA45C),
+                bold: true),
+            _kv('到期时间',
+                _c.savedExpire.isEmpty ? '—' : _c.savedExpire.split(' ').first),
+            _kv('剩余天数', days >= 0 ? '$days 天' : '—'),
+            _kv('设备占用',
+                used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
+            const SizedBox(height: 6),
+            const Text('激活码',
+                style: TextStyle(fontSize: 12.5, color: _C.sub)),
+            const SizedBox(height: 6),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF6F8FB),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE3E8F0)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      code.isEmpty ? '—' : code,
+                      style: const TextStyle(
+                          fontSize: 13.5,
+                          letterSpacing: 0.6,
+                          color: _C.text,
+                          fontFamily: 'Consolas',
+                          fontFamilyFallback: ['Menlo', 'monospace']),
+                    ),
+                  ),
+                  InkWell(
+                    onTap: () => _copy(context, code),
+                    child: const Text('复制',
+                        style: TextStyle(
+                            fontSize: 12.5, color: Color(0xFF1B72D6))),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭',
+              style: TextStyle(fontSize: 13.5, color: _C.sub)),
+        ),
+        TextButton(
+          onPressed: () => _upgrade(context),
+          child: const Text('续费升级',
+              style: TextStyle(
+                  fontSize: 13.5,
+                  color: Color(0xFF1B72D6),
+                  fontWeight: FontWeight.w500)),
+        ),
+        TextButton(
+          onPressed: () => _unbind(context),
+          child: const Text('解绑设备',
+              style: TextStyle(
+                  fontSize: 13.5,
+                  color: _C.red,
+                  fontWeight: FontWeight.w500)),
+        ),
+        ElevatedButton(
+          onPressed: () => _copy(context, code),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF1B72D6),
+            elevation: 0,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8)),
+          ),
+          child: const Text('复制激活码',
+              style: TextStyle(
+                  fontSize: 13.5,
+                  color: Colors.white,
+                  fontWeight: FontWeight.w500)),
+        ),
+      ],
+    );
+  }
+
+  Widget _kv(String k, String v,
+      {Color? valueColor, bool bold = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 9),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 74,
+            child: Text(k,
+                style:
+                    const TextStyle(fontSize: 12.5, color: _C.sub)),
+          ),
+          Expanded(
+            child: Text(v,
+                style: TextStyle(
+                    fontSize: 13.5,
+                    color: valueColor ?? _C.text,
+                    fontWeight:
+                        bold ? FontWeight.w600 : FontWeight.w400)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _copy(BuildContext context, String text) {
+    if (text.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: text));
+    Navigator.of(context).pop();
+    showToast('已复制');
+  }
+
+  Future<void> _upgrade(BuildContext context) async {
+    try {
+      await launchUrlString(kPurchaseUrl,
+          mode: LaunchMode.externalApplication);
+    } catch (_) {
+      Clipboard.setData(const ClipboardData(text: kPurchaseUrl));
+      if (context.mounted) {
+        Navigator.of(context).pop();
+        showToast('已复制购买地址：$kPurchaseUrl');
+      }
+    }
+  }
+
+  Future<void> _unbind(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('解绑本机',
+            style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w600)),
+        content: const Text(
+            '解绑后本机会立即退出授权状态，需要重新输入激活码才能使用。确定解绑吗？',
+            style: TextStyle(fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消',
+                style: TextStyle(color: _C.sub)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _C.red,
+              elevation: 0,
+            ),
+            child: const Text('确认解绑',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _c.localDeactivate();
   }
 }
