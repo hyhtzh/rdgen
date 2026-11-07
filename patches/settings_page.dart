@@ -55,6 +55,10 @@ class _SettingsRouteState extends State<SettingsRoute> {
   String _version = '';
   String _quality = 'balanced';
 
+  /// UDP 打洞开关。RustDesk 侧键名固定为 enable-udp-punch，未写过时按「开」处理
+  /// （服务端行为是「只有显式写 N 才关」）。
+  bool _udpPunch = true;
+
   @override
   void initState() {
     super.initState();
@@ -83,6 +87,21 @@ class _SettingsRouteState extends State<SettingsRoute> {
     try {
       final q = await bind.mainGetUserDefaultOption(key: kOptionImageQuality);
       if (mounted && q is String && q.isNotEmpty) setState(() => _quality = q);
+    } catch (_) {}
+    try {
+      final v = await bind.mainGetUserDefaultOption(key: _kUdpPunch);
+      final on = !(v is String && v.trim().toUpperCase() == 'N');
+      if (mounted) setState(() => _udpPunch = on);
+    } catch (_) {}
+  }
+
+  static const _kUdpPunch = 'enable-udp-punch';
+
+  Future<void> _setUdpPunch(bool on) async {
+    setState(() => _udpPunch = on);
+    try {
+      await bind.mainSetUserDefaultOption(
+          key: _kUdpPunch, value: on ? 'Y' : 'N');
     } catch (_) {}
   }
 
@@ -212,6 +231,32 @@ class _SettingsRouteState extends State<SettingsRoute> {
         _row('语言', _langPicker()),
         const SizedBox(height: 4),
         _row('主题', _themePicker()),
+      ]),
+      _card('网络', [
+        _row(
+          'UDP 打洞',
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Switch(
+                value: _udpPunch,
+                activeColor: _SC.blue,
+                onChanged: _setUdpPunch,
+              ),
+              const SizedBox(width: 8),
+              Text(_udpPunch ? '已开启' : '已关闭',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: _udpPunch ? _SC.blue : _SC.sub)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          '开启后两端会尝试 UDP 直连打洞，内网/同城环境下画质与延迟明显更好；'
+          '打洞失败时会自动回落到中继，不会连不上。建议保持开启。',
+          style: TextStyle(fontSize: 12.5, height: 1.65, color: _SC.sub),
+        ),
       ]),
       _card('说明', [
         const Text(
