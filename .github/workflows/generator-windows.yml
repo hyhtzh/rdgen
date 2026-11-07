@@ -205,6 +205,9 @@ jobs:
           curl -sSL -o patch_license.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
           python patch_license.py . desktop
+          curl -sSL -o patch_toolbar_eye.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py
+          python patch_toolbar_eye.py .
 
       - name: Set custom app version
         continue-on-error: true
