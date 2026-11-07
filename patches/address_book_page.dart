@@ -356,6 +356,31 @@ Future<int> addPeersToScreenWall(List<String> ids) async {
   return added;
 }
 
+/// 从屏幕墙（=收藏夹）里移除设备。屏幕墙就是收藏列表，所以移除等于取消收藏。
+Future<int> removePeersFromScreenWall(List<String> ids) async {
+  final clean = ids
+      .map((s) => s.replaceAll(' ', ''))
+      .where((s) => s.isNotEmpty)
+      .toSet();
+  if (clean.isEmpty) return 0;
+  List<String> favs;
+  try {
+    favs = (await bind.mainGetFav()).toList();
+  } catch (_) {
+    return -1;
+  }
+  final before = favs.length;
+  favs = favs.where((s) => !clean.contains(s.replaceAll(' ', ''))).toList();
+  if (favs.length == before) return 0;
+  try {
+    await bind.mainStoreFav(favs: favs);
+    bind.mainLoadFavPeers();
+  } catch (_) {
+    return -1;
+  }
+  return before - favs.length;
+}
+
 /// 内嵌在首页设备区里的地址簿视图
 class AddressBookView extends StatefulWidget {
   final String query;
@@ -682,7 +707,7 @@ class _AddressBookViewState extends State<AddressBookView> {
   }
 
   Widget _row(AbEntry e) {
-    final online = _onlineOf(e.id);
+    final status = _statusOf(e.id);
     final store = AddressBookStore.instance;
     final checked = _sel.contains(e.id);
     // 首字做头像文字：中文取第一个汉字，英文/数字取首字符
@@ -702,7 +727,7 @@ class _AddressBookViewState extends State<AddressBookView> {
       },
       hoverColor: _AC.hover,
       child: Container(
-        height: 62,
+        height: 54,
         padding: const EdgeInsets.only(left: 16, right: 6),
         child: Row(
           children: [
@@ -718,23 +743,23 @@ class _AddressBookViewState extends State<AddressBookView> {
               const SizedBox(width: 4),
             ],
             Container(
-              width: 44,
-              height: 44,
+              width: 36,
+              height: 36,
               decoration: BoxDecoration(
                 color: abAvatarColor(seed),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(7),
               ),
               alignment: Alignment.center,
               child: Text(
                 letter.toUpperCase(),
                 style: const TextStyle(
-                  fontSize: 19,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
                   color: Colors.white,
                 ),
               ),
             ),
-            const SizedBox(width: 14),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -743,23 +768,21 @@ class _AddressBookViewState extends State<AddressBookView> {
                   Row(
                     children: [
                       Container(
-                        width: 7,
-                        height: 7,
+                        width: 6,
+                        height: 6,
                         decoration: BoxDecoration(
-                          color: online
-                              ? const Color(0xFF3DBE5B)
-                              : const Color(0xFFC6CBD4),
+                          color: _dotColor(status),
                           shape: BoxShape.circle,
                         ),
                       ),
-                      const SizedBox(width: 7),
+                      const SizedBox(width: 6),
                       Flexible(
                         child: Text(
                           seed,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                              fontSize: 14,
+                              fontSize: 13.5,
                               fontWeight: FontWeight.w500,
                               color: _AC.text),
                         ),
@@ -780,12 +803,12 @@ class _AddressBookViewState extends State<AddressBookView> {
                       ],
                     ],
                   ),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: 2),
                   Text(
                     e.note.isEmpty ? second : '$second · ${e.note}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: _AC.sub),
+                    style: const TextStyle(fontSize: 11.5, color: _AC.sub),
                   ),
                 ],
               ),
@@ -862,17 +885,40 @@ class _AddressBookViewState extends State<AddressBookView> {
     );
   }
 
-  bool _onlineOf(String id) {
+  /// 地址簿里的设备不一定在「最近/收藏」里，查不到就说明本机没它的在线信息。
+  /// 以前查不到统一当离线，于是整页都是灰点；现在区分成三态：
+  ///   online / offline / unknown
+  int _statusOf(String id) {
     final key = _norm(id);
     try {
       for (final p in gFFI.favoritePeersModel.peers) {
-        if (_norm(p.id) == key) return p.online;
+        if (_norm(p.id) == key) {
+          return p.online ? _kStatusOnline : _kStatusOffline;
+        }
       }
       for (final p in gFFI.recentPeersModel.peers) {
-        if (_norm(p.id) == key) return p.online;
+        if (_norm(p.id) == key) {
+          return p.online ? _kStatusOnline : _kStatusOffline;
+        }
       }
     } catch (_) {}
-    return false;
+    return _kStatusUnknown;
+  }
+
+  static const _kStatusOnline = 0;
+  static const _kStatusOffline = 1;
+  static const _kStatusUnknown = 2;
+
+  /// 绿 = 在线，黄 = 本机还没有它的在线信息，红 = 离线
+  Color _dotColor(int status) {
+    switch (status) {
+      case _kStatusOnline:
+        return const Color(0xFF3DBE5B);
+      case _kStatusOffline:
+        return const Color(0xFFE23B3B);
+      default:
+        return const Color(0xFFE8A317);
+    }
   }
 
   /// 收藏里的 ID 可能带分隔空格（"982 471 635"），地址簿里存的是去掉空格的，
