@@ -4,6 +4,7 @@
 // 宿主有两种：
 //  1) 独立窗口（desktop_multi_window 子窗口，系统标题栏是隐藏的，必须自绘 + 自己拖动/关闭）；
 //  2) 主窗口内 Navigator 压栈（独立窗口创建失败时的降级，带返回栏）。
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -93,6 +94,11 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   bool get _isChildWindow => _windowId != null;
 
+  /// 收藏列表在本窗口加载不出来时的兜底占位（只有 id，够显示和点开）
+  final List<Peer> _favStubs = [];
+  List<String>? _favIdsSeen;
+  Timer? _favTimer;
+
   @override
   void initState() {
     super.initState();
@@ -104,6 +110,56 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _releasePreventClose();
     });
+    // 墙跑在独立子进程里，本地配置可能还是授权前的旧快照；进来先拉一次，
+    // 刚在别的窗口兑换完附加包就能直接解锁档位。
+    _pullLicense();
+    // 收藏列表同理：主窗口「加入屏幕墙」只是写配置 + 在主窗口刷新模型，
+    // 本窗口收不到那次推送，会一直显示「没有设备」。这里自己对齐。
+    _syncFavPeers(force: true);
+    _favTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted) _syncFavPeers();
+    });
+  }
+
+  /// 按配置里的收藏 id 对齐本窗口的收藏列表。
+  /// 先读 id（不依赖推送事件），变了就重新加载；事件没送到本引擎时，
+  /// 退化成用 id 造占位 Peer，至少让设备出现在墙里。
+  Future<void> _syncFavPeers({bool force = false}) async {
+    List<String> ids;
+    try {
+      ids = (await bind.mainGetFav()).toList();
+    } catch (_) {
+      return;
+    }
+    if (!force && _favIdsSeen != null && _sameIds(ids, _favIdsSeen!)) return;
+    _favIdsSeen = ids;
+    try {
+      bind.mainLoadFavPeers();
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {});
+    // 事件可能只送到主窗口的引擎，稍等再看一眼，仍没有就用 id 兜底
+    await Future.delayed(const Duration(milliseconds: 900));
+    if (!mounted) return;
+    final loaded =
+        gFFI.favoritePeersModel.peers.map((p) => p.id).toList(growable: false);
+    setState(() {
+      _favStubs
+        ..clear()
+        ..addAll(ids
+            .where((id) => !loaded.contains(id))
+            .map((id) => Peer.fromJson({'id': id})));
+    });
+  }
+
+  bool _sameIds(List<String> a, List<String> b) =>
+      a.length == b.length && a.every((x) => b.contains(x));
+
+  Future<void> _pullLicense() async {
+    try {
+      await LicenseClient.instance.check();
+    } catch (_) {}
+    if (mounted) setState(() {});
   }
 
   void _releasePreventClose() {
@@ -116,6 +172,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   @override
   void dispose() {
+    _favTimer?.cancel();
     WallFps.restore();
     _setGroupListeners(false);
     super.dispose();
@@ -163,7 +220,12 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   int get _columns => math.sqrt(_capacity).round().clamp(1, 8);
 
   List<Peer> get _peers {
-    final all = gFFI.favoritePeersModel.peers;
+    final loaded = gFFI.favoritePeersModel.peers;
+    // 模型里还没有的收藏，用占位补上（本窗口收不到推送事件时不至于空着）
+    final all = <Peer>[
+      ...loaded,
+      ..._favStubs.where((s) => !loaded.any((p) => p.id == s.id)),
+    ];
     if (all.length <= _capacity) return all;
     return all.sublist(0, _capacity);
   }
@@ -364,8 +426,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           _iconButton(Icons.playlist_add_check, '添加设备到屏幕墙',
               _showAddPeersDialog),
           _iconButton(Icons.refresh, '刷新', () {
-            bind.mainLoadFavPeers();
-            setState(() {});
+            _syncFavPeers(force: true);
           }),
         ],
       ),
@@ -558,14 +619,25 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
   }
 
-  void _pickCapacity(int value) {
+  Future<void> _pickCapacity(int value) async {
     // 定价：9 屏以下免费；16 屏 4 元/月、32 屏 12 元/月、64 屏 20 元/月
-    if ((value == 16 && !licenseFeature('wall16')) ||
+    bool locked() =>
+        (value == 16 && !licenseFeature('wall16')) ||
         (value == 32 && !licenseFeature('wall32')) ||
-        (value == 64 && !licenseFeature('wall64'))) {
-      final price = value == 16 ? '4' : (value == 32 ? '12' : '20');
-      _showUpgradeDialog('$value 屏布局（$price 元/月）', 'pa$value');
-      return;
+        (value == 64 && !licenseFeature('wall64'));
+    if (locked()) {
+      // 可能是刚在别的窗口兑换完、本进程配置还没刷新：先拉一次再判定，
+      // 免得已付费的用户被收费弹窗再拦一次。
+      try {
+        await LicenseClient.instance.check();
+      } catch (_) {}
+      if (!mounted) return;
+      if (locked()) {
+        final price = value == 16 ? '4' : (value == 32 ? '12' : '20');
+        _showUpgradeDialog('$value 屏布局（$price 元/月）', 'pa$value');
+        return;
+      }
+      setState(() {});
     }
     // 切到 4 屏以上且没有群控授权时，自动关掉群控，避免白用
     if (_groupOn && value > 4 && !licenseFeature('group')) {
@@ -665,6 +737,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
     if (sel == null || sel.isEmpty) return;
     final n = await addPeersToScreenWall(sel.toList());
+    if (!mounted) return;
+    // 加完立刻按配置对齐一次，不用等 3 秒轮询
+    await _syncFavPeers(force: true);
     if (!mounted) return;
     if (n < 0) {
       showToast('添加失败，请重试');
