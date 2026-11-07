@@ -70,6 +70,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   bool _grid = false;
   bool _asc = true;
   bool _showSearch = true;
+  // 批量模式：勾选多台设备一次性加入屏幕墙（最近/收藏页）
+  bool _batch = false;
+  final Set<String> _batchSel = {};
 
   @override
   void initState() {
@@ -293,6 +296,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     )
                   : _buildPeerArea(),
             ),
+            if (_batch && _tab != 2 && _batchSel.isNotEmpty) _batchBar(),
             _buildStatusBar(),
           ],
         ),
@@ -783,6 +787,12 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               () => setState(() => _showSearch = !_showSearch),
               active: _showSearch,
             ),
+            _plainToolIcon(Icons.playlist_add_check, '批量', () {
+              setState(() {
+                _batch = !_batch;
+                _batchSel.clear();
+              });
+            }, active: _batch),
             _plainToolIcon(Icons.refresh, '刷新', () {
               bind.mainLoadFavPeers();
               bind.mainLoadRecentPeers();
@@ -813,7 +823,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       waitDuration: const Duration(milliseconds: 400),
       child: InkWell(
         onTap: () {
-          setState(() => _tab = index);
+          setState(() {
+            _tab = index;
+            _batch = false;
+            _batchSel.clear();
+          });
           if (index == 0) {
             bind.mainLoadRecentPeers();
           } else if (index == 1) {
@@ -886,6 +900,75 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   // ---------------- 设备区 ----------------
 
+  /// 批量模式底部动作条：全选 / 添加到屏幕墙 / 取消
+  Widget _batchBar() {
+    final list = _filtered(_peers.peers);
+    final allSel = list.isNotEmpty && list.every((p) => _batchSel.contains(p.id));
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      color: const Color(0xFFEDF4FC),
+      child: Row(
+        children: [
+          Text('已选 ${_batchSel.length} 台',
+              style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                  color: _C.text)),
+          const Spacer(),
+          TextButton(
+            onPressed: () => setState(() {
+              if (allSel) {
+                _batchSel.clear();
+              } else {
+                _batchSel.addAll(list.map((p) => p.id));
+              }
+            }),
+            child: Text(allSel ? '全不选' : '全选',
+                style: const TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
+            onPressed: _addSelectedToWall,
+            icon: const Icon(Icons.tv, size: 15),
+            label: const Text('添加到屏幕墙', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton(
+            onPressed: () => setState(() {
+              _batch = false;
+              _batchSel.clear();
+            }),
+            child: const Text('取消',
+                style: TextStyle(fontSize: 12.5, color: _C.sub)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addSelectedToWall() async {
+    final n = await addPeersToScreenWall(_batchSel.toList());
+    if (!mounted) return;
+    if (n < 0) {
+      showToast('添加失败，请重试');
+      return;
+    }
+    showToast(n == 0 ? '所选设备都已在屏幕墙里' : '已把 $n 台设备加入屏幕墙');
+    setState(() {
+      _batch = false;
+      _batchSel.clear();
+    });
+  }
+
+  Future<void> _addOneToWall(String id) async {
+    final n = await addPeersToScreenWall([id]);
+    if (!mounted) return;
+    if (n < 0) {
+      showToast('添加失败，请重试');
+      return;
+    }
+    showToast(n == 0 ? '该设备已在屏幕墙里' : '已加入屏幕墙');
+  }
+
   Widget _buildPeerArea() {
     return AnimatedBuilder(
       animation: _peers,
@@ -914,38 +997,77 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 4),
       itemCount: list.length,
-      separatorBuilder: (_, __) => const Divider(
-          height: 1, thickness: 1, color: Color(0xFFF2F2F2), indent: 58),
+      separatorBuilder: (_, __) => Divider(
+          height: 1,
+          thickness: 1,
+          color: const Color(0xFFF2F2F2),
+          indent: _batch ? 84 : 74),
       itemBuilder: (context, i) => _peerRow(list[i]),
     );
   }
 
   Widget _peerRow(Peer p) {
+    final checked = _batchSel.contains(p.id);
     return InkWell(
-      onTap: () => _connectPeer(p),
+      onTap: () {
+        if (_batch) {
+          setState(
+              () => checked ? _batchSel.remove(p.id) : _batchSel.add(p.id));
+        } else {
+          _connectPeer(p);
+        }
+      },
       hoverColor: _C.hover,
       child: Container(
-        height: 56,
+        height: 62,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Row(
           children: [
-            _avatar(p),
-            const SizedBox(width: 12),
+            if (_batch) ...[
+              SizedBox(
+                width: 30,
+                child: Checkbox(
+                  value: checked,
+                  onChanged: (v) => setState(() =>
+                      v == true ? _batchSel.add(p.id) : _batchSel.remove(p.id)),
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
+            _avatar(p, size: 44),
+            const SizedBox(width: 14),
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    p.alias.isEmpty ? p.id : p.alias,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: _C.text),
+                  Row(
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: p.online
+                              ? const Color(0xFF3DBE5B)
+                              : const Color(0xFFC6CBD4),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 7),
+                      Flexible(
+                        child: Text(
+                          p.alias.isEmpty ? p.id : p.alias,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: _C.text),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 3),
                   Text(
                     p.alias.isEmpty
                         ? (p.hostname.isEmpty ? '未命名设备' : p.hostname)
@@ -957,26 +1079,39 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 ],
               ),
             ),
-            Text(
-              p.online ? '在线' : '离线',
-              style: TextStyle(
-                fontSize: 12,
-                color: p.online ? _C.green : const Color(0xFFAAAAAA),
-              ),
-            ),
-            const SizedBox(width: 14),
             SizedBox(
+              width: 32,
               height: 30,
-              child: TextButton(
-                onPressed: () => _connectPeer(p),
-                style: TextButton.styleFrom(
-                  backgroundColor: _C.blue.withOpacity(0.08),
-                  foregroundColor: _C.blue,
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(5)),
-                ),
-                child: const Text('连接', style: TextStyle(fontSize: 12.5)),
+              child: PopupMenuButton<String>(
+                tooltip: '更多',
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.more_horiz,
+                    size: 18, color: Color(0xFF9E9E9E)),
+                onSelected: (v) {
+                  if (v == 'connect') {
+                    _connectPeer(p);
+                  } else if (v == 'wall') {
+                    _addOneToWall(p.id);
+                  } else if (v == 'copy') {
+                    _copy(p.id);
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                      value: 'connect',
+                      height: 36,
+                      child: Text('连接', style: TextStyle(fontSize: 13))),
+                  PopupMenuItem(
+                      value: 'wall',
+                      height: 36,
+                      child: Text('添加到屏幕墙',
+                          style: TextStyle(fontSize: 13))),
+                  PopupMenuItem(
+                      value: 'copy',
+                      height: 36,
+                      child: Text('复制识别码',
+                          style: TextStyle(fontSize: 13))),
+                ],
               ),
             ),
           ],
@@ -997,14 +1132,24 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       itemCount: list.length,
       itemBuilder: (context, i) {
         final p = list[i];
+        final checked = _batchSel.contains(p.id);
         return InkWell(
-          onTap: () => _connectPeer(p),
+          onTap: () {
+            if (_batch) {
+              setState(() =>
+                  checked ? _batchSel.remove(p.id) : _batchSel.add(p.id));
+            } else {
+              _connectPeer(p);
+            }
+          },
           borderRadius: BorderRadius.circular(8),
           child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: _C.line),
+              border: Border.all(
+                  color: checked ? _C.blue : _C.line,
+                  width: checked ? 1.4 : 1),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1014,6 +1159,17 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                   children: [
                     _avatar(p, size: 26),
                     const SizedBox(width: 8),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: p.online
+                            ? const Color(0xFF3DBE5B)
+                            : const Color(0xFFC6CBD4),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
                     Expanded(
                       child: Text(
                         p.alias.isEmpty ? p.id : p.alias,
@@ -1025,11 +1181,21 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                             color: _C.text),
                       ),
                     ),
+                    if (_batch)
+                      Icon(
+                        checked
+                            ? Icons.check_box
+                            : Icons.check_box_outline_blank,
+                        size: 17,
+                        color: checked ? _C.blue : const Color(0xFFB0B0B0),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 6),
                 Text(
                   p.id,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: _C.sub),
                 ),
               ],
@@ -1040,22 +1206,23 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     );
   }
 
+  /// 原生风格头像：彩色圆角方块（按名称哈希取色）+ 白色平台图标
   Widget _avatar(Peer p, {double size = 32}) {
+    final seed = p.alias.isEmpty ? p.id : p.alias;
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: p.online
-            ? _C.blue.withOpacity(0.1)
-            : const Color(0xFFF0F0F0),
-        shape: BoxShape.circle,
+        color: abAvatarColor(seed),
+        borderRadius: BorderRadius.circular(size * 0.24),
       ),
+      alignment: Alignment.center,
       child: Icon(
         p.platform.toLowerCase().contains('linux')
             ? Icons.terminal
             : Icons.desktop_windows_outlined,
-        size: size * 0.55,
-        color: p.online ? _C.blue : const Color(0xFF9E9E9E),
+        size: size * 0.52,
+        color: Colors.white,
       ),
     );
   }
