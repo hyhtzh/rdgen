@@ -91,10 +91,6 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 免得同一台设备在本机并着两路会话。
   final Set<String> _bigIds = {};
 
-  /// 主窗口侧（Rust 配置里）是否已经存过这台设备的密码。
-  /// 屏幕墙进程读不到主窗口的收藏模型，但 `mainPeerHasPassword` 是本地同步查询，
-  /// 主窗口能免密直连的设备，墙里同样能免密拉流。
-  final Map<String, bool> _hasSavedPw = {};
 
   // ---- 群控（9 宫格）：键盘 + 鼠标点击广播 ----
   bool _groupOn = false;
@@ -185,31 +181,52 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   // ---------------- 主窗口数据 ----------------
 
-  /// 主窗口能免密直连的设备 = Rust 配置里已经存过密码。
-  /// 墙这边拿不到那个密码明文（也不该拿），但可以问「存过没有」，
-  /// 存过就直接开会话、让 Rust 自己用保存的密码登录 —— 这就是
-  /// 「直接调用主窗口的访问密码数据」，用户不必在墙里再输一遍。
+  /// 把本机 Rust 配置里这台设备保存的密码取出来，直接拿去登录。
+  ///
+  /// 主窗口「免密直连」用的就是同一份数据：peer 配置里的 `password`
+  /// （存的是密文，会话拿到后自己会解密）。用 `mainGetPeerSync` 读出来，
+  /// 屏幕墙就不用再问用户输入一遍 —— 这就是「直接调用主窗口的访问密码数据」。
+  Future<String> _rustPeerPw(String id) async {
+    try {
+      final raw = await bind.mainGetPeerSync(id: id);
+      if (raw.isEmpty) return '';
+      final j = jsonDecode(raw);
+      if (j is! Map) return '';
+      final v = j['password'];
+      if (v is String) return v;
+      if (v is List) {
+        final code = <int>[];
+        for (final e in v) {
+          if (e is int) code.add(e);
+        }
+        if (code.isEmpty) return '';
+        // Rust 侧是 Vec<u8>，内容本身就是 ASCII 的密文串
+        return String.fromCharCodes(code);
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /// 每台设备探测一次：本机配置里存过密码就取出来缓存，全墙共用
   Future<void> _probeSavedPw() async {
-    var dirty = false;
     for (final p in _peers) {
       final id = p.id.replaceAll(' ', '');
-      // 已经确认为 true 的不再重复问（密码只会从无到有）
-      if (_hasSavedPw[id] == true) continue;
+      final known = _pwCache[id];
+      if (known != null && known.isNotEmpty) continue;
       bool has = false;
       try {
         has = await bind.mainPeerHasPassword(id: id);
       } catch (_) {}
-      if (_hasSavedPw[id] != has) {
-        _hasSavedPw[id] = has;
-        dirty = true;
-      }
+      if (!has) continue;
+      final pw = await _rustPeerPw(id);
+      if (pw.isEmpty) continue;
+      _pwCache[id] = pw;
+      if (mounted) setState(() {});
     }
-    if (dirty && mounted) setState(() {});
   }
 
-  /// 这一格能不能直接出画面：本机有密码，或 Rust 里存过密码
-  bool _canPreview(Peer p) =>
-      _pwOf(p).isNotEmpty || _hasSavedPw[p.id.replaceAll(' ', '')] == true;
+  /// 这一格能不能直接出画面：拿到密码就行（主窗口存的那份也算）
+  bool _canPreview(Peer p) => _pwOf(p).isNotEmpty;
 
   Map<String, _WallSnapPeer> _snap = {};
   Map<String, String> _pwCache = {};
@@ -378,18 +395,75 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     }
   }
 
-  /// 群控时的点击：点击的格子成为主控；按下/抬起广播给其余会话
-  /// （走 bind.sessionSendMouse 原始协议，不依赖 InputModel 的手势换算）
-  void _groupPointer(String id, bool down) {
+  /// 群控时的点击：点到的格子成为主控，按下/抬起连同「远端坐标」一起
+  /// 广播给其余会话。
+  ///
+  /// 之前只发了 type+buttons，x/y 缺省为 0 —— 对端只会收到一个 (0,0) 的
+  /// 影子点击，所以在被控那几台上「点了没反应」。这里先把本地落点按主控格
+  /// 的 scale/offset 换算成远端像素，再按各自分辨率比例换算给每台对端。
+  void _groupPointer(String id, Offset local, bool down) {
     if (!_groupOn) return;
     _groupPrimary = id;
+
+    int rx = 0, ry = 0;
+    int pw = 0, ph = 0;
+    try {
+      final c = _wallPages[id]?.ffi.canvasModel;
+      if (c != null) {
+        final scale = c.scale;
+        if (scale > 0) {
+          rx = ((local.dx - c.x) / scale).round();
+          ry = ((local.dy - c.y) / scale).round();
+        }
+        pw = c.getDisplayWidth();
+        ph = c.getDisplayHeight();
+      }
+    } catch (_) {}
+
     for (final entry in _wallPages.entries) {
       if (entry.key == id) continue;
       try {
+        final c = entry.value.ffi.canvasModel;
+        var x = rx;
+        var y = ry;
+        // 各机器分辨率可能不同：按比例换算，同分辨率的机器就是 1:1
+        if (pw > 0 && ph > 0) {
+          final dw = c.getDisplayWidth();
+          final dh = c.getDisplayHeight();
+          if (dw > 0 && dh > 0) {
+            x = (rx * dw / pw).round();
+            y = (ry * dh / ph).round();
+          }
+        }
         final sid = entry.value.ffi.sessionId;
-        bind.sessionSendMouse(
-            sessionId: sid,
-            msg: json.encode({'type': down ? 'down' : 'up', 'buttons': 'left'}));
+        if (down) {
+          // 先移动再按下：远端光标先到位，点击才落在主控点的那一处
+          bind.sessionSendMouse(
+              sessionId: sid,
+              msg: json.encode({
+                'type': 'move',
+                'buttons': 'left',
+                'x': '$x',
+                'y': '$y',
+              }));
+          bind.sessionSendMouse(
+              sessionId: sid,
+              msg: json.encode({
+                'type': 'down',
+                'buttons': 'left',
+                'x': '$x',
+                'y': '$y',
+              }));
+        } else {
+          bind.sessionSendMouse(
+              sessionId: sid,
+              msg: json.encode({
+                'type': 'up',
+                'buttons': 'left',
+                'x': '$x',
+                'y': '$y',
+              }));
+        }
       } catch (_) {}
     }
   }
@@ -982,18 +1056,40 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       builder: (context, _) {
         final peers = _peers;
         if (peers.isEmpty) return _buildEmpty();
-        return Padding(
-          padding: const EdgeInsets.all(12),
-          child: GridView.builder(
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: _columns,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 16 / 10.4,
-            ),
-            itemCount: peers.length,
-            itemBuilder: (context, index) => _tile(peers[index]),
-          ),
+        return LayoutBuilder(
+          builder: (context, c) {
+            const gap = 8.0;
+            const pad = 8.0;
+            final cols = _columns;
+            final rows = (_capacity / cols).ceil();
+            // 按「档位」铺格子：4 屏就是 2×2、9 屏 3×3、16 屏 4×4。
+            // 行用 Expanded 均分高度、列均分宽度，整墙一定落在窗口内，
+            // 不会像 ListView 那样超出一屏要往下翻。
+            return Padding(
+              padding: const EdgeInsets.all(pad),
+              child: Column(
+                children: [
+                  for (var r = 0; r < rows; r++) ...[
+                    if (r > 0) const SizedBox(height: gap),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          for (var k = 0; k < cols; k++) ...[
+                            if (k > 0) const SizedBox(width: gap),
+                            Expanded(
+                              child: (r * cols + k) < peers.length
+                                  ? _tile(peers[r * cols + k])
+                                  : const SizedBox.shrink(),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
         );
       },
     );
@@ -1013,8 +1109,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       onRestorePreview: () => _restorePreview(peer),
       onRemove: () => _removePeer(peer),
       onSetPassword: () => _askPassword(peer),
-      onGroupPointer:
-          _groupOn ? (id, down) => _groupPointer(id, down) : null,
+      onGroupPointer: _groupOn
+          ? (id, local, down) => _groupPointer(id, local, down)
+          : null,
     );
   }
 
@@ -1060,8 +1157,8 @@ class _WallTile extends StatefulWidget {
   /// 没存密码时，让用户手输一次
   final VoidCallback onSetPassword;
 
-  /// 群控：down/up=按下/抬起；id 为本格识别码
-  final void Function(String id, bool down)? onGroupPointer;
+  /// 群控：id=本格识别码；local=落点（相对本格）；down=按下/抬起
+  final void Function(String id, Offset local, bool down)? onGroupPointer;
 
   const _WallTile({
     Key? key,
@@ -1094,6 +1191,9 @@ class _WallTileState extends State<_WallTile> {
   DateTime _lastDownAt = DateTime.fromMillisecondsSinceEpoch(0);
   Offset _lastDownPos = Offset.zero;
 
+  /// 这一格画面区的实际尺寸，交给画布算缩放用
+  Size _tileSize = Size.zero;
+
   bool _hover = false;
 
   @override
@@ -1123,7 +1223,7 @@ class _WallTileState extends State<_WallTile> {
   void _startFitLoop() {
     _fitTimer?.cancel();
     _fitTries = 0;
-    _fitTimer = Timer.periodic(const Duration(milliseconds: 700), (t) async {
+    _fitTimer = Timer.periodic(const Duration(milliseconds: 600), (t) async {
       _fitTries++;
       final page = _wallPages[widget.peer.id];
       // sessionId 是 UuidValue，会话还没建好时是 nil uuid；为了同时兼容
@@ -1138,15 +1238,32 @@ class _WallTileState extends State<_WallTile> {
       final ready = sid != null &&
           tag != '0' &&
           tag != '00000000-0000-0000-0000-000000000000';
+
+      // 关键一步：让画布按「格子尺寸」算缩放。
+      // 原生的 CanvasModel.getSize() 读的是整个窗口的尺寸，塞进小格子后
+      // 自适应算出来接近 1:1，所以以前每一格看着都是原始尺寸。
+      try {
+        final c = page?.ffi.canvasModel;
+        if (c != null) {
+          c.useLayoutSize = true;
+          if (_tileSize.width > 2 && _tileSize.height > 2) {
+            c.layoutSize = _tileSize;
+          }
+          c.updateViewStyle();
+        }
+      } catch (_) {}
+
       if (ready) {
         try {
+          // 顺手把会话缩放方式固定成「自适应」（用户可能在大窗口里改过）
           await bind.sessionSetViewStyle(
               sessionId: sid, value: kRemoteViewStyleAdaptive);
           try {
             page?.ffi.canvasModel.updateViewStyle();
           } catch (_) {}
         } catch (_) {}
-        t.cancel();
+        // 前几帧尺寸可能还没定（滚动条/标题条刚布局完），多打两轮再收工
+        if (_fitTries >= 3) t.cancel();
         return;
       }
       if (_fitTries > 20) t.cancel();
@@ -1177,11 +1294,9 @@ class _WallTileState extends State<_WallTile> {
     _lastDownAt = isDouble ? DateTime.fromMillisecondsSinceEpoch(0) : now;
     _lastDownPos = e.localPosition;
     if (!isDouble) return;
-    // 没密码时双击先去填密码，别直接弹一个连不上的大窗口
-    if (widget.peer.online && widget.password.isEmpty && !widget.opened) {
-      widget.onSetPassword();
-      return;
-    }
+    // 双击就是「放大成大窗口」，不再先拦一层密码框。
+    // 密码已经在墙里查过（本机配置那份 = 主窗口自动登录用的那份），
+    // 真没有密码时大窗口自己会问，问过之后存下来，墙里下次也不用再问。
     widget.onOpen();
   }
 
@@ -1291,15 +1406,23 @@ class _WallTileState extends State<_WallTile> {
     );
     // 群控广播需要拿到每个会话的 FFI（RemotePage.ffi），注册进全局表
     _wallPages[widget.peer.id] = page;
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (e) {
-        _onDown(e);
-        widget.onGroupPointer?.call(widget.peer.id, true);
-      },
-      onPointerUp: (_) => widget.onGroupPointer?.call(widget.peer.id, false),
-      child: ClipRect(child: page),
-    );
+    return LayoutBuilder(builder: (context, cons) {
+      final w = cons.maxWidth;
+      final h = cons.maxHeight;
+      if (w.isFinite && h.isFinite && w > 2 && h > 2) {
+        _tileSize = Size(w, h);
+      }
+      return Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (e) {
+          _onDown(e);
+          widget.onGroupPointer?.call(widget.peer.id, e.localPosition, true);
+        },
+        onPointerUp: (e) =>
+            widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
+        child: ClipRect(child: page),
+      );
+    });
   }
 
   Widget _buildPlaceholder() {
@@ -1317,7 +1440,12 @@ class _WallTileState extends State<_WallTile> {
     }
     return Listener(
       behavior: HitTestBehavior.opaque,
-      onPointerDown: _onDown,
+      onPointerDown: (e) {
+        _onDown(e);
+        widget.onGroupPointer?.call(widget.peer.id, e.localPosition, true);
+      },
+      onPointerUp: (e) =>
+          widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
       child: InkWell(
         onTap: widget.opened
             ? widget.onRestorePreview
