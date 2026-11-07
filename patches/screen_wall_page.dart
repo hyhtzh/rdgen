@@ -86,15 +86,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   bool _live = true;
   bool _fullscreen = false;
 
-  /// 被放大成整屏的那一格（空 = 正常网格）。
-  /// 双击任意小窗进入，双击画面/点标题栏「还原」退出。
-  String _zoomId = '';
-
-  /// 每个格子的 GlobalKey：放大 / 还原时把同一个 Element 搬到新位置，
-  /// 会话不会被销毁重建（否则每双击一次都要重新握手、重新出画面）。
-  final Map<String, GlobalKey> _tileKeys = {};
-
-  GlobalKey _tileKey(String id) => _tileKeys.putIfAbsent(id, () => GlobalKey());
+  /// 已经「放大成大窗口」的设备：双击小窗后开独立远控窗口，
+  /// 同时把这一格的预览会话关掉（和原生小窗→大窗口的行为一致），
+  /// 免得同一台设备在本机并着两路会话。
+  final Set<String> _bigIds = {};
 
   /// 主窗口侧（Rust 配置里）是否已经存过这台设备的密码。
   /// 屏幕墙进程读不到主窗口的收藏模型，但 `mainPeerHasPassword` 是本地同步查询，
@@ -485,8 +480,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         body: Column(
           children: [
             _buildTitleBar(),
-            // 放大单屏时把工具条也收起来：用户要看的是整块远端桌面
-            if (_zoomId.isEmpty) _buildToolbar(),
+            _buildToolbar(),
             Expanded(child: _buildBody()),
           ],
         ),
@@ -529,44 +523,19 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                   size: 10, color: Colors.white),
             ),
             const SizedBox(width: 8),
-            Text(_zoomId.isEmpty ? '屏幕墙' : '屏幕墙 · 放大',
-                style: const TextStyle(fontSize: 12.5, color: _C.text)),
+            const Text('屏幕墙',
+                style: TextStyle(fontSize: 12.5, color: _C.text)),
             const SizedBox(width: 8),
-            if (_zoomId.isEmpty)
-              AnimatedBuilder(
-                animation: gFFI.favoritePeersModel,
-                builder: (context, _) {
-                  // 数量按「墙里实际铺出来的格子」算：收藏模型还没同步到本窗口时
-                  // 会显示 0，但格子其实已经用占位排出来了，看起来就像坏了。
-                  final n = _peers.length;
-                  return Text('$n 台设备',
-                      style: const TextStyle(fontSize: 11.5, color: _C.sub));
-                },
-              )
-            else
-              InkWell(
-                onTap: _unzoom,
-                borderRadius: BorderRadius.circular(4),
-                child: Container(
-                  height: 20,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1F232A),
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: _C.line),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.grid_view_rounded, size: 11, color: _C.sub),
-                      SizedBox(width: 4),
-                      Text('还原小窗',
-                          style: TextStyle(fontSize: 11, color: _C.sub)),
-                    ],
-                  ),
-                ),
-              ),
+            AnimatedBuilder(
+              animation: gFFI.favoritePeersModel,
+              builder: (context, _) {
+                // 数量按「墙里实际铺出来的格子」算：收藏模型还没同步到本窗口时
+                // 会显示 0，但格子其实已经用占位排出来了，看起来就像坏了。
+                final n = _peers.length;
+                return Text('$n 台设备',
+                    style: const TextStyle(fontSize: 11.5, color: _C.sub));
+              },
+            ),
             const Spacer(),
             if (_isChildWindow) ...[
               _winButton(
@@ -979,23 +948,32 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   // ---------------- 网格 / 放大 ----------------
 
-  void _zoom(String id) {
-    if (_zoomId == id) return;
-    setState(() => _zoomId = id.replaceAll(' ', ''));
+  /// 双击（或点标题条上的放大按钮）= 把这一路放大成大窗口：
+  /// 打开独立的远控窗口，同时关掉这一格的小窗预览。
+  void _openBig(Peer peer) {
+    final key = peer.id.replaceAll(' ', '');
+    final pw = _pwOf(peer);
+    // 先让这一格的小窗关掉（live=false → 预览会话 dispose），
+    // 再开大窗口：同一台设备在本机不会并着两路会话。
+    setState(() => _bigIds.add(key));
+    Future.delayed(const Duration(milliseconds: 260), () async {
+      if (!mounted) return;
+      try {
+        await rustDeskWinManager.newRemoteDesktop(
+          peer.id,
+          password: pw.isEmpty ? null : pw,
+        );
+      } catch (_) {
+        // 走原生新窗口失败时退回到普通连接流程（主窗口里开标签页/窗口）
+        if (!mounted) return;
+        connect(context, peer.id, password: pw.isEmpty ? null : pw);
+      }
+    });
   }
 
-  void _unzoom() {
-    if (_zoomId.isEmpty) return;
-    setState(() => _zoomId = '');
-  }
-
-  void _toggleZoom(String id) {
-    final key = id.replaceAll(' ', '');
-    if (_zoomId == key) {
-      _unzoom();
-    } else {
-      _zoom(key);
-    }
+  /// 大窗口关掉后，把这一格的小窗预览恢复回来
+  void _restorePreview(Peer peer) {
+    setState(() => _bigIds.remove(peer.id.replaceAll(' ', '')));
   }
 
   Widget _buildBody() {
@@ -1004,14 +982,6 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       builder: (context, _) {
         final peers = _peers;
         if (peers.isEmpty) return _buildEmpty();
-        if (_zoomId.isNotEmpty) {
-          final hit = peers.where((p) => p.id.replaceAll(' ', '') == _zoomId);
-          if (hit.isNotEmpty) return _buildZoomed(hit.first);
-          // 设备被移出墙了，放大状态自动作废
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _zoomId.isNotEmpty) _unzoom();
-          });
-        }
         return Padding(
           padding: const EdgeInsets.all(12),
           child: GridView.builder(
@@ -1022,36 +992,25 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
               childAspectRatio: 16 / 10.4,
             ),
             itemCount: peers.length,
-            itemBuilder: (context, index) => _tile(peers[index], zoomed: false),
+            itemBuilder: (context, index) => _tile(peers[index]),
           ),
         );
       },
     );
   }
 
-  /// 单屏放大：整块 body 只放这一路，上下各留 6px
-  Widget _buildZoomed(Peer peer) {
-    return Padding(
-      padding: const EdgeInsets.all(6),
-      child: _tile(peer, zoomed: true),
-    );
-  }
-
-  Widget _tile(Peer peer, {required bool zoomed}) {
+  Widget _tile(Peer peer) {
+    final key = peer.id.replaceAll(' ', '');
     final pw = _pwOf(peer);
+    final opened = _bigIds.contains(key);
     return _WallTile(
-      // 同一个 GlobalKey：放大/还原时搬的是同一个 Element，会话不重建
-      key: _tileKey(peer.id.replaceAll(' ', '')),
+      key: ValueKey('wall_$key'),
       peer: peer,
       password: pw,
-      live: _live && _canPreview(peer),
-      zoomed: zoomed,
-      onOpen: () => connect(
-        context,
-        peer.id,
-        password: pw.isEmpty ? null : pw,
-      ),
-      onToggleZoom: () => _toggleZoom(peer.id),
+      live: _live && !opened && _canPreview(peer),
+      opened: opened,
+      onOpen: () => _openBig(peer),
+      onRestorePreview: () => _restorePreview(peer),
       onRemove: () => _removePeer(peer),
       onSetPassword: () => _askPassword(peer),
       onGroupPointer:
@@ -1086,14 +1045,14 @@ class _WallTile extends StatefulWidget {
   /// 是否开一路预览会话（墙里连上就出画面）
   final bool live;
 
-  /// 是否处于「放大成整屏」状态
-  final bool zoomed;
+  /// 这一格已经放大成大窗口了（小窗预览已关）
+  final bool opened;
 
-  /// 打开独立的控制窗口（有完整工具栏的那种）
+  /// 双击 / 点放大按钮：切换到大窗口显示（小窗关闭）
   final VoidCallback onOpen;
 
-  /// 双击画面：放大 / 还原
-  final VoidCallback onToggleZoom;
+  /// 大窗口关掉后再点开小窗预览
+  final VoidCallback onRestorePreview;
 
   /// 从墙里移除这台设备
   final VoidCallback onRemove;
@@ -1109,9 +1068,9 @@ class _WallTile extends StatefulWidget {
     required this.peer,
     required this.password,
     required this.live,
-    required this.zoomed,
+    required this.opened,
     required this.onOpen,
-    required this.onToggleZoom,
+    required this.onRestorePreview,
     required this.onRemove,
     required this.onSetPassword,
     this.onGroupPointer,
@@ -1217,7 +1176,13 @@ class _WallTileState extends State<_WallTile> {
         (e.localPosition - _lastDownPos).distance < 40;
     _lastDownAt = isDouble ? DateTime.fromMillisecondsSinceEpoch(0) : now;
     _lastDownPos = e.localPosition;
-    if (isDouble) widget.onToggleZoom();
+    if (!isDouble) return;
+    // 没密码时双击先去填密码，别直接弹一个连不上的大窗口
+    if (widget.peer.online && widget.password.isEmpty && !widget.opened) {
+      widget.onSetPassword();
+      return;
+    }
+    widget.onOpen();
   }
 
   @override
@@ -1226,9 +1191,7 @@ class _WallTileState extends State<_WallTile> {
       decoration: BoxDecoration(
         color: _C.tile,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: widget.zoomed ? _C.accent.withOpacity(0.55) : Colors.white.withOpacity(0.06),
-        ),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -1276,21 +1239,21 @@ class _WallTileState extends State<_WallTile> {
           ),
           if (_hover)
             Text(
-              widget.live ? '预览中' : (online ? '待连接' : '离线'),
+              widget.opened
+                  ? '大窗口'
+                  : (widget.live ? '预览中' : (online ? '待连接' : '离线')),
               style: TextStyle(
                 fontSize: 9.5,
                 color: widget.live ? _C.green : Colors.white38,
               ),
             ),
-          const SizedBox(width: 2),
+          // 放大按钮常驻：小窗里最常用的就是这个
           _barButton(
-            widget.zoomed ? Icons.fullscreen_exit : Icons.fullscreen,
-            widget.zoomed ? '还原小窗' : '放大这一屏',
-            widget.onToggleZoom,
-            // 放大按钮常驻：小窗里最常用的就是这个
+            Icons.open_in_full,
+            widget.opened ? '已在大窗口显示，再点切回这个大窗口' : '放大成大窗口（关闭小窗）',
+            widget.onOpen,
             alwaysShow: true,
           ),
-          _barButton(Icons.open_in_full, '打开控制窗口（带工具栏）', widget.onOpen),
           _barButton(Icons.close_rounded, '从屏幕墙移除', widget.onRemove),
         ],
       ),
@@ -1341,9 +1304,11 @@ class _WallTileState extends State<_WallTile> {
 
   Widget _buildPlaceholder() {
     final p = widget.peer;
-    final needPw = p.online && widget.password.isEmpty;
+    final needPw = p.online && widget.password.isEmpty && !widget.opened;
     final String hint;
-    if (!p.online) {
+    if (widget.opened) {
+      hint = '已放大成大窗口显示';
+    } else if (!p.online) {
       hint = '设备离线';
     } else if (needPw) {
       hint = '还没保存密码';
@@ -1354,20 +1319,29 @@ class _WallTileState extends State<_WallTile> {
       behavior: HitTestBehavior.opaque,
       onPointerDown: _onDown,
       child: InkWell(
-        onTap: needPw ? widget.onSetPassword : widget.onToggleZoom,
+        onTap: widget.opened
+            ? widget.onRestorePreview
+            : (needPw ? widget.onSetPassword : widget.onOpen),
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(needPw ? Icons.key_outlined : Icons.desktop_windows_outlined,
-                  size: widget.zoomed ? 42 : 28, color: Colors.white24),
+              Icon(
+                  widget.opened
+                      ? Icons.open_in_full
+                      : (needPw
+                          ? Icons.key_outlined
+                          : Icons.desktop_windows_outlined),
+                  size: 26,
+                  color: Colors.white24),
               const SizedBox(height: 6),
               Text(hint,
                   style: const TextStyle(fontSize: 11, color: Colors.white38)),
               const SizedBox(height: 6),
-              if (needPw)
+              if (widget.opened || needPw)
                 OutlinedButton(
-                  onPressed: widget.onSetPassword,
+                  onPressed:
+                      widget.opened ? widget.onRestorePreview : widget.onSetPassword,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.white,
                     side: BorderSide(color: Colors.white.withOpacity(0.35)),
@@ -1377,11 +1351,11 @@ class _WallTileState extends State<_WallTile> {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     textStyle: const TextStyle(fontSize: 11.5),
                   ),
-                  child: const Text('输入密码'),
+                  child: Text(widget.opened ? '恢复小窗预览' : '输入密码'),
                 )
               else
                 Text(
-                  '双击放大 / 还原',
+                  '双击放大成大窗口',
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 10, color: Colors.white24),
                 ),
