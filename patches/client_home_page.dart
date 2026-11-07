@@ -50,6 +50,7 @@ class _C {
   static const hover = Color(0xFFF5F8FD);
 }
 
+
 /// 设备状态点的三色口径（和原生客户端的在线指示灯一致的方向）：
 ///   绿 = 在线、且存过密码，点开就能进
 ///   黄 = 在线，但没存密码，点开还要输一次
@@ -349,24 +350,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         child: Row(
           children: [
             const SizedBox(width: 10),
-            // 品牌图标：以前这里是 Icons.desktop_windows 的蓝色方块，
-            // 换成打包进 flutter assets 的正式 logo（构建时会被替换成 icon.png）
+            // 品牌图标（内嵌 PNG）。以前这里是 Icons.desktop_windows 的蓝方块
             ClipRRect(
               borderRadius: BorderRadius.circular(3),
-              child: Image.asset(
-                'assets/icon.png',
-                width: 16,
-                height: 16,
-                filterQuality: FilterQuality.high,
-                errorBuilder: (_, __, ___) => Container(
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    color: _C.blue,
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-              ),
+              child: brandLogo(16),
             ),
             const SizedBox(width: 8),
             Text(appName,
@@ -628,22 +615,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             // 「控制远程桌面」前的图标也用正式 logo，不再用 Icons.settings 凑
             ClipRRect(
               borderRadius: BorderRadius.circular(5),
-              child: Image.asset(
-                'assets/icon.png',
-                width: 24,
-                height: 24,
-                filterQuality: FilterQuality.high,
-                errorBuilder: (_, __, ___) => Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: _C.blue,
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                  child:
-                      const Icon(Icons.settings, size: 16, color: Colors.white),
-                ),
-              ),
+              child: brandLogo(24),
             ),
             const SizedBox(width: 9),
             const Text(
