@@ -576,9 +576,18 @@ class LicenseClient {
 /// （std / pro）下发，这里只读缓存，不发网络请求。
 /// 没拿到 config（未激活、或者是老版本客户端）时一律放行——
 /// 真正的拦截在 LicenseGate，功能层不该成为第二个门禁。
+///
+/// 例外是「只能靠附加包买」的四项：服务端没明确下发 true 就当没买。
+/// 这一条是防止老配置/旧缓存里残留的 wall32=true 让只买了 16 屏的用户
+/// 把 32/64 屏和群控一起用掉。
+const kPaidFeatures = <String>{'wall16', 'wall32', 'wall64', 'group', 'group9'};
+
 bool licenseFeature(String key) {
   final cfg = LicenseClient.instance.savedConfigMap;
   final f = cfg['features'];
-  if (f is Map && f.containsKey(key)) return f[key] == true;
-  return true;
+  if (f is Map) {
+    if (f.containsKey(key)) return f[key] == true;
+    return !kPaidFeatures.contains(key);
+  }
+  return !kPaidFeatures.contains(key);
 }
