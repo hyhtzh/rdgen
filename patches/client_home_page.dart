@@ -286,9 +286,15 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    // 兜底：显式清掉可能从上层继承下来的文字装饰（下划线等），避免整页文字带横线
+    // 兜底：显式清掉可能从上层继承下来的文字装饰（下划线等），避免整页文字带横线；
+    // 同时把字重压回 w400 —— 上游主题给 body 设了加粗，Text 不写字重时会继承过去，
+    // 中文小字看起来就又粗又糊。
     return DefaultTextStyle.merge(
-      style: const TextStyle(decoration: TextDecoration.none),
+      style: const TextStyle(
+        decoration: TextDecoration.none,
+        fontWeight: FontWeight.w400,
+        fontFamilyFallback: _cnFonts,
+      ),
       child: Container(
         color: Colors.white,
         child: Column(
