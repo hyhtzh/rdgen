@@ -65,6 +65,78 @@ Color peerStatusColor(Peer p) {
       : const Color(0xFF3DBE5B);
 }
 
+/// 在线状态探针（照搬原生的驱动方式）。
+///
+/// 原生首页 ConnectionPage 里的 AllPeersLoader 会每 5 秒调一次
+/// `bind.queryOnlines`，Rust 侧查到结果后才通过 `callback_query_onlines`
+/// 事件把 onlines / offlines 回推给 gFFI.favoritePeersModel / recentPeersModel。
+/// 首页换成自定义页面后这一步没人做了，`peer.online` 永远停在 false，
+/// 于是所有设备的状态点都是红的（连在线的也红）。这里按原生同样的节奏
+/// 与批量（20 个）补回来；设备多于一批时用游标轮转，多屏也能逐步刷全。
+class PeerOnlineProbe {
+  PeerOnlineProbe._();
+  static final PeerOnlineProbe instance = PeerOnlineProbe._();
+
+  static const _interval = Duration(seconds: 5);
+  static const _batchSize = 20;
+
+  Timer? _timer;
+  int _cursor = 0;
+  bool _busy = false;
+
+  void start() {
+    _timer?.cancel();
+    _kick();
+    _timer = Timer.periodic(_interval, (_) => _kick());
+  }
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  List<String> _allIds() {
+    final ids = <String>[];
+    final seen = <String>{};
+    for (final peers in [
+      gFFI.favoritePeersModel.peers,
+      gFFI.recentPeersModel.peers,
+    ]) {
+      for (final p in peers) {
+        final id = p.id.replaceAll(' ', '');
+        if (id.isEmpty || !seen.add(id)) continue;
+        ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  void _kick() {
+    if (_busy) return;
+    final all = _allIds();
+    if (all.isEmpty) return;
+    final slice = <String>[];
+    if (all.length <= _batchSize) {
+      slice.addAll(all);
+    } else {
+      for (var i = 0; i < _batchSize; i++) {
+        slice.add(all[(_cursor + i) % all.length]);
+      }
+      _cursor = (_cursor + _batchSize) % all.length;
+    }
+    _busy = true;
+    Future(() async {
+      try {
+        await bind.queryOnlines(ids: slice);
+      } catch (_) {
+        // 内核不支持该接口时保持现状，不影响别的功能
+      } finally {
+        _busy = false;
+      }
+    });
+  }
+}
+
 /// 原版 DesktopHomePage.initState 里 `Get.put<RxBool>(svcStopped, tag: 'stop-service')`，
 /// 设置页 _General 用 `Get.find<RxBool>(tag: 'stop-service')` 直接取。
 /// 我们把首页整个换掉了，没人再注册 → find 抛异常 → 设置页右侧内容区是 ErrorWidget，
@@ -118,6 +190,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     // 原版首页靠 1s 定时器刷新本机 ID，替换页面后必须自己拉
     _idTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => _refreshLocalId());
+    // 原版首页负责定期向 Rust 查询设备在线状态，丢了它所有点都是红的
+    PeerOnlineProbe.instance.start();
     _idFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
@@ -225,6 +299,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   void dispose() {
     windowManager.removeListener(this);
     _idTimer?.cancel();
+    PeerOnlineProbe.instance.stop();
     _idController.dispose();
     _idFocusNode.dispose();
     _searchController.dispose();
