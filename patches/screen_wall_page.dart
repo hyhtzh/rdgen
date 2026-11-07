@@ -8,6 +8,9 @@ import 'dart:math' as math;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:url_launcher/url_launcher_string.dart';
 
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/main.dart';
@@ -15,9 +18,14 @@ import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
+import 'package:flutter_hbb/desktop/pages/license_client.dart';
+import 'package:flutter_hbb/models/input_model.dart';
 
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）
 const _kCapacities = [4, 9, 16, 32, 64];
+
+/// 群控用：格子 id -> 内嵌的 RemotePage（RemotePage.ffi 可取到会话 FFI）
+final Map<String, RemotePage> _wallPages = {};
 
 class _C {
   static const bg = Color(0xFF0F1115);
@@ -76,6 +84,11 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   bool _live = true;
   bool _fullscreen = false;
 
+  // ---- 群控（9 宫格）：键盘 + 鼠标点击广播 ----
+  final Map<String, RemotePage> _pages = {};
+  bool _groupOn = false;
+  String _groupPrimary = '';
+
   /// 独立子窗口才有的 windowId；主窗口内压栈时为 null
   int? get _windowId => kWindowId;
 
@@ -105,7 +118,48 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   @override
   void dispose() {
     WallFps.restore();
+    _setGroupListeners(false);
     super.dispose();
+  }
+
+  // ---------------- 群控广播 ----------------
+
+  void _setGroupListeners(bool on) {
+    try {
+      if (on) {
+        RawKeyboard.instance.addHandler(_onGroupRawKey);
+      } else {
+        RawKeyboard.instance.removeHandler(_onGroupRawKey);
+      }
+    } catch (_) {}
+  }
+
+  /// 把键盘事件广播到除主控格以外的所有已连接会话。
+  /// 返回 false 不消费事件，主控格自己照常处理。
+  bool _onGroupRawKey(RawKeyEvent e) {
+    if (!_groupOn) return false;
+    if (e is RawKeyDownEvent || e is RawKeyUpEvent) {
+      for (final entry in _wallPages.entries) {
+        if (entry.key == _groupPrimary) continue;
+        try {
+          entry.value.ffi.inputModel.handleRawKeyEvent(e);
+        } catch (_) {}
+      }
+    }
+    return false;
+  }
+
+  /// 群控时的点击：点击的格子成为主控；按下/抬起广播给其余会话
+  void _groupPointer(String id, bool down) {
+    if (!_groupOn) return;
+    _groupPrimary = id;
+    for (final entry in _wallPages.entries) {
+      if (entry.key == id) continue;
+      try {
+        entry.value.ffi.inputModel
+            .sendMouse(down ? 'down' : 'up', MouseButtons.left);
+      } catch (_) {}
+    }
   }
 
   int get _columns => math.sqrt(_capacity).round().clamp(1, 8);
@@ -295,7 +349,17 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           const Text('布局', style: TextStyle(fontSize: 12.5, color: _C.sub)),
           const SizedBox(width: 8),
           ..._kCapacities.map(_capacityChip),
+          const SizedBox(width: 10),
+          if (_capacity == 9) _groupChip(),
           const Spacer(),
+          if (_groupOn) ...[
+            const Icon(Icons.broadcast_rounded,
+                size: 13, color: Color(0xFF2FA45C)),
+            const SizedBox(width: 5),
+            const Text('群控中 · 键盘与鼠标点击广播到其余在线格子（点击某格设为主控）',
+                style: TextStyle(fontSize: 11.5, color: Color(0xFF2FA45C))),
+            const SizedBox(width: 8),
+          ],
           const Text('双击卡片进入控制',
               style: TextStyle(fontSize: 11.5, color: Color(0xFF6B7280))),
           const SizedBox(width: 6),
@@ -308,12 +372,112 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
   }
 
+  Widget _groupChip() {
+    return InkWell(
+      onTap: _toggleGroup,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        height: 22,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: _groupOn
+              ? const Color(0xFF2FA45C)
+              : const Color(0xFF1F232A),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.broadcast_rounded,
+                size: 12,
+                color: _groupOn ? Colors.white : _C.sub),
+            const SizedBox(width: 4),
+            Text('群控',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: _groupOn ? Colors.white : _C.sub,
+                  fontWeight: FontWeight.w600,
+                )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _toggleGroup() {
+    if (!_groupOn && !licenseFeature('group9')) {
+      _showUpgradeDialog('群控（最多 9 台同时广播）');
+      return;
+    }
+    setState(() {
+      _groupOn = !_groupOn;
+      if (!_groupOn) _groupPrimary = '';
+    });
+    _setGroupListeners(_groupOn);
+  }
+
+  /// 收费档位 / 功能 未授权时弹的引导框
+  void _showUpgradeDialog(String what) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Text('该功能需要升级授权',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Text('$what属于付费功能，当前授权不包含。升级后即可使用，点击购买前往官方购买页。',
+            style: TextStyle(fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('取消', style: TextStyle(color: _C.sub)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              try {
+                await launchUrlString(kPurchaseUrl,
+                    mode: LaunchMode.externalApplication);
+              } catch (_) {
+                Clipboard.setData(ClipboardData(text: kPurchaseUrl));
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Color(0xFF1B72D6),
+              elevation: 0,
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
+            ),
+            child: Text('购买',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _pickCapacity(int value) {
+    if ((value == 32 && !licenseFeature('wall32')) ||
+        (value == 64 && !licenseFeature('wall64'))) {
+      _showUpgradeDialog('$value 屏布局');
+      return;
+    }
+    if (value != 9 && _groupOn) {
+      setState(() {
+        _groupOn = false;
+        _groupPrimary = '';
+      });
+    }
+    setState(() => _capacity = value);
+  }
+
   Widget _capacityChip(int value) {
     final active = _capacity == value;
     return Padding(
       padding: const EdgeInsets.only(right: 4),
       child: InkWell(
-        onTap: () => setState(() => _capacity = value),
+        onTap: () => _pickCapacity(value),
         borderRadius: BorderRadius.circular(4),
         child: Container(
           width: 30,
@@ -380,6 +544,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                   peer.id,
                   password: peer.password.isEmpty ? null : peer.password,
                 ),
+                onGroupPointer: _groupOn
+                    ? (id, down) => _groupPointer(id, down)
+                    : null,
               );
             },
           ),
@@ -411,11 +578,15 @@ class _WallTile extends StatefulWidget {
   final bool live;
   final VoidCallback onOpen;
 
+  /// 群控：down/up=按下/抬起；id 为本格识别码
+  final void Function(String id, bool down)? onGroupPointer;
+
   const _WallTile({
     Key? key,
     required this.peer,
     required this.live,
     required this.onOpen,
+    this.onGroupPointer,
   }) : super(key: key);
 
   @override
@@ -553,15 +724,23 @@ class _WallTileState extends State<_WallTile> {
         ),
       );
     }
+    final page = RemotePage(
+      key: ValueKey('page_${widget.peer.id}'),
+      id: widget.peer.id,
+      password: widget.peer.password,
+      toolbarState: _toolbarState!,
+    );
+    // 群控广播需要拿到每个会话的 FFI（RemotePage.ffi），注册进全局表
+    _wallPages[widget.peer.id] = page;
     return GestureDetector(
       onDoubleTap: widget.onOpen,
-      child: ClipRect(
-        child: RemotePage(
-          key: ValueKey('page_${widget.peer.id}'),
-          id: widget.peer.id,
-          password: widget.peer.password,
-          toolbarState: _toolbarState!,
-        ),
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown:
+            widget.onGroupPointer == null ? null : (_) => widget.onGroupPointer!(widget.peer.id, true),
+        onPointerUp:
+            widget.onGroupPointer == null ? null : (_) => widget.onGroupPointer!(widget.peer.id, false),
+        child: ClipRect(child: page),
       ),
     );
   }
