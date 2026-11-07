@@ -468,7 +468,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       animation: LicenseClient.instance.revoked,
       builder: (context, _) {
         final c = LicenseClient.instance;
-        final plan = c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName;
+        // 卡片主标题优先显示卡时长（季卡/年卡），比套餐名更直观
+        final plan = c.savedCardType.isNotEmpty
+            ? c.savedCardType
+            : (c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName);
         final days = c.daysLeft;
         final dayTxt = days >= 0 ? '剩 $days 天' : '生效中';
         final expDay = c.savedExpire.isEmpty ? '' : c.savedExpire.split(' ').first;
@@ -1138,6 +1141,10 @@ class _LicenseDetailDialog extends StatelessWidget {
     }
   }
 
+  /// 授权类型：卡时长（季卡/年卡…），服务端取不到时退回套餐名
+  String get _cardName =>
+      _c.savedCardType.isEmpty ? _plan : _c.savedCardType;
+
   @override
   Widget build(BuildContext context) {
     final days = _c.daysLeft;
@@ -1159,7 +1166,7 @@ class _LicenseDetailDialog extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _kv('版本类型', _planType, bold: true),
-            _kv('授权类型', _plan,
+            _kv('授权类型', _cardName,
                 valueColor: const Color(0xFF2FA45C),
                 bold: true),
             _kv('到期时间',
