@@ -58,12 +58,14 @@ class _C {
 ///   黄 = 在线，但没存密码，点开还要输一次
 ///   红 = 离线
 /// 以前这里只有一个灰点，所有设备长得一样，等于没信息。
-Color peerStatusColor(Peer p) {
-  if (!p.online) return const Color(0xFFE23B3B);
-  return p.password.isEmpty
-      ? const Color(0xFFE8A317)
-      : const Color(0xFF3DBE5B);
-}
+/// 状态点：绿=在线，红=离线。
+///
+/// 以前在线但本机没存密码会显示黄色，结果和设备真离线看起来一样，
+/// 用户看到「对方明明在心跳，管理端却是黄点」就会怀疑是探测坏了。
+/// 原生只区分在线/离线，这里也回到同样口径；有没有存密码用文字说明，
+/// 不再拿颜色表达。
+Color peerStatusColor(Peer p) =>
+    p.online ? const Color(0xFF3DBE5B) : const Color(0xFFE23B3B);
 
 /// 在线状态探针（照搬原生的驱动方式）。
 ///
