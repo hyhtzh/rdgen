@@ -23,7 +23,7 @@ import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
-const _kBrandUrl = 'http://ww.hydesk.cn';
+const _kBrandUrl = 'https://ww.hydesk.cn';
 
 /// Windows / macOS 上的中文字体回退链。
 /// 不显式给 fallback 时，Flutter 会用 Roboto 的度量去排中文，
