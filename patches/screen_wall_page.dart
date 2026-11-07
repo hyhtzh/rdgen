@@ -1205,9 +1205,11 @@ class _WallTileState extends State<_WallTile> {
   @override
   void didUpdateWidget(covariant _WallTile oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 密码是后来才拿到的（主窗口快照晚到、或 Rust 里本来就有保存密码）时，
+    // 密码是后来才拿到的（主窗口快照晚到、或 Rust 里本来就存着密码）时，
     // 这里把会话补建出来，否则格子会一直停在占位画面上。
-    if (widget.live && _toolbarState == null) {
+    // 从大窗口切回小窗（live 由 false 变 true）时也要重新跑一遍拟合，
+    // 否则新会话会按 1:1 画，又变成「只看到左上角」。
+    if (widget.live && (!oldWidget.live || _toolbarState == null)) {
       _ensureSession();
     }
   }
