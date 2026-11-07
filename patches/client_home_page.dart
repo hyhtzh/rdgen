@@ -50,6 +50,18 @@ class _C {
   static const hover = Color(0xFFF5F8FD);
 }
 
+/// 设备状态点的三色口径（和原生客户端的在线指示灯一致的方向）：
+///   绿 = 在线、且存过密码，点开就能进
+///   黄 = 在线，但没存密码，点开还要输一次
+///   红 = 离线
+/// 以前这里只有一个灰点，所有设备长得一样，等于没信息。
+Color peerStatusColor(Peer p) {
+  if (!p.online) return const Color(0xFFE23B3B);
+  return p.password.isEmpty
+      ? const Color(0xFFE8A317)
+      : const Color(0xFF3DBE5B);
+}
+
 /// 原版 DesktopHomePage.initState 里 `Get.put<RxBool>(svcStopped, tag: 'stop-service')`，
 /// 设置页 _General 用 `Get.find<RxBool>(tag: 'stop-service')` 直接取。
 /// 我们把首页整个换掉了，没人再注册 → find 抛异常 → 设置页右侧内容区是 ErrorWidget，
@@ -337,15 +349,24 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         child: Row(
           children: [
             const SizedBox(width: 10),
-            Container(
-              width: 16,
-              height: 16,
-              decoration: BoxDecoration(
-                color: _C.blue,
-                borderRadius: BorderRadius.circular(3),
+            // 品牌图标：以前这里是 Icons.desktop_windows 的蓝色方块，
+            // 换成打包进 flutter assets 的正式 logo（构建时会被替换成 icon.png）
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: Image.asset(
+                'assets/icon.png',
+                width: 16,
+                height: 16,
+                filterQuality: FilterQuality.high,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 16,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: _C.blue,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
               ),
-              child: const Icon(Icons.desktop_windows,
-                  size: 11, color: Colors.white),
             ),
             const SizedBox(width: 8),
             Text(appName,
@@ -604,14 +625,25 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       children: [
         Row(
           children: [
-            Container(
-              width: 24,
-              height: 24,
-              decoration: BoxDecoration(
-                color: _C.blue,
-                borderRadius: BorderRadius.circular(5),
+            // 「控制远程桌面」前的图标也用正式 logo，不再用 Icons.settings 凑
+            ClipRRect(
+              borderRadius: BorderRadius.circular(5),
+              child: Image.asset(
+                'assets/icon.png',
+                width: 24,
+                height: 24,
+                filterQuality: FilterQuality.high,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: _C.blue,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child:
+                      const Icon(Icons.settings, size: 16, color: Colors.white),
+                ),
               ),
-              child: const Icon(Icons.settings, size: 16, color: Colors.white),
             ),
             const SizedBox(width: 9),
             const Text(
@@ -1080,9 +1112,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                         width: 7,
                         height: 7,
                         decoration: BoxDecoration(
-                          color: p.online
-                              ? const Color(0xFF3DBE5B)
-                              : const Color(0xFFC6CBD4),
+                          color: peerStatusColor(p),
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -1155,12 +1185,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   Widget _buildGrid(List<Peer> list) {
     return GridView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 240,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 2.1,
+        // 与原生客户端卡片同量级：卡片更小更紧凑，信息密度靠数量取胜
+        maxCrossAxisExtent: 208,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 2.55,
       ),
       itemCount: list.length,
       itemBuilder: (context, i) {
@@ -1175,11 +1206,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               _connectPeer(p);
             }
           },
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(7),
           child: Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(7),
               border: Border.all(
                   color: checked ? _C.blue : _C.line,
                   width: checked ? 1.4 : 1),
@@ -1187,18 +1218,17 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Row(
                   children: [
-                    _avatar(p, size: 26),
-                    const SizedBox(width: 8),
+                    _avatar(p, size: 22),
+                    const SizedBox(width: 7),
                     Container(
                       width: 6,
                       height: 6,
                       decoration: BoxDecoration(
-                        color: p.online
-                            ? const Color(0xFF3DBE5B)
-                            : const Color(0xFFC6CBD4),
+                        color: peerStatusColor(p),
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -1209,7 +1239,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 13.5,
+                            fontSize: 13,
                             fontWeight: FontWeight.w500,
                             color: _C.text),
                       ),
@@ -1219,17 +1249,17 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                         checked
                             ? Icons.check_box
                             : Icons.check_box_outline_blank,
-                        size: 17,
+                        size: 16,
                         color: checked ? _C.blue : const Color(0xFFB0B0B0),
                       ),
                   ],
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Text(
                   p.id,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: _C.sub),
+                  style: const TextStyle(fontSize: 11.5, color: _C.sub),
                 ),
               ],
             ),
