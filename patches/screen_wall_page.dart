@@ -4,6 +4,7 @@
 // 宿主有两种：
 //  1) 独立窗口（desktop_multi_window 子窗口，系统标题栏是隐藏的，必须自绘 + 自己拖动/关闭）；
 //  2) 主窗口内 Navigator 压栈（独立窗口创建失败时的降级，带返回栏）。
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
@@ -19,7 +20,6 @@ import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
-import 'package:flutter_hbb/models/input_model.dart';
 
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）
 const _kCapacities = [4, 9, 16, 32, 64];
@@ -127,37 +127,36 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   void _setGroupListeners(bool on) {
     try {
       if (on) {
-        RawKeyboard.instance.addHandler(_onGroupRawKey);
+        RawKeyboard.instance.addListener(_onGroupRawKey);
       } else {
-        RawKeyboard.instance.removeHandler(_onGroupRawKey);
+        RawKeyboard.instance.removeListener(_onGroupRawKey);
       }
     } catch (_) {}
   }
 
   /// 把键盘事件广播到除主控格以外的所有已连接会话。
-  /// 返回 false 不消费事件，主控格自己照常处理。
-  bool _onGroupRawKey(RawKeyEvent e) {
-    if (!_groupOn) return false;
-    if (e is RawKeyDownEvent || e is RawKeyUpEvent) {
-      for (final entry in _wallPages.entries) {
-        if (entry.key == _groupPrimary) continue;
-        try {
-          entry.value.ffi.inputModel.handleRawKeyEvent(e);
-        } catch (_) {}
-      }
+  void _onGroupRawKey(RawKeyEvent e) {
+    if (!_groupOn) return;
+    for (final entry in _wallPages.entries) {
+      if (entry.key == _groupPrimary) continue;
+      try {
+        entry.value.ffi.inputModel.handleRawKeyEvent(e);
+      } catch (_) {}
     }
-    return false;
   }
 
   /// 群控时的点击：点击的格子成为主控；按下/抬起广播给其余会话
+  /// （走 bind.sessionSendMouse 原始协议，不依赖 InputModel 的手势换算）
   void _groupPointer(String id, bool down) {
     if (!_groupOn) return;
     _groupPrimary = id;
     for (final entry in _wallPages.entries) {
       if (entry.key == id) continue;
       try {
-        entry.value.ffi.inputModel
-            .sendMouse(down ? 'down' : 'up', MouseButtons.left);
+        final sid = entry.value.ffi.sessionId;
+        bind.sessionSendMouse(
+            sessionId: sid,
+            msg: json.encode({'type': down ? 'down' : 'up', 'buttons': 'left'}));
       } catch (_) {}
     }
   }
