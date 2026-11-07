@@ -20,6 +20,9 @@ import 'package:flutter_hbb/models/platform_model.dart';
 /// 授权服务地址（nginx 反代到本机授权服务）
 const kLicenseBase = 'https://hd.fcpx0.cn/license';
 
+/// 购买授权的落地页（激活页「购买」与详情弹窗「续费升级」都跳这里）
+const kPurchaseUrl = 'https://1t.8kub.cn';
+
 /// 断网宽限天数
 const kLicenseGraceDays = 7;
 
@@ -29,6 +32,7 @@ const _kLastOk = 'license-last-ok';
 const _kCode = 'license-code';
 const _kConfig = 'license-config';
 const _kPlan = 'license-plan';
+const _kDevices = 'license-devices';
 
 class LicenseException implements Exception {
   /// 机器可读原因：invalid_code / expired / disabled / seat_limit /
@@ -69,6 +73,8 @@ class LicenseResult {
   final bool offline;
   final String plan;
   final String planName;
+  final int devices;
+  final int maxDevices;
 
   const LicenseResult(this.status,
       {this.expireAt = '',
@@ -76,7 +82,9 @@ class LicenseResult {
       this.message = '',
       this.offline = false,
       this.plan = '',
-      this.planName = ''});
+      this.planName = '',
+      this.devices = -1,
+      this.maxDevices = 0});
 
   bool get ok => status == LicenseStatus.licensed;
 }
@@ -148,6 +156,54 @@ class LicenseClient {
     final v = _get(_kPlan);
     final i = v.indexOf('|');
     return i < 0 ? '' : v.substring(i + 1);
+  }
+
+  /// 本机在授权里的设备占用：已绑定 / 上限（-1 表示未知，如离线宽限）
+  int get savedDevicesUsed {
+    final v = _get(_kDevices);
+    final i = v.indexOf('|');
+    return (i < 0 ? int.tryParse(v) : int.tryParse(v.substring(0, i))) ?? -1;
+  }
+
+  int get savedDevicesMax {
+    final v = _get(_kDevices);
+    final i = v.indexOf('|');
+    return (i > 0 ? int.tryParse(v.substring(i + 1)) : null) ?? 0;
+  }
+
+  Future<void> _saveDevices(Map<String, dynamic> data) async {
+    final used = data['devices'];
+    final max = data['max_devices'];
+    if (used is num || max is num) {
+      await _set(_kDevices,
+          '${used is num ? used.toInt() : -1}|${max is num ? max.toInt() : 0}');
+    }
+  }
+
+  /// 剩余天数（按缓存的到期日算，到期日为空返回 -1）
+  int get daysLeft {
+    final exp = savedExpire;
+    if (exp.isEmpty) return -1;
+    final d = DateTime.tryParse(exp);
+    if (d == null) return -1;
+    final today = DateTime.now();
+    return d.difference(DateTime(today.year, today.month, today.day)).inDays;
+  }
+
+  /// 本机主动解绑（授权详情弹窗「解绑设备」）。
+  /// 服务端删掉这台机器的凭证后清空本地缓存，并通知门禁重新检查。
+  final ValueNotifier<int> revoked = ValueNotifier(0);
+
+  Future<void> localDeactivate() async {
+    final token = savedToken;
+    final mid = await machineId();
+    if (token.isNotEmpty) {
+      try {
+        await _post('/api/deactivate', {'token': token, 'machine_id': mid});
+      } catch (_) {}
+    }
+    await clear();
+    revoked.value++;
   }
 
   /// 服务器下发的公告，首页顶部可以显示
@@ -274,6 +330,7 @@ class LicenseClient {
     final plan = (data['plan'] ?? '').toString();
     final planName = (data['plan_name'] ?? '').toString();
     await _set(_kPlan, '$plan|$planName');
+    await _saveDevices(data);
     final cfg = data['config'];
     if (cfg is Map) await applyConfig(Map<String, dynamic>.from(cfg));
     return LicenseResult(LicenseStatus.licensed,
@@ -301,6 +358,7 @@ class LicenseClient {
         final plan = (data['plan'] ?? savedPlan).toString();
         final planName = (data['plan_name'] ?? savedPlanName).toString();
         if (plan.isNotEmpty) await _set(_kPlan, '$plan|$planName');
+        await _saveDevices(data);
         final cfg = data['config'];
         if (cfg is Map) await applyConfig(Map<String, dynamic>.from(cfg));
         return LicenseResult(LicenseStatus.licensed,
