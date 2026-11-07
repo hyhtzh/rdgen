@@ -349,7 +349,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           const SizedBox(width: 8),
           ..._kCapacities.map(_capacityChip),
           const SizedBox(width: 10),
-          if (_capacity >= 9) _groupChip(),
+          _groupChip(),
           const Spacer(),
           if (_groupOn) ...[
             const Icon(Icons.wifi_tethering,
@@ -405,9 +405,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   void _toggleGroup() {
-    // 定价：9 屏（含）以下免费；9 屏以上按 20 元/月收费
-    if (!_groupOn && _capacity > 9 && !licenseFeature('group')) {
-      _showUpgradeDialog('9 屏以上群控（20 元/月）');
+    // 定价：4 屏（含）以下群控免费；4 屏以上按 20 元/月收费
+    if (!_groupOn && _capacity > 4 && !licenseFeature('group')) {
+      _showUpgradeDialog('群控（20 元/月）');
       return;
     }
     setState(() {
@@ -466,7 +466,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       _showUpgradeDialog('$value 屏布局（$price 元/月）');
       return;
     }
-    if (value < 9 && _groupOn) {
+    // 切到 4 屏以上且没有群控授权时，自动关掉群控，避免白用
+    if (_groupOn && value > 4 && !licenseFeature('group')) {
       setState(() {
         _groupOn = false;
         _groupPrimary = '';
