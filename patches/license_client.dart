@@ -12,7 +12,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher_string.dart';
 
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -22,6 +25,95 @@ const kLicenseBase = 'https://hd.fcpx0.cn/license';
 
 /// 购买授权的落地页（激活页「购买」与详情弹窗「续费升级」都跳这里）
 const kPurchaseUrl = 'https://1t.8kub.cn';
+
+/// 商城地址：带上商品 id 时直接选中对应加购包（pa16 / pa32 / pa64 / paGroup）
+String shopUrl([String? productId]) {
+  final id = (productId ?? '').trim();
+  return id.isEmpty ? kPurchaseUrl : '$kPurchaseUrl/?p=$id';
+}
+
+/// 唤起系统浏览器。桌面 / 安卓都走外部应用，失败再逐级降级，全失败返回 false。
+///
+/// 这里不用 dart:io（预览工程要在浏览器里编译），所以唤起失败只能靠调用方兜底：
+/// gotoShop() 会把地址复制到剪贴板并弹窗说明，绝不让「点了没反应」发生。
+Future<bool> openExternalUrl(String url) async {
+  for (final mode in const [
+    LaunchMode.externalApplication,
+    LaunchMode.platformDefault,
+    LaunchMode.inAppBrowserView,
+  ]) {
+    try {
+      if (await launchUrlString(url, mode: mode)) return true;
+    } catch (_) {
+      // 继续尝试下一种方式
+    }
+  }
+  return false;
+}
+
+/// 去商城买附加包：能唤起浏览器就唤起，唤不起就复制链接 + 弹窗教用户手动打开。
+Future<void> gotoShop(BuildContext context, {String? productId}) async {
+  final url = shopUrl(productId);
+  if (await openExternalUrl(url)) return;
+  await Clipboard.setData(ClipboardData(text: url));
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      title: const Text('打开商城购买',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('没能自动唤起浏览器，购买地址已复制。\n把它粘贴到浏览器或微信里打开即可购买，付款后马上出授权码。',
+              style: TextStyle(fontSize: 13, height: 1.6)),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F7FB),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: SelectableText(url,
+                style: const TextStyle(
+                    fontSize: 12.5, color: Color(0xFF1B72D6))),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('关闭', style: TextStyle(color: Color(0xFF6B7688))),
+        ),
+        TextButton(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: url));
+            if (ctx.mounted) Navigator.of(ctx).pop();
+          },
+          child: const Text('复制链接',
+              style: TextStyle(color: Color(0xFF1B72D6))),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            final ok = await openExternalUrl(url);
+            if (!ctx.mounted) return;
+            if (ok) {
+              Navigator.of(ctx).pop();
+            }
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF1B72D6),
+            elevation: 0,
+          ),
+          child: const Text('再试一次', style: TextStyle(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+}
 
 /// 断网宽限天数
 const kLicenseGraceDays = 7;
@@ -77,6 +169,17 @@ class LicenseResult {
   final int devices;
   final int maxDevices;
 
+  /// 这一单是附加包（屏幕墙档位 / 群控），不是主授权
+  final bool isAddon;
+  final String addonName;
+  final String addonExpire;
+
+  /// 附加包的实际可用截止日（主授权先到期时就是主授权的日期）
+  final String addonEffectiveExpire;
+
+  /// 主授权比附加包先到期：附加包会跟着主授权一起失效
+  final bool addonExpiresWithLicense;
+
   const LicenseResult(this.status,
       {this.expireAt = '',
       this.code = '',
@@ -85,7 +188,12 @@ class LicenseResult {
       this.plan = '',
       this.planName = '',
       this.devices = -1,
-      this.maxDevices = 0});
+      this.maxDevices = 0,
+      this.isAddon = false,
+      this.addonName = '',
+      this.addonExpire = '',
+      this.addonEffectiveExpire = '',
+      this.addonExpiresWithLicense = false});
 
   bool get ok => status == LicenseStatus.licensed;
 }
@@ -186,6 +294,31 @@ class LicenseClient {
 
   /// 卡类型（月卡 / 季卡 / 年卡 / 永久卡…），服务端按台账时长下发，取不到就是空
   String get savedCardType => _get(_kCardType);
+
+  /// 已开通的附加包（屏幕墙档位 / 群控），服务端随 config 一起下发，
+  /// 每项形如 {key: wall16, name: 16 屏布局包, expire_at: 2026-12-07, devices: 1, max_devices: 3}
+  List<Map<String, dynamic>> get savedAddons {
+    final a = savedConfigMap['addons'];
+    if (a is List) {
+      return a
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    return [];
+  }
+
+  /// 已购买、但这台设备超出 3 台名额而没生效的附加包
+  List<Map<String, dynamic>> get blockedAddons {
+    final a = savedConfigMap['addons_blocked'];
+    if (a is List) {
+      return a
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    return [];
+  }
 
   /// 剩余天数（按缓存的到期日算，到期日为空返回 -1）
   int get daysLeft {
@@ -327,6 +460,27 @@ class LicenseClient {
       throw LicenseException(
           (data['error'] ?? 'unknown').toString(),
           (data['msg'] ?? '激活失败，请检查授权码').toString());
+    }
+    // 附加包：不动本地的主授权 token / 到期日 / 套餐，只把功能开关与附加包列表刷新一次。
+    // 服务端已确认本机存在有效主授权，否则不会走到这里。
+    if (data['addon'] == true) {
+      final aName = (data['feature_name'] ?? '').toString();
+      final aExp = (data['expire_at'] ?? '').toString();
+      final aEff = (data['effective_expire_at'] ?? '').toString();
+      final aWithLic = data['expires_with_license'] == true;
+      try {
+        await check();
+      } catch (_) {}
+      return LicenseResult(LicenseStatus.licensed,
+          expireAt: savedExpire,
+          code: savedCode,
+          plan: savedPlan,
+          planName: savedPlanName,
+          isAddon: true,
+          addonName: aName,
+          addonExpire: aExp,
+          addonEffectiveExpire: aEff,
+          addonExpiresWithLicense: aWithLic);
     }
     final token = (data['token'] ?? '').toString();
     final exp = (data['expire_at'] ?? '').toString();
