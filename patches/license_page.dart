@@ -2,6 +2,8 @@
 //
 // 用 LicenseGate 包住整个 App：未激活时只显示激活页，激活后原样返回 child。
 // Windows 控制端和安卓共用这一套，被控端构建不引用本文件。
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -30,11 +32,20 @@ class _LicenseGateState extends State<LicenseGate> {
   String _message = '';
   String _expire = '';
   bool _offline = false;
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
     _check();
+    // 运行中定期复检：后台解绑/停用/重置后，最多 5 分钟内锁定正在使用的客户端
+    _timer = Timer.periodic(const Duration(minutes: 5), (_) => _check());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 
   Future<void> _check() async {
