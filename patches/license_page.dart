@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher_string.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
 
@@ -245,8 +246,17 @@ class _ActivateCardState extends State<_ActivateCard> {
     }
   }
 
-  Future<void> _copyMachine() async {
-    if (_machine.isEmpty) return;
+  /// 退出软件：桌面走 window_manager 关窗（Windows 上等于退出进程），
+  /// 移动端/异常情况退回 SystemNavigator.pop
+  Future<void> _exitApp() async {
+    try {
+      await windowManager.close();
+    } catch (_) {
+      SystemNavigator.pop();
+    }
+  }
+
+  Future<void> _copyMachine() async {    if (_machine.isEmpty) return;
     Clipboard.setData(ClipboardData(text: _machine));
     setState(() => _error = '');
     ScaffoldMessenger.of(context).showSnackBar(
@@ -414,7 +424,23 @@ class _ActivateCardState extends State<_ActivateCard> {
                       fontWeight: FontWeight.w500)),
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 4),
+          // 激活前也要能退出：不能强制用户激活了才能关软件
+          SizedBox(
+            height: 34,
+            child: TextButton(
+              onPressed: _busy ? null : _exitApp,
+              style: TextButton.styleFrom(
+                foregroundColor: _LC.sub,
+                minimumSize: Size.zero,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('退出软件',
+                  style: TextStyle(fontSize: 12.5, color: _LC.sub)),
+            ),
+          ),
+          const SizedBox(height: 6),
           Container(height: 1, color: const Color(0xFFF0F3F8)),
           const SizedBox(height: 12),
           Row(
