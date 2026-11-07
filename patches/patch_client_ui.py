@@ -138,6 +138,16 @@ def patch_multi_window_manager(root):
     new_screen_wall = '''
   /// 打开屏幕墙独立窗口。已开着就直接提到前台，避免点两次开出两个墙。
   Future<int> newScreenWall() async {
+    // 关掉的窗口不会自己从 _screenWallWindows 里消失，而 WindowController.fromWindowId()
+    // 对已销毁的 id 不会抛错，show()/focus() 静默失败——表现就是「关一次以后再也打不开」。
+    // 先按子窗口真实列表把死 id 清掉，再决定是复用还是新建。
+    try {
+      final alive = await getAllSubWindowIds();
+      _screenWallWindows.removeWhere((id) => !alive.contains(id));
+    } catch (e) {
+      debugPrint('getAllSubWindowIds failed, reset wall windows: $e');
+      _screenWallWindows.clear();
+    }
     for (final windowId in List<int>.from(_screenWallWindows)) {
       try {
         final wc = WindowController.fromWindowId(windowId);
