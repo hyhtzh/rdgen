@@ -23,6 +23,16 @@ import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
 const _kBrandUrl = 'http://ww.hydesk.cn';
 
+/// Windows / macOS 上的中文字体回退链。
+/// 不显式给 fallback 时，Flutter 会用 Roboto 的度量去排中文，
+/// 小字号下笔画容易发虚；直接落到系统的雅黑/苹方，边缘更干脆。
+const _cnFonts = <String>[
+  'Microsoft YaHei UI',
+  'Microsoft YaHei',
+  'PingFang SC',
+  'Noto Sans CJK SC',
+];
+
 /// 设计稿取色
 class _C {
   static const blue = Color(0xFF1B72D6);
@@ -407,7 +417,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 const Icon(Icons.person_outline, size: 16, color: _C.sub),
                 const SizedBox(width: 7),
                 const Text('本机识别码',
-                    style: TextStyle(fontSize: 13, color: _C.sub)),
+                    style: TextStyle(
+                        fontSize: 14,
+                        height: 1.35,
+                        color: _C.sub,
+                        // 中文走雅黑；不写 fontFamily 时 Flutter 会先用 Roboto 再回退，
+                        // 回退字形会带上 Roboto 的度量，小字更糊。
+                        fontFamilyFallback: _cnFonts)),
                 const Spacer(),
                 _squareIconButton(Icons.copy_rounded, () => _copy(_localId),
                     tooltip: '复制识别码'),
@@ -419,10 +435,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                fontSize: 29,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.8,
+                // w700 在 Windows 上会挑到「雅黑 Bold」并额外做加粗处理，
+                // 大号数字糊成一团；w500 落到 Regular，笔画干净。
+                fontSize: 28,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 2.0,
                 color: _C.text,
+                fontFamilyFallback: _cnFonts,
               ),
             ),
             const SizedBox(height: 14),
@@ -431,7 +450,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 const Icon(Icons.lock_outline, size: 16, color: _C.sub),
                 const SizedBox(width: 7),
                 const Text('验证码',
-                    style: TextStyle(fontSize: 13, color: _C.sub)),
+                    style: TextStyle(
+                        fontSize: 14,
+                        height: 1.35,
+                        color: _C.sub,
+                        fontFamilyFallback: _cnFonts)),
                 const Spacer(),
                 SizedBox(
                   width: 30,
@@ -452,10 +475,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.2,
+                fontSize: 22,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 1.4,
                 color: _C.text,
+                fontFamilyFallback: _cnFonts,
               ),
             ),
             const SizedBox(height: 14),
@@ -521,8 +545,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                       fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: Color(0xFF1E6B3C))),
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF1E6B3C),
+                                      fontFamilyFallback: _cnFonts)),
                             ),
                           ],
                         ),
@@ -531,7 +556,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 11.5, color: Color(0xFF5C8A67))),
+                                fontSize: 12,
+                                color: Color(0xFF5C8A67),
+                                fontFamilyFallback: _cnFonts)),
                       ],
                     ),
                   ),
@@ -1253,7 +1280,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               const SizedBox(width: 7),
               Text(
                 ok ? '已连接安全加密链路' : '正在连接服务器…',
-                style: const TextStyle(fontSize: 12.5, color: _C.sub),
+                style: const TextStyle(
+                    fontSize: 13,
+                    height: 1.3,
+                    color: _C.sub,
+                    fontFamilyFallback: _cnFonts),
               ),
               const Spacer(),
             ],
