@@ -1320,12 +1320,15 @@ class _WallTileState extends State<_WallTile> {
         tag != '0' &&
         tag != '00000000-0000-0000-0000-000000000000';
 
-    // 1) 画布尺寸 = 格子尺寸
+    // 1) 画布尺寸 = 格子尺寸，并立刻触发一次重算。
+    //    会话还没进 Rust 的 session 表时 `getViewStyle` 返回 null，这次就是空转，
+    //    所以每一轮都补一次，等连上后自然就生效了。
     try {
       c.useLayoutSize = true;
       if (_tileSize.width > 2 && _tileSize.height > 2) {
         c.layoutSize = _tileSize;
       }
+      unawaited(c.updateViewStyle());
     } catch (_) {}
 
     // 2) 会话就绪后把 view-style 拧成自适应。会话没连上时 Rust 侧会静默失败，
@@ -1336,7 +1339,7 @@ class _WallTileState extends State<_WallTile> {
         await bind.sessionSetViewStyle(
             sessionId: sid, value: kRemoteViewStyleAdaptive);
         try {
-          c.updateViewStyle();
+          unawaited(c.updateViewStyle());
         } catch (_) {}
       } catch (_) {}
     }
