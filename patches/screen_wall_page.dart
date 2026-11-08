@@ -15,6 +15,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/main.dart';
+import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
@@ -26,8 +27,30 @@ import 'package:flutter_hbb/utils/multi_window_manager.dart';
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）
 const _kCapacities = [4, 9, 16, 32, 64];
 
-/// 群控用：格子 id -> 内嵌的 RemotePage（RemotePage.ffi 可取到会话 FFI）
-final Map<String, RemotePage> _wallPages = {};
+/// 同时保持多少路预览会话。
+/// 每路会话在 Rust 侧都有一份解码 + 输入钩子，铺太多会拖慢本机，
+/// 也会让键盘钩子/输入法互相打架（用户报过「开久了输入法失效」）。
+const _kMaxLive = 16;
+
+/// 取某一格的 FFI（会话、画布、输入模型都在里面）。
+///
+/// **不能用** `RemotePage.ffi`：那个 getter 读的是 widget 实例自己的
+/// `_lastState`，而墙里每次 build 都会新建一个 RemotePage widget（State 复用、
+/// `_lastState` 却是空的）→ 取一次抛一次异常，被 try/catch 吞掉，
+/// 表现就是「自适应永远不生效、群控拿不到会话、鼠标换算全是 0」。
+///
+/// RemotePage 在 initState 里做了 `Get.put<FFI>(_ffi, tag: 设备id)`，
+/// 按 id 从 GetX 里取到的才是这一格自己的会话。
+FFI? wallFfi(String id) {
+  for (final tag in {id, id.replaceAll(' ', '')}) {
+    try {
+      // common.dart 里的官方辅助：Get.find<FFI>(tag: 设备id)，
+      // RemotePage 在 initState 里就是用它注册这一路会话的。
+      return ffi(tag);
+    } catch (_) {}
+  }
+  return null;
+}
 
 class _C {
   static const bg = Color(0xFF0F1115);
@@ -96,6 +119,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   final Map<String, DateTime> _bigBorn = {};
   Timer? _bigWatch;
 
+  /// 每格的「重建代次」：点重连、从大窗口收回时 +1，
+  /// 格子会用新的 key 重建会话（旧会话彻底释放，避免半死连接）。
+  final Map<String, int> _retryGen = {};
+
 
   // ---- 群控（9 宫格）：键盘 + 鼠标点击广播 ----
   bool _groupOn = false;
@@ -153,13 +180,38 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     }
     await _pullWallSnap();
     if (!mounted) return;
-    setState(() => _rebuildFavStubs(ids));
+    // 3 秒一轮的轮询不能让整墙每轮都重建：9 路 RemotePage 一起 build
+    // 很容易卡一下。内容没变就什么都不做。
+    final sig = _wallSig(ids);
+    if (sig != _lastSig) {
+      _lastSig = sig;
+      setState(() => _rebuildFavStubs(ids));
+    }
     unawaited(_probeSavedPw());
     if (!changed) return;
     // 事件可能只送到主窗口的引擎，稍等再看一眼，仍没有就用快照/裸 id 兜底
     await Future.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
     setState(() => _rebuildFavStubs(ids));
+  }
+
+  String _lastSig = '';
+
+  /// 墙上要显示的内容指纹（id + 别名 + 在线态 + 密码是否已知）。
+  /// 用来避免「什么都没变也整墙重建」。
+  String _wallSig(List<String> ids) {
+    final b = StringBuffer();
+    for (final id in ids) {
+      final key = id.replaceAll(' ', '');
+      final s = _snap[key];
+      b.write(key);
+      b.write(s?.alias ?? '');
+      b.write(s?.online == true ? '1' : '0');
+      b.write(_savedPw.contains(key) ? '1' : '0');
+      b.write((_pwCache[key]?.isNotEmpty ?? false) ? '1' : '0');
+      b.write('|');
+    }
+    return b.toString();
   }
 
   void _rebuildFavStubs(List<String> ids) {
@@ -196,14 +248,17 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   final Set<String> _savedPw = {};
 
   /// 每台设备探测一次：本机是否存过密码（只要结果，不要内容）
+  final Set<String> _pwProbed = {};
+
   Future<void> _probeSavedPw() async {
     var changed = false;
     for (final p in _peers) {
       final id = p.id.replaceAll(' ', '');
-      if (_savedPw.contains(id)) continue;
+      if (_savedPw.contains(id) || _pwProbed.contains(id)) continue;
       bool has = false;
       try {
         has = await bind.mainPeerHasPassword(id: id);
+        _pwProbed.add(id); // 只有问到了才记住，异常的下轮还能再问
       } catch (_) {}
       if (!has) continue;
       _savedPw.add(id);
@@ -226,11 +281,17 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   /// 屏幕墙跑在独立进程里，收藏模型在本进程是空的（推送事件只送到主窗口），
   /// 别名/在线状态/密码都靠跨窗口 call 回主窗口问一嘴。
+  bool _snapBusy = false;
+
   Future<void> _pullWallSnap() async {
     if (!_isChildWindow) return; // 在主窗口里跑，模型本来就有
+    if (_snapBusy) return; // 上一次还没回来就别再压一层（会越堆越卡）
+    _snapBusy = true;
     try {
-      final r = await rustDeskWinManager.call(
-          WindowType.Main, 'wall_get_peers', '');
+      // 主窗口卡住时这个跨窗口调用可能一直不返回，加超时兜底
+      final r = await rustDeskWinManager
+          .call(WindowType.Main, 'wall_get_peers', '')
+          .timeout(const Duration(seconds: 4));
       final res = r.result;
       if (res is! String || res.isEmpty) return;
       final j = jsonDecode(res);
@@ -251,7 +312,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         );
       }
       _snap = next;
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _snapBusy = false;
+    }
   }
 
   /// 手输密码后存下来，下次进墙直接出画面
@@ -343,7 +407,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       showToast('移除失败，请重试');
       return;
     }
-    _wallPages.remove(peer.id);
+    _bigIds.remove(peer.id.replaceAll(' ', ''));
+    _retryGen.remove(peer.id.replaceAll(' ', ''));
     await _syncFavPeers(force: true);
     if (mounted) setState(() {});
     showToast('已从屏幕墙移除');
@@ -381,10 +446,13 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 把键盘事件广播到除主控格以外的所有已连接会话。
   void _onGroupRawKey(RawKeyEvent e) {
     if (!_groupOn) return;
-    for (final entry in _wallPages.entries) {
-      if (entry.key == _groupPrimary) continue;
+    for (final p in _peers) {
+      final id = p.id;
+      if (id == _groupPrimary) continue;
+      final sess = wallFfi(id);
+      if (sess == null) continue;
       try {
-        entry.value.ffi.inputModel.handleRawKeyEvent(e);
+        sess.inputModel.handleRawKeyEvent(e);
       } catch (_) {}
     }
   }
@@ -392,55 +460,50 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 群控时的点击：点到的格子成为主控，按下/抬起连同「远端坐标」一起
   /// 广播给其余会话。
   ///
-  /// 之前只发了 type+buttons，x/y 缺省为 0 —— 对端只会收到一个 (0,0) 的
-  /// 影子点击，所以在被控那几台上「点了没反应」。这里先把本地落点按主控格
-  /// 的 scale/offset 换算成远端像素，再按各自分辨率比例换算给每台对端。
+  /// 坐标怎么来的很关键：用**主控格自己的画布**把落点换成远端像素
+  /// （`(落点 - 画布偏移) / 缩放`），再按各端分辨率比例换算、加上对端
+  /// 显示原点。这样不管格子被缩放到多大，落点都和原生点击一致。
   void _groupPointer(String id, Offset local, bool down) {
     if (!_groupOn) return;
     _groupPrimary = id;
 
     double rx = 0, ry = 0;
     int pw = 0, ph = 0;
-    try {
-      final c = _wallPages[id]?.ffi.canvasModel;
-      if (c != null) {
-        final scale = c.scale as double;
-        if (scale > 0) {
-          // 换成「主控格画面内的相对像素」：(落点 - 画面偏移) / 缩放
-          rx = (local.dx - (c.x as double)) / scale;
-          ry = (local.dy - (c.y as double)) / scale;
-        }
-        pw = c.getDisplayWidth() as int;
-        ph = c.getDisplayHeight() as int;
-      }
-    } catch (_) {}
-
-    for (final entry in _wallPages.entries) {
-      if (entry.key == id) continue;
+    final src = wallFfi(id);
+    if (src != null) {
       try {
-        final c = entry.value.ffi.canvasModel;
-        var x = rx;
-        var y = ry;
-        // 各机器分辨率不同：先按比例换成对端的相对像素，再加上对端的显示原点
-        if (pw > 0 && ph > 0) {
-          final dw = c.getDisplayWidth() as int;
-          final dh = c.getDisplayHeight() as int;
-          if (dw > 0 && dh > 0) {
-            x = rx * dw / pw;
-            y = ry * dh / ph;
-          }
+        final c = src.canvasModel;
+        final scale = c.scale;
+        if (scale > 0) {
+          rx = (local.dx - c.x) / scale;
+          ry = (local.dy - c.y) / scale;
         }
-        try {
-          final rect = entry.value.ffi.ffiModel.rect;
-          if (rect != null) {
-            // 多显示器时整块画布的左上角是 rect.left/top
-            x = x + (rect.left as double);
-            y = y + (rect.top as double);
-          }
-        } catch (_) {}
+        pw = c.getDisplayWidth();
+        ph = c.getDisplayHeight();
+      } catch (_) {}
+    }
+    if (pw <= 0 || ph <= 0) return;
+
+    for (final p in _peers) {
+      if (p.id == id) continue;
+      final sess = wallFfi(p.id);
+      if (sess == null) continue;
+      try {
+        final c = sess.canvasModel;
+        final dw = c.getDisplayWidth();
+        final dh = c.getDisplayHeight();
+        if (dw <= 0 || dh <= 0) continue;
+        // 各机器分辨率不同：先按比例换成对端的相对像素，再加上对端的显示原点
+        var x = rx * dw / pw;
+        var y = ry * dh / ph;
+        final rect = sess.ffiModel.rect;
+        if (rect != null) {
+          x += rect.left;
+          y += rect.top;
+        }
         final int xi = x.round();
         final int yi = y.round();
-        final sid = entry.value.ffi.sessionId;
+        final sid = sess.sessionId;
         if (down) {
           // 先移动再按下：远端光标先到位，点击才落在主控点的那一处
           bind.sessionSendMouse(
@@ -482,8 +545,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       ...loaded,
       ..._favStubs.where((s) => !loaded.any((p) => p.id == s.id)),
     ];
-    if (all.length <= _capacity) return all;
-    return all.sublist(0, _capacity);
+    // 不再按档位截断：超出当前档位的格子由布局层 Offstage 藏起来，
+    // 这样换到小档位时那几路会话不会被销毁（否则就是「切分屏必掉线」）。
+    return all;
   }
 
   /// 密码可能在三处：Peer 自带 / 主窗口快照 / 本进程最近连接，
@@ -1060,14 +1124,38 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     });
   }
 
-  /// 大窗口关掉后，把这一格的小窗预览恢复回来
+  /// 「收回屏幕墙」：关掉这一路的大窗口，并把小窗预览接回来。
+  ///
+  /// 以前只把 `_bigIds` 里的记录删掉，靠轮询子窗口列表来兜底；
+  /// 可一旦 `getAllSubWindowIds()` 拿不到（或窗口 id 对不上），那一格就永远
+  /// 停在「已放大成大窗口显示」，用户怎么点都回不到墙上。
+  /// 现在改成主动关窗 + 重建会话，不依赖轮询能不能用。
   void _restorePreview(Peer peer) {
-    setState(() => _bigIds.remove(peer.id.replaceAll(' ', '')));
+    final key = peer.id.replaceAll(' ', '');
+    unawaited(_closeBigWindow(key));
+    _bigWinIds.remove(key);
+    _bigBorn.remove(key);
+    if (!mounted) return;
+    setState(() {
+      _bigIds.remove(key);
+      // +1 让格子用新的 key 重建会话：旧的那路已经跟着大窗口结束了，
+      // 直接复用会出现「连不上/黑屏」，这也是「收不回来」的原因之一。
+      _retryGen[key] = (_retryGen[key] ?? 0) + 1;
+    });
+  }
+
+  Future<void> _closeBigWindow(String key) async {
+    final wid = _bigWinIds[key];
+    if (wid == null || wid <= 0) return;
+    try {
+      await WindowController.fromWindowId(wid).close();
+    } catch (_) {}
   }
 
   /// 盯住这些大窗口：子窗口列表中消失了，就认为它被关掉了，
   /// 顺手把对应的小窗预览恢复回来（用户提的「关闭大窗口后小窗要自动连上」）。
   void _startBigWatch() {
+    var listFails = 0;
     _bigWatch ??= Timer.periodic(const Duration(milliseconds: 1200), (_) async {
       if (_bigWinIds.isEmpty) {
         _bigWatch?.cancel();
@@ -1077,15 +1165,31 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       List<int> alive;
       try {
         alive = await rustDeskWinManager.getAllSubWindowIds();
+        listFails = 0;
       } catch (_) {
-        return; // 拿不到列表就下一轮再试，不要误判成“已关闭”
+        // 窗口列表拿不到时不能一直等：等太久这一格就「回不来」了
+        if (++listFails >= 12) {
+          listFails = 0;
+          final keys = _bigWinIds.keys.toList();
+          _bigWinIds.clear();
+          _bigBorn.clear();
+          if (mounted) {
+            setState(() {
+              for (final k in keys) {
+                _bigIds.remove(k);
+                _retryGen[k] = (_retryGen[k] ?? 0) + 1;
+              }
+            });
+          }
+        }
+        return;
       }
       final now = DateTime.now();
       final gone = <String>[];
       _bigWinIds.forEach((k, wid) {
-        // 刚开出来的窗口可能还没进列表，给 4 秒宽限
+        // 刚开出来的窗口可能还没进列表，给 6 秒宽限
         final born = _bigBorn[k];
-        if (born != null && now.difference(born).inSeconds < 4) return;
+        if (born != null && now.difference(born).inSeconds < 6) return;
         if (!alive.contains(wid)) gone.add(k);
       });
       if (gone.isEmpty) return;
@@ -1097,6 +1201,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       setState(() {
         for (final k in gone) {
           _bigIds.remove(k);
+          // 大窗口关了 → 小窗换一路新会话（旧会话随大窗口一起结束了）
+          _retryGen[k] = (_retryGen[k] ?? 0) + 1;
         }
       });
     });
@@ -1114,51 +1220,68 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             const pad = 8.0;
             final cols = _columns;
             final rows = (_capacity / cols).ceil();
-            // 按「档位」铺格子：4 屏就是 2×2、9 屏 3×3、16 屏 4×4。
-            // 行用 Expanded 均分高度、列均分宽度，整墙一定落在窗口内，
-            // 不会像 ListView 那样超出一屏要往下翻。
-            return Padding(
-              padding: const EdgeInsets.all(pad),
-              child: Column(
-                children: [
-                  for (var r = 0; r < rows; r++) ...[
-                    if (r > 0) const SizedBox(height: gap),
-                    Expanded(
-                      child: Row(
-                        children: [
-                          for (var k = 0; k < cols; k++) ...[
-                            if (k > 0) const SizedBox(width: gap),
-                            Expanded(
-                              child: (r * cols + k) < peers.length
-                                  ? _tile(peers[r * cols + k])
-                                  : const SizedBox.shrink(),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            );
+            final tw = (c.maxWidth - pad * 2 - gap * (cols - 1)) / cols;
+            final th = (c.maxHeight - pad * 2 - gap * (rows - 1)) / rows;
+            final fitW = tw.isFinite && tw > 4;
+            final fitH = th.isFinite && th > 4;
+            final slots = cols * rows;
+
+            // 关键：用 Stack + Positioned 摆格子，而不是 Column/Row + Expanded。
+            // 后者在「换档位」时会把整棵树换成不同的嵌套结构，Flutter 只能把
+            // 所有格子 dispose 再重建 → 每一路都断开重连（用户看到的就是
+            // 「切分屏就掉线、还经常连不回来」）。Stack 只改位置和显隐，
+            // 格子的 State 和会话都保得住，切档位不断线。
+            final children = <Widget>[];
+            for (var i = 0; i < peers.length; i++) {
+              final r = i ~/ cols;
+              final k = i % cols;
+              final fits = fitW && fitH && i < slots;
+              children.add(Positioned(
+                key: ValueKey('cell_${peers[i].id}'),
+                left: fits ? pad + k * (tw + gap) : 0,
+                top: fits ? pad + r * (th + gap) : 0,
+                width: fits ? tw : 8,
+                height: fits ? th : 8,
+                child: Offstage(
+                  offstage: !fits,
+                  child: _tile(peers[i], visible: fits, order: i),
+                ),
+              ));
+            }
+            return Stack(children: children);
           },
         );
       },
     );
   }
 
-  Widget _tile(Peer peer) {
+  Widget _tile(Peer peer, {required bool visible, required int order}) {
     final key = peer.id.replaceAll(' ', '');
     final pw = _pwOf(peer);
     final opened = _bigIds.contains(key);
+    // 同时预览有上限：超出的格子只显示卡片，不再开第 17 路会话。
+    final over = order >= _kMaxLive;
     return _WallTile(
       key: ValueKey('wall_$key'),
       peer: peer,
       password: pw,
-      live: _live && !opened && _canPreview(peer),
+      visible: visible,
+      order: order,
+      over: over,
+      retry: _retryGen[key] ?? 0,
+      live: _live && !opened && !over && _canPreview(peer),
       opened: opened,
       onOpen: () => _openBig(peer),
       onRestorePreview: () => _restorePreview(peer),
+      onRetry: () {
+        if (!mounted) return;
+        setState(() {
+          // 「开始预览」/「重连」要连全局开关一起打开，
+          // 否则格子还是拿不到 live，点了没反应。
+          _live = true;
+          _retryGen[key] = (_retryGen[key] ?? 0) + 1;
+        });
+      },
       onRemove: () => _removePeer(peer),
       onSetPassword: () => _askPassword(peer),
       onGroupPointer: _groupOn
@@ -1194,14 +1317,29 @@ class _WallTile extends StatefulWidget {
   /// 是否开一路预览会话（墙里连上就出画面）
   final bool live;
 
+  /// 这一格现在是否在墙上可见（换到更小的档位时会被藏起来）
+  final bool visible;
+
+  /// 在整墙里的序号：用来错开建会话的时间，避免几十路同时握手。
+  final int order;
+
+  /// 超出同时预览上限（只显示卡片，不开会话）
+  final bool over;
+
+  /// 重建代次：变了就用新的 key 重开一路会话
+  final int retry;
+
   /// 这一格已经放大成大窗口了（小窗预览已关）
   final bool opened;
 
   /// 双击 / 点放大按钮：切换到大窗口显示（小窗关闭）
   final VoidCallback onOpen;
 
-  /// 大窗口关掉后再点开小窗预览
+  /// 大窗口关掉后再点开小窗预览（同时把大窗口收回）
   final VoidCallback onRestorePreview;
+
+  /// 手动重连这一格
+  final VoidCallback onRetry;
 
   /// 从墙里移除这台设备
   final VoidCallback onRemove;
@@ -1217,9 +1355,14 @@ class _WallTile extends StatefulWidget {
     required this.peer,
     required this.password,
     required this.live,
+    required this.visible,
+    required this.order,
+    required this.over,
+    required this.retry,
     required this.opened,
     required this.onOpen,
     required this.onRestorePreview,
+    required this.onRetry,
     required this.onRemove,
     required this.onSetPassword,
     this.onGroupPointer,
@@ -1232,15 +1375,27 @@ class _WallTile extends StatefulWidget {
 class _WallTileState extends State<_WallTile> {
   ToolbarState? _toolbarState;
 
-  /// 远端会话建立后把缩放方式强制成「自适应」：
-  /// 原生默认可能就是 1:1（original），一格只有 200px 宽时只会露出
-  /// 远端桌面的左上角一块，用户就看不到整个屏幕了。
+  /// 拟合定时器：会话什么时候连上不确定，一次性打几轮赶不上，
+  /// 所以每 400ms 校一次（内部会先比尺寸，稳定后基本是空转）。
   Timer? _fitTimer;
-  int _fitTries = 0;
-  int _styleTries = 0;
+  int _fitTicks = 0;
+  bool _styleDone = false;
+
+  /// 拟合已经稳定（稳定后把体检频率从 400ms 放到 3s，省 CPU）
+  bool _settled = false;
+
+  /// 长时间不在墙上（被更小的档位挤下去）就把这一路的会话放掉，
+  /// 免得十几路没人看的画面一直在解码拖慢本机；
+  /// 切回来会立刻重新拉起（有 60 秒宽限，来回切档位不会真的断线）。
+  bool _sleeping = false;
+  Timer? _sleepTimer;
 
   /// 拟合失败提示（正常情况永远 false，出现说明画布没按格子尺寸算）
   bool _fitBad = false;
+
+  /// 会话迟迟没有画面（连不上/被拒），用来显示「重连」
+  bool _noSignal = false;
+  DateTime? _began;
 
   /// 手写双击识别：RemotePage 内部有手势竞争，外层 GestureDetector.onDoubleTap
   /// 抢不到事件（这也是之前「双击没反应」的原因），所以用 Listener 自己数。
@@ -1252,127 +1407,214 @@ class _WallTileState extends State<_WallTile> {
 
   bool _hover = false;
 
+  /// 这一格是否上过墙。上过就一直保持这一路会话：
+  /// 换到更小的档位只是把它藏起来（Offstage），不断线、不重连。
+  bool _want = false;
+
   @override
   void initState() {
     super.initState();
-    if (widget.live) _ensureSession();
+    _want = widget.visible;
+    if (_want && widget.live) _scheduleSession();
   }
 
   @override
   void didUpdateWidget(covariant _WallTile oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 密码是后来才拿到的（主窗口快照晚到、或 Rust 里本来就存着密码）时，
-    // 这里把会话补建出来，否则格子会一直停在占位画面上。
-    // 从大窗口切回小窗（live 由 false 变 true）时也要重新跑一遍拟合，
-    // 否则新会话会按 1:1 画，又变成「只看到左上角」。
+    // 第一次出现在墙上：建会话
+    if (widget.visible && !_want) {
+      _want = true;
+      if (widget.live) _scheduleSession();
+    }
+    // 被更小的档位挤下去：先留 60 秒（来回切档位不断线），之后挂起省资源
+    if (!widget.visible && oldWidget.visible) {
+      _sleepTimer?.cancel();
+      _sleepTimer = Timer(const Duration(seconds: 60), () {
+        if (!mounted || widget.visible) return;
+        setState(() => _sleeping = true);
+        _fitTimer?.cancel();
+        _fitTimer = null;
+      });
+    }
+    // 重新回到墙上：唤醒
+    if (widget.visible && !oldWidget.visible) {
+      _sleepTimer?.cancel();
+      _sleepTimer = null;
+      if (_sleeping) {
+        _sleeping = false;
+        _styleDone = false;
+        _began = null;
+        _fitTicks = 0;
+        _settled = false;
+        if (widget.live) _startFitLoop();
+      }
+    }
+    // 密码是后来才拿到的（主窗口快照晚到、或 Rust 里本来就存着密码），
+    // 或者从大窗口收回（live 由 false 变 true）时补建会话。
     if (widget.live && (!oldWidget.live || _toolbarState == null)) {
-      _ensureSession();
+      _scheduleSession();
+    }
+    // 手动重连 / 从大窗口收回：换了代次就用新 key 开一路干净的会话
+    if (widget.retry != oldWidget.retry) {
+      _noSignal = false;
+      _began = null;
+      _fitBad = false;
+      _fitTicks = 0;
+      _styleDone = false;
+      _fitTimer?.cancel();
+      _fitTimer = null;
+      if (widget.live) _scheduleSession();
+    }
+    if (!widget.live && oldWidget.live) {
+      _fitTimer?.cancel();
+      _fitTimer = null;
     }
   }
 
+  /// 错开建会话的时间：16 路一起握手会把本机和对端都打满，
+  /// 表现就是「进墙很慢、半天才出画面」。
+  void _scheduleSession() {
+    final delay = Duration(milliseconds: widget.order.clamp(0, 12) * 110);
+    if (delay == Duration.zero) {
+      _ensureSession();
+      return;
+    }
+    Future.delayed(delay, () {
+      if (mounted && widget.live) _ensureSession();
+    });
+  }
+
   void _ensureSession() {
+    if (_sleeping) return;
     _toolbarState ??= ToolbarState();
     _toolbarState!.hide.value = true;
     // 注册进「墙预览」集合：这条会话的工具栏一律不渲染
     kWallToolbarStates.add(_toolbarState!);
+    _began ??= DateTime.now();
     _startFitLoop();
+    // 会话是延迟建起来的（错开握手），建好后要让这一格重建一次，
+    // 否则画面会一直停在占位卡片上。
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _active) setState(() {});
+      });
+    }
   }
+
+  /// 会话在跑、且没被挂起
+  bool get _active => widget.live && !_sleeping;
 
   void _startFitLoop() {
     _fitTimer?.cancel();
-    _fitTries = 0;
-    _styleTries = 0;
+    _fitTicks = 0;
+    _settled = false;
     unawaited(_applyFit());
-    // 常驻（很轻）：会话什么时候连上不确定，一次性打几轮根本赶不上。
-    // 每 500ms 校一次，只有值不对时才真正写回，稳定后基本是空转。
-    _fitTimer = Timer.periodic(const Duration(milliseconds: 500), (t) async {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      _fitTries++;
-      await _applyFit();
-    });
+    _armFit(400);
+  }
+
+  void _armFit(int ms) {
+    _fitTimer?.cancel();
+    _fitTimer = Timer(Duration(milliseconds: ms), _onFitTick);
+  }
+
+  Future<void> _onFitTick() async {
+    if (!mounted || !_active) return;
+    _fitTicks++;
+    await _applyFit();
+    if (!mounted || !_active) return;
+    // 稳定后放慢：9 路 × 400ms 的空转没必要，3 秒够用了
+    _armFit(_settled ? 3000 : 400);
   }
 
   /// 把这一格的画布钉在「整屏塞进格子」的状态。
   ///
-  /// 三道保险，任何一道生效都能出正确画面：
-  /// 1. `useLayoutSize/layoutSize`：让 `CanvasModel.getSize()` 用格子尺寸，
-  ///    而不是整个窗口尺寸（原生实现读的是 `MediaQueryData.fromView`）；
-  /// 2. `sessionSetViewStyle(adaptive)`：让 Rust 侧的 view-style 也变成自适应；
-  /// 3. 直接 `canvasModel.update(x, y, scale)`：按 `size` 和远端分辨率自己算
-  ///    缩放，绕开 view-style 的一切不确定性（这是最后兜底，也是最稳的）。
+  /// 只做两件事：把格子尺寸交给画布（`useLayoutSize/layoutSize`，
+  /// 原生补丁让 `getSize()` 用它），以及把会话的 view-style 定成自适应。
+  /// **不再自己算缩放往画布里写** —— 手写的那套和原生画出来/换算鼠标的
+  /// 那一套只要有一处单位不一致，鼠标点位就会错位。
   Future<void> _applyFit() async {
-    final page = _wallPages[widget.peer.id];
-    dynamic c;
+    final sess = wallFfi(widget.peer.id);
+    if (sess == null) return;
+    final CanvasModel c;
+    try {
+      c = sess.canvasModel;
+    } catch (_) {
+      return;
+    }
+
+    // 会话还没起来时 sessionId 是 nil uuid
     dynamic sid;
     try {
-      c = page?.ffi.canvasModel;
-      sid = page?.ffi.sessionId;
-    } catch (_) {
-      c = null;
-      sid = null;
-    }
-    if (c == null) return;
-    final tag = '$sid';
-    final ready = sid != null &&
-        tag != '0' &&
-        tag != '00000000-0000-0000-0000-000000000000';
-
-    // 1) 画布尺寸 = 格子尺寸，并立刻触发一次重算。
-    //    会话还没进 Rust 的 session 表时 `getViewStyle` 返回 null，这次就是空转，
-    //    所以每一轮都补一次，等连上后自然就生效了。
-    try {
-      c.useLayoutSize = true;
-      if (_tileSize.width > 2 && _tileSize.height > 2) {
-        c.layoutSize = _tileSize;
-      }
-      unawaited(c.updateViewStyle());
+      sid = sess.sessionId;
     } catch (_) {}
+    final tag = '$sid';
+    final ready =
+        tag != '0' && tag != '00000000-0000-0000-0000-000000000000';
 
-    // 2) 会话就绪后把 view-style 拧成自适应。会话没连上时 Rust 侧会静默失败，
-    //    所以这里只在「还不是自适应」时补，且最多补 6 次，避免骚扰对端。
-    if (ready && _styleTries < 6) {
-      _styleTries++;
+    // 1) 画布尺寸 = 格子尺寸。尺寸一变就必须重算一次。
+    if (_tileSize.width > 8 && _tileSize.height > 8) {
+      final changed = !c.useLayoutSize || c.layoutSize != _tileSize;
+      if (changed) {
+        c.useLayoutSize = true;
+        c.layoutSize = _tileSize;
+        unawaited(c.updateViewStyle());
+      }
+    }
+
+    // 2) 会话就绪后把 view-style 定成自适应（只设一次，别反复骚扰对端）
+    if (ready && !_styleDone) {
+      _styleDone = true;
       try {
         await bind.sessionSetViewStyle(
             sessionId: sid, value: kRemoteViewStyleAdaptive);
-        try {
-          unawaited(c.updateViewStyle());
-        } catch (_) {}
+      } catch (_) {}
+      try {
+        unawaited(c.updateViewStyle());
       } catch (_) {}
     }
 
-    // 3) 兜底：直接把缩放算出来写进画布（不依赖 session 的 view-style）
-    final fitted = _forceFit(c);
+    // 3) 只做体检，不写画布（写画布的权力留给原生，鼠标才不会错位）
+    final ok = _fitIsOk(c);
 
-    // 连续几轮都拟合不上，就在标题条上挂个提示，便于定位（正常不会出现）
-    final bad = _fitTries > 8 && !fitted;
+    // 稳定判定：连续几轮都对就把频率降下来
+    _settled = ok && _fitTicks > 5;
+
+    // 有画面但缩放不对 → 标题条红字；没画面太久 → 「重连」
+    final bad = _fitTicks > 8 && !ok;
     if (bad != _fitBad && mounted) setState(() => _fitBad = bad);
+
+    var noSignal = _noSignal;
+    if (ok) {
+      noSignal = false;
+    } else {
+      final began = _began;
+      if (began != null && DateTime.now().difference(began).inSeconds > 12) {
+        var hasImage = false;
+        try {
+          hasImage = c.getDisplayWidth() > 0 && c.getDisplayHeight() > 0;
+        } catch (_) {}
+        noSignal = !hasImage;
+      }
+    }
+    if (noSignal != _noSignal && mounted) setState(() => _noSignal = noSignal);
   }
 
-  /// 返回是否已把画布放到「整屏自适应」
-  bool _forceFit(dynamic c) {
+  /// 体检：缩放和居中偏移是否都在容差内（只读，不改画布）
+  bool _fitIsOk(CanvasModel c) {
     final w = _tileSize.width;
     final h = _tileSize.height;
     if (w < 8 || h < 8) return false;
     try {
-      final dw = c.getDisplayWidth() as int;
-      final dh = c.getDisplayHeight() as int;
+      final dw = c.getDisplayWidth();
+      final dh = c.getDisplayHeight();
       if (dw <= 0 || dh <= 0) return false;
       final s1 = w / dw;
       final s2 = h / dh;
       final s = s1 < s2 ? s1 : s2;
-      if (!s.isFinite || s <= 0) return false;
+      if ((c.scale - s).abs() > 0.01) return false;
       final x = (w - dw * s) / 2;
       final y = (h - dh * s) / 2;
-      final dx = (c.x as double) - x;
-      final dy = (c.y as double) - y;
-      final ds = (c.scale as double) - s;
-      final ok = ds.abs() < 0.002 && dx.abs() < 0.6 && dy.abs() < 0.6;
-      if (!ok) c.update(x, y, s);
-      return true;
+      return (c.x - x).abs() < 1.2 && (c.y - y).abs() < 1.2;
     } catch (_) {
       return false;
     }
@@ -1381,9 +1623,9 @@ class _WallTileState extends State<_WallTile> {
   @override
   void dispose() {
     _fitTimer?.cancel();
+    _sleepTimer?.cancel();
     final ts = _toolbarState;
     if (ts != null) kWallToolbarStates.remove(ts);
-    _wallPages.remove(widget.peer.id);
     super.dispose();
   }
 
@@ -1476,13 +1718,24 @@ class _WallTileState extends State<_WallTile> {
                 color: widget.live ? _C.green : Colors.white38,
               ),
             ),
-          // 放大按钮常驻：小窗里最常用的就是这个
-          _barButton(
-            Icons.open_in_full,
-            widget.opened ? '已在大窗口显示，再点切回这个大窗口' : '放大成大窗口（关闭小窗）',
-            widget.onOpen,
-            alwaysShow: true,
-          ),
+          // 放大 / 收回：小窗里最常用的就是这个
+          if (widget.opened)
+            _barButton(
+              Icons.close_fullscreen,
+              '收回屏幕墙（关闭大窗口，恢复小窗预览）',
+              widget.onRestorePreview,
+              alwaysShow: true,
+            )
+          else
+            _barButton(
+              Icons.open_in_full,
+              '放大成大窗口（关闭小窗）',
+              widget.onOpen,
+              alwaysShow: true,
+            ),
+          if (_noSignal && widget.live)
+            _barButton(Icons.refresh, '重新连接这一台', widget.onRetry,
+                alwaysShow: true),
           _barButton(Icons.close_rounded, '从屏幕墙移除', widget.onRemove),
         ],
       ),
@@ -1507,19 +1760,19 @@ class _WallTileState extends State<_WallTile> {
   }
 
   Widget _buildPreview() {
-    if (!widget.live || _toolbarState == null) {
+    if (!widget.live || _sleeping || _toolbarState == null) {
       return _buildPlaceholder();
     }
     final page = RemotePage(
-      key: ValueKey('page_${widget.peer.id}'),
+      // retry 进 key：重连 / 从大窗口收回时换一路全新的会话，
+      // 复用旧 State 会出现「连不上、黑屏、怎么点都没反应」。
+      key: ValueKey('page_${widget.peer.id}_${widget.retry}'),
       id: widget.peer.id,
       // 空密码就不传：让 Rust 用本机保存的密码登录（= 主窗口那份密码），
       // 主窗口能免密直连的设备，墙里也不会再问一遍。
       password: widget.password.isEmpty ? null : widget.password,
       toolbarState: _toolbarState!,
     );
-    // 群控广播需要拿到每个会话的 FFI（RemotePage.ffi），注册进全局表
-    _wallPages[widget.peer.id] = page;
     return LayoutBuilder(builder: (context, cons) {
       final w = cons.maxWidth;
       final h = cons.maxHeight;
@@ -1527,13 +1780,13 @@ class _WallTileState extends State<_WallTile> {
         final changed = _tileSize.width != w || _tileSize.height != h;
         _tileSize = Size(w, h);
         if (changed) {
-          // 尺寸一确定就立刻拟合一次，别等 500ms 的定时器（那就是「自适应慢」）
+          // 尺寸一确定就立刻拟合一次，别等定时器（那就是「自适应慢」）
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) unawaited(_applyFit());
           });
         }
       }
-      return Listener(
+      final child = Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: (e) {
           _onDown(e);
@@ -1543,21 +1796,91 @@ class _WallTileState extends State<_WallTile> {
             widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
         child: ClipRect(child: page),
       );
+      if (!_noSignal) return child;
+      return Stack(children: [
+        Positioned.fill(child: child),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 6,
+          child: Center(child: _reconnectChip()),
+        ),
+      ]);
     });
+  }
+
+  /// 连不上时的浮层：明确给一个「重新连接」，不用再靠反复开关窗口碰运气
+  Widget _reconnectChip() {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: widget.onRetry,
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.55),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.refresh, size: 12, color: Colors.white),
+              SizedBox(width: 4),
+              Text('连接失败，点此重连',
+                  style: TextStyle(fontSize: 10.5, color: Colors.white)),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildPlaceholder() {
     final p = widget.peer;
     final needPw = p.online && widget.password.isEmpty && !widget.opened;
+    final bool paused = !widget.live && !widget.opened && !widget.over;
     final String hint;
     if (widget.opened) {
       hint = '已放大成大窗口显示';
+    } else if (_sleeping) {
+      hint = '已挂起（切回来自动恢复）';
+    } else if (widget.over) {
+      hint = '超出同时预览上限（$_kMaxLive 路）';
     } else if (!p.online) {
       hint = '设备离线';
     } else if (needPw) {
       hint = '还没保存密码';
     } else {
       hint = '预览已暂停';
+    }
+    VoidCallback? action;
+    String? actionText;
+    IconData icon = Icons.desktop_windows_outlined;
+    if (widget.opened) {
+      action = widget.onRestorePreview;
+      actionText = '收回屏幕墙';
+      icon = Icons.close_fullscreen;
+    } else if (needPw) {
+      action = widget.onSetPassword;
+      actionText = '输入密码';
+      icon = Icons.key_outlined;
+    } else if (_sleeping) {
+      action = () {
+        setState(() => _sleeping = false);
+        _styleDone = false;
+        _began = null;
+        _fitTicks = 0;
+        _settled = false;
+        if (widget.live) _startFitLoop();
+      };
+      actionText = '立即恢复';
+      icon = Icons.play_circle_outline;
+    } else if (paused) {
+      action = widget.onRetry;
+      actionText = '开始预览';
+      icon = Icons.play_circle_outline;
     }
     return Listener(
       behavior: HitTestBehavior.opaque,
@@ -1568,29 +1891,24 @@ class _WallTileState extends State<_WallTile> {
       onPointerUp: (e) =>
           widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
       child: InkWell(
-        onTap: widget.opened
-            ? widget.onRestorePreview
-            : (needPw ? widget.onSetPassword : widget.onOpen),
+        onTap: action ?? widget.onOpen,
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                  widget.opened
-                      ? Icons.open_in_full
-                      : (needPw
-                          ? Icons.key_outlined
-                          : Icons.desktop_windows_outlined),
-                  size: 26,
-                  color: Colors.white24),
+              Icon(icon, size: 26, color: Colors.white24),
               const SizedBox(height: 6),
-              Text(hint,
-                  style: const TextStyle(fontSize: 11, color: Colors.white38)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Text(hint,
+                    textAlign: TextAlign.center,
+                    style:
+                        const TextStyle(fontSize: 11, color: Colors.white38)),
+              ),
               const SizedBox(height: 6),
-              if (widget.opened || needPw)
+              if (action != null && actionText != null)
                 OutlinedButton(
-                  onPressed:
-                      widget.opened ? widget.onRestorePreview : widget.onSetPassword,
+                  onPressed: action,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.white,
                     side: BorderSide(color: Colors.white.withOpacity(0.35)),
@@ -1600,8 +1918,10 @@ class _WallTileState extends State<_WallTile> {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     textStyle: const TextStyle(fontSize: 11.5),
                   ),
-                  child: Text(widget.opened ? '恢复小窗预览' : '输入密码'),
+                  child: Text(actionText),
                 )
+              else if (widget.over || !p.online)
+                const SizedBox.shrink()
               else
                 Text(
                   '双击放大成大窗口',
