@@ -109,10 +109,20 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   bool _live = true;
   bool _fullscreen = false;
 
-  /// 已经「放大成大窗口」的设备：双击小窗后开独立远控窗口，
+  /// 已经「在独立窗口里打开」的设备：双击小窗后开独立远控窗口，
   /// 同时把这一格的预览会话关掉（和原生小窗→大窗口的行为一致），
   /// 免得同一台设备在本机并着两路会话。
   final Set<String> _bigIds = {};
+
+  /// 墙内放大的那一格（铺满整墙，null = 正常网格）。
+  ///
+  /// 「放大」以前是开独立窗口，收回来要跨窗口关窗 + 轮询子窗口列表，
+  /// 这条链上任何一环不灵（窗口 id 对不上、列表拿不到、子进程没注册
+  /// controller），用户就只能把整个墙关掉重开 —— 就是他说的
+  /// 「屏幕放大后无法退回小窗口，只能关闭」。
+  /// 现在放大就在墙里做：同一棵树上换尺寸/层级，收放都是本地 setState，
+  /// 不跨窗口、不重连会话。
+  String? _maxId;
 
   /// 已开的大窗口：设备 id -> 子窗口 id（用来判断那个窗口是不是被关掉了）
   final Map<String, int> _bigWinIds = {};
@@ -150,6 +160,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     // 否则原生会按 28px 标签栏修正鼠标坐标 → 点哪里都差 28 像素。
     CanvasModel.wallNoEdge = true;
     WallFps.begin();
+    // Esc 收回墙内放大（只在放大态拦截，平时完全透传）
+    try {
+      HardwareKeyboard.instance.addHandler(_onKeyEvent);
+    } catch (_) {}
     // 子窗口默认拦了系统关闭信号，这里放开，任务栏 X 才能正常关掉墙。
     // 窗口刚创建时 method channel 可能还没就绪，首帧后再补一次。
     _releasePreventClose();
@@ -416,6 +430,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     }
     _bigIds.remove(peer.id.replaceAll(' ', ''));
     _retryGen.remove(peer.id.replaceAll(' ', ''));
+    // 移除的正好是放大那一格：退回网格，否则画面停在一个已删掉的设备上
+    if (_maxId == peer.id.replaceAll(' ', '')) _maxId = null;
     await _syncFavPeers(force: true);
     if (mounted) setState(() {});
     showToast('已从屏幕墙移除');
@@ -433,6 +449,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   void dispose() {
     _favTimer?.cancel();
     CanvasModel.wallNoEdge = false;
+    try {
+      HardwareKeyboard.instance.removeHandler(_onKeyEvent);
+    } catch (_) {}
     if (_groupOn) _releaseGroupButtons();
     _bigWatch?.cancel();
     WallFps.restore();
@@ -666,6 +685,21 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
   }
 
+  /// Esc = 收回墙内放大。
+  ///
+  /// 放大后整墙都被画面盖住，必须有一个「不用找按钮」的退出方式，
+  /// 否则用户只能关窗口。用全局键盘钩子而不是 Focus：RemotePage 内部
+  /// 会抢焦点，Focus.onKeyEvent 收不到；这里只在放大态吞掉 Esc，
+  /// 平时完全透传（不干扰远端键盘）。
+  bool _onKeyEvent(KeyEvent e) {
+    if (_maxId == null) return false;
+    if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.escape) {
+      setState(() => _maxId = null);
+      return true;
+    }
+    return false;
+  }
+
   // ---------------- 自绘标题栏 ----------------
 
   Widget _buildTitleBar() {
@@ -786,6 +820,12 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           const SizedBox(width: 10),
           _groupChip(),
           const Spacer(),
+          if (_maxId != null) ...[
+            // 放大后最显眼的出口：墙上格子里的按钮可能被画面盖住/看不清，
+            // 顶栏这个一直在。
+            _restoreFromMaxChip(),
+            const SizedBox(width: 8),
+          ],
           if (_groupOn) ...[
             const Icon(Icons.wifi_tethering,
                 size: 13, color: Color(0xFF2FA45C)),
@@ -794,7 +834,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                 style: TextStyle(fontSize: 11.5, color: Color(0xFF2FA45C))),
             const SizedBox(width: 8),
           ],
-          const Text('双击卡片进入控制',
+          const Text('双击卡片放大/收回',
               style: TextStyle(fontSize: 11.5, color: Color(0xFF6B7280))),
           const SizedBox(width: 6),
           _iconButton(Icons.playlist_add_check, '添加设备到屏幕墙',
@@ -803,6 +843,43 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             _syncFavPeers(force: true);
           }),
         ],
+      ),
+    );
+  }
+
+  /// 顶栏的「收回」提示条：放大后用它在任何情况下都能退回网格
+  Widget _restoreFromMaxChip() {
+    var name = '';
+    for (final p in _peers) {
+      if (p.id.replaceAll(' ', '') == _maxId) {
+        name = p.alias.isNotEmpty ? p.alias : p.hostname;
+        break;
+      }
+    }
+    return InkWell(
+      onTap: () => setState(() => _maxId = null),
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        height: 22,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1B72D6),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.close_fullscreen, size: 12, color: Colors.white),
+            const SizedBox(width: 4),
+            Text(
+              '收回${name.isEmpty ? '' : '「$name」'}（Esc）',
+              style: const TextStyle(
+                  fontSize: 11.5,
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1135,7 +1212,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     final pw = _pwOf(peer);
     // 先让这一格的小窗关掉（live=false → 预览会话 dispose），
     // 再开大窗口：同一台设备在本机不会并着两路会话。
-    setState(() => _bigIds.add(key));
+    setState(() {
+      if (_maxId == key) _maxId = null; // 墙内放大与独立窗口不叠加
+      _bigIds.add(key);
+    });
     Future.delayed(const Duration(milliseconds: 260), () async {
       if (!mounted) return;
       int wid = 0;
@@ -1268,23 +1348,40 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             // 所有格子 dispose 再重建 → 每一路都断开重连（用户看到的就是
             // 「切分屏就掉线、还经常连不回来」）。Stack 只改位置和显隐，
             // 格子的 State 和会话都保得住，切档位不断线。
+            //
+            // 墙内放大（_maxId）：被放大的那格改成铺满整个 body 并放到最后一层，
+            // 其它格原地不动（只是被完全盖住）——会话一路都不动，
+            // 收回是瞬间的，不用重连。
+            final maxKey = _maxId;
             final children = <Widget>[];
+            Widget? maxChild;
             for (var i = 0; i < peers.length; i++) {
               final r = i ~/ cols;
               final k = i % cols;
-              final fits = fitW && fitH && i < slots;
-              children.add(Positioned(
+              final key = peers[i].id.replaceAll(' ', '');
+              final isMax = maxKey != null && key == maxKey;
+              // 放大那格无论当前档位能不能放下都要显示（用户是在这一格上点的放大）
+              final fits = (fitW && fitH && i < slots) || isMax;
+              final cell = Positioned(
                 key: ValueKey('cell_${peers[i].id}'),
-                left: fits ? pad + k * (tw + gap) : 0,
-                top: fits ? pad + r * (th + gap) : 0,
-                width: fits ? tw : 8,
-                height: fits ? th : 8,
+                left: isMax ? 0 : (fits ? pad + k * (tw + gap) : 0),
+                top: isMax ? 0 : (fits ? pad + r * (th + gap) : 0),
+                width: isMax ? c.maxWidth : (fits ? tw : 8),
+                height: isMax ? c.maxHeight : (fits ? th : 8),
                 child: Offstage(
                   offstage: !fits,
-                  child: _tile(peers[i], visible: fits, order: i),
+                  child: _tile(peers[i],
+                      visible: fits, order: i, maximized: isMax),
                 ),
-              ));
+              );
+              if (isMax) {
+                maxChild = cell;
+              } else {
+                children.add(cell);
+              }
             }
+            // 放大格必须最后画：Stack 里后加的在上层，否则会被旁边的格子盖住
+            if (maxChild != null) children.add(maxChild);
             return Stack(children: children);
           },
         );
@@ -1292,7 +1389,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
   }
 
-  Widget _tile(Peer peer, {required bool visible, required int order}) {
+  Widget _tile(Peer peer,
+      {required bool visible,
+      required int order,
+      bool maximized = false}) {
     final key = peer.id.replaceAll(' ', '');
     final pw = _pwOf(peer);
     final opened = _bigIds.contains(key);
@@ -1306,8 +1406,14 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       order: order,
       over: over,
       retry: _retryGen[key] ?? 0,
-      live: _live && !opened && !over && _canPreview(peer),
+      // 放大那一格要一定有画面：即使它排在第 17 位（超出同时预览上限），
+      // 放大以后就是「单独看这一台」，必须给它一路会话。
+      live: _live && !opened && (!over || maximized) && _canPreview(peer),
       opened: opened,
+      maximized: maximized,
+      onToggleMax: () => setState(() {
+        _maxId = maximized ? null : key;
+      }),
       onOpen: () => _openBig(peer),
       onRestorePreview: () => _restorePreview(peer),
       onRetry: () {
@@ -1369,6 +1475,12 @@ class _WallTile extends StatefulWidget {
   /// 这一格已经放大成大窗口了（小窗预览已关）
   final bool opened;
 
+  /// 这一格正在墙内放大（铺满整墙）
+  final bool maximized;
+
+  /// 墙内放大 / 收回
+  final VoidCallback onToggleMax;
+
   /// 双击 / 点放大按钮：切换到大窗口显示（小窗关闭）
   final VoidCallback onOpen;
 
@@ -1397,6 +1509,8 @@ class _WallTile extends StatefulWidget {
     required this.over,
     required this.retry,
     required this.opened,
+    required this.maximized,
+    required this.onToggleMax,
     required this.onOpen,
     required this.onRestorePreview,
     required this.onRetry,
@@ -1441,6 +1555,26 @@ class _WallTileState extends State<_WallTile> {
 
   /// 这一格画面区的实际尺寸，交给画布算缩放用
   Size _tileSize = Size.zero;
+
+  /// 画面区的 key：用来算它在窗口里的位置（鼠标坐标换算的基准）
+  final GlobalKey _imgKey = GlobalKey();
+
+  /// 把「画面区左上角在窗口里的坐标」写给画布。
+  ///
+  /// 鼠标事件（`PointerEvent.position`）给的是**窗口全局坐标**，而画布的
+  /// x/y 只是画面在本格内部的偏移。原生换算是「(全局 - x) / scale」，
+  /// 墙里不减掉本格原点，落点就会整体偏出一整格 —— 用户看到的就是
+  /// 「在小窗口点这里，远端光标跑到很远的地方」。
+  void _syncOrigin() {
+    if (!mounted) return;
+    final ro = _imgKey.currentContext?.findRenderObject();
+    if (ro is! RenderBox || !ro.hasSize) return;
+    final sess = wallFfi(widget.peer.id);
+    if (sess == null) return;
+    try {
+      sess.canvasModel.globalOrigin = ro.localToGlobal(Offset.zero);
+    } catch (_) {}
+  }
 
   bool _hover = false;
 
@@ -1506,6 +1640,27 @@ class _WallTileState extends State<_WallTile> {
       _fitTimer?.cancel();
       _fitTimer = null;
     }
+    // 放大 / 收回：放大后这一格就是控制台，工具栏要出来（切视图模式、
+    // 发 Ctrl+Alt+Del 都要用它）；收回网格再藏起来。
+    if (widget.maximized != oldWidget.maximized) {
+      _applyToolbarMode();
+    }
+  }
+
+  /// 墙体网格里工具栏一律不渲染（画面全留给远端桌面）；
+  /// 放大成单屏控制台时再放出来。
+  void _applyToolbarMode() {
+    final ts = _toolbarState;
+    if (ts == null) return;
+    final show = widget.maximized;
+    try {
+      if (show) {
+        kWallToolbarStates.remove(ts);
+      } else {
+        kWallToolbarStates.add(ts);
+      }
+      ts.hide.value = !show;
+    } catch (_) {}
   }
 
   /// 错开建会话的时间：16 路一起握手会把本机和对端都打满，
@@ -1524,9 +1679,8 @@ class _WallTileState extends State<_WallTile> {
   void _ensureSession() {
     if (_sleeping) return;
     _toolbarState ??= ToolbarState();
-    _toolbarState!.hide.value = true;
-    // 注册进「墙预览」集合：这条会话的工具栏一律不渲染
-    kWallToolbarStates.add(_toolbarState!);
+    // 网格里工具栏不渲染；放大成控制台时 _applyToolbarMode 会放出来
+    _applyToolbarMode();
     _began ??= DateTime.now();
     _startFitLoop();
     // 会话是延迟建起来的（错开握手），建好后要让这一格重建一次，
@@ -1587,6 +1741,10 @@ class _WallTileState extends State<_WallTile> {
     final tag = '$sid';
     final ready =
         tag != '0' && tag != '00000000-0000-0000-0000-000000000000';
+
+    // 0) 画面区在窗口里的原点：每次校准都顺手刷一遍（工具栏折叠、窗口
+    // 移动、放大/收回都会改变它，而鼠标换算全靠这个值）。
+    _syncOrigin();
 
     // 1) 画布尺寸 = 格子尺寸。尺寸一变就必须重算一次。
     if (_tileSize.width > 8 && _tileSize.height > 8) {
@@ -1684,10 +1842,12 @@ class _WallTileState extends State<_WallTile> {
     // 群控开着时，双击就是「往所有被控端各点两下」，
     // 不能再顺带把这一格放大（否则群控时双击必开大窗口）。
     if (widget.onGroupPointer != null) return;
-    // 双击就是「放大成大窗口」，不再先拦一层密码框。
-    // 密码已经在墙里查过（本机配置那份 = 主窗口自动登录用的那份），
-    // 真没有密码时大窗口自己会问，问过之后存下来，墙里下次也不用再问。
-    widget.onOpen();
+    // 已经放大了：双击留给远端（放大后就是控制台，双击 = 打开文件/程序），
+    // 收回一律走标题条按钮或 Esc —— 否则想收回时反而给远端点了两下。
+    if (widget.maximized) return;
+    // 双击 = 墙内放大（铺满整墙）。不再开独立窗口：那条路要跨窗口关窗 +
+    // 轮询窗口列表才能收回，用户遇到的就是「放大了回不去，只能关掉」。
+    widget.onToggleMax();
   }
 
   @override
@@ -1752,26 +1912,37 @@ class _WallTileState extends State<_WallTile> {
             Text(
               widget.opened
                   ? '大窗口'
-                  : (widget.live ? '预览中' : (online ? '待连接' : '离线')),
+                  : (widget.maximized
+                      ? '已放大'
+                      : (widget.live
+                          ? '预览中'
+                          : (online ? '待连接' : '离线'))),
               style: TextStyle(
                 fontSize: 9.5,
                 color: widget.live ? _C.green : Colors.white38,
               ),
             ),
-          // 放大 / 收回：小窗里最常用的就是这个
+          // 放大 / 收回：小窗里最常用的就是这个。放大走墙内（本地 setState），
+          // 收回直接点这里或按 Esc，不依赖跨窗口关窗。
+          _barButton(
+            widget.maximized ? Icons.close_fullscreen : Icons.open_in_full,
+            widget.maximized ? '收回（Esc）' : '放大（铺满屏幕墙）',
+            widget.onToggleMax,
+            alwaysShow: true,
+          ),
+          // 独立大窗口：偶尔要拖到第二块屏看，留一个入口（不是默认行为）
           if (widget.opened)
             _barButton(
               Icons.close_fullscreen,
-              '收回屏幕墙（关闭大窗口，恢复小窗预览）',
+              '收回屏幕墙（关闭独立窗口，恢复小窗预览）',
               widget.onRestorePreview,
               alwaysShow: true,
             )
           else
             _barButton(
-              Icons.open_in_full,
-              '放大成大窗口（关闭小窗）',
+              Icons.open_in_new,
+              '在独立窗口打开（关闭小窗预览）',
               widget.onOpen,
-              alwaysShow: true,
             ),
           if (_noSignal && widget.live)
             _barButton(Icons.refresh, '重新连接这一台', widget.onRetry,
@@ -1819,6 +1990,11 @@ class _WallTileState extends State<_WallTile> {
       if (w.isFinite && h.isFinite && w > 2 && h > 2) {
         final changed = _tileSize.width != w || _tileSize.height != h;
         _tileSize = Size(w, h);
+        // 画面区在窗口里的左上角：鼠标事件给的是窗口全局坐标，原生换算时
+        // 必须减掉它（每格都不一样）。尺寸变了位置也会变，所以跟着刷。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _syncOrigin();
+        });
         if (changed) {
           // 尺寸一确定就立刻拟合一次，别等定时器（那就是「自适应慢」）
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1827,6 +2003,7 @@ class _WallTileState extends State<_WallTile> {
         }
       }
       final child = Listener(
+        key: _imgKey,
         behavior: HitTestBehavior.translucent,
         onPointerDown: (e) {
           _onDown(e);
@@ -1935,7 +2112,7 @@ class _WallTileState extends State<_WallTile> {
       onPointerCancel: (e) =>
           widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
       child: InkWell(
-        onTap: action ?? widget.onOpen,
+        onTap: action ?? widget.onToggleMax,
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1968,7 +2145,7 @@ class _WallTileState extends State<_WallTile> {
                 const SizedBox.shrink()
               else
                 Text(
-                  '双击放大成大窗口',
+                  '双击放大（铺满屏幕墙）',
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 10, color: Colors.white24),
                 ),
