@@ -44,6 +44,7 @@ jobs:
           python3 patches/patch_license.py src desktop
           python3 patches/patch_toolbar_eye.py src
           python3 patches/patch_wall_canvas.py src
+          python3 patches/patch_default_view_only.py src
           grep -n "ClientHomePage" src/flutter/lib/main.dart
 
       - name: Parse check patched native files
