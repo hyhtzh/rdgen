@@ -65,6 +65,31 @@ SCALE_ADD = """    // 【HyDesk】屏幕墙小窗：不管会话里存的 view-s
     }
     _resetCanvasOffset(displayWidth, displayHeight);"""
 
+# 墙里的小窗没有标签栏/窗口边框，但 CanvasModel.topToEdge 仍会按 28px 的标签栏
+# 高度去修正鼠标坐标 —— 于是「点的位置」和「远端落点」差 28 个逻辑像素。
+# 墙窗口里把这两个边距置零，坐标就和画面完全对齐了。
+LEFT_ANCHOR = """  static double get leftToEdge =>
+      isDesktop ? windowBorderWidth + kDragToResizeAreaPadding.left : 0;"""
+LEFT_ADD = """  static double get leftToEdge => !isDesktop || wallNoEdge
+      ? 0
+      : windowBorderWidth + kDragToResizeAreaPadding.left;"""
+
+TOP_ANCHOR = """  static double get topToEdge => isDesktop
+      ? tabBarHeight + windowBorderWidth + kDragToResizeAreaPadding.top
+      : 0;"""
+TOP_ADD = """  static double get topToEdge => !isDesktop || wallNoEdge
+      ? 0
+      : tabBarHeight + windowBorderWidth + kDragToResizeAreaPadding.top;"""
+
+FLAG_ANCHOR = """  /// 最近一次布局尺寸，由 RemotePage 的 _ViewStyleUpdater 写入。
+  Size? layoutSize;"""
+FLAG_ADD = """  /// 最近一次布局尺寸，由 RemotePage 的 _ViewStyleUpdater 写入。
+  Size? layoutSize;
+
+  /// 【HyDesk】屏幕墙窗口里置 true：墙里的小窗没有标签栏/边框，
+  /// 不能再按顶层窗口的边距去修正鼠标坐标。
+  static bool wallNoEdge = false;"""
+
 RESET_ANCHOR = """  reset() {
     _scale = _lastViewStyle.scale;"""
 RESET_ADD = """  reset() {
@@ -136,6 +161,9 @@ def main():
         if not os.path.isfile(p):
             raise SystemExit('missing file: %s' % p)
     patch(model, FIELD_ANCHOR, FIELD_ADD, 'CanvasModel.useLayoutSize')
+    patch(model, FLAG_ANCHOR, FLAG_ADD, 'CanvasModel.wallNoEdge')
+    patch(model, LEFT_ANCHOR, LEFT_ADD, 'CanvasModel.leftToEdge')
+    patch(model, TOP_ANCHOR, TOP_ADD, 'CanvasModel.topToEdge')
     patch(model, GETSIZE_ANCHOR, GETSIZE_ADD, 'CanvasModel.getSize')
     patch(page, UPDATER_ANCHOR, UPDATER_ADD, '_ViewStyleUpdater.layoutSize')
     patch(model, EARLY_ANCHOR, EARLY_ADD, 'CanvasModel.updateViewStyle.early')
