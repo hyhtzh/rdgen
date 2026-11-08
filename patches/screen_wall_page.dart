@@ -1670,6 +1670,9 @@ class _WallTileState extends State<_WallTile> {
   /// 这一格画面区的实际尺寸，交给画布算缩放用
   Size _tileSize = Size.zero;
 
+  /// 上一次应用过的「是否允许抢本机键盘」，避免每轮校准都重复调 enterOrLeave
+  bool? _grabApplied;
+
   /// 画面区的 key：用来算它在窗口里的位置（鼠标坐标换算的基准）
   final GlobalKey _imgKey = GlobalKey();
 
@@ -1775,6 +1778,27 @@ class _WallTileState extends State<_WallTile> {
       }
       ts.hide.value = !show;
     } catch (_) {}
+    _applyGrabMode();
+  }
+
+  /// 网格态禁止这一格 grab 本机键盘，放大成单屏才允许。
+  ///
+  /// Rust 侧 `session_enter_or_leave(true)` 会把 `KEYBOARD_HOOKED` 置 true、
+  /// 装全局键盘钩子，把**整台电脑**的键盘交给远端。墙里 9 格并排，鼠标
+  /// 一划过就在几个会话之间来回抢，本机输入法彻底拿不到键。
+  void _applyGrabMode() {
+    final sess = wallFfi(widget.peer.id);
+    if (sess == null) return;
+    try {
+      final allow = widget.maximized;
+      if (_grabApplied == allow) return;
+      _grabApplied = allow;
+      final im = sess.inputModel;
+      im.wallNoGrab = !allow;
+      // 从放大收回时主动释放：别指望 MouseRegion 的 onExit 一定触发，
+      // 释放不掉的 grab 会让本机键盘一直被远端占着。
+      if (!allow) im.enterOrLeave(false);
+    } catch (_) {}
   }
 
   /// 错开建会话的时间：十几路一起握手会把本机和对端都打满，
@@ -1804,7 +1828,10 @@ class _WallTileState extends State<_WallTile> {
     // 否则画面会一直停在占位卡片上。
     if (mounted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _active) setState(() {});
+        if (mounted && _active) {
+          _applyGrabMode();
+          setState(() {});
+        }
       });
     }
   }
@@ -1909,6 +1936,10 @@ class _WallTileState extends State<_WallTile> {
       }
     }
     if (noSignal != _noSignal && mounted) setState(() => _noSignal = noSignal);
+
+    // 会话建好之后才能拿到 InputModel：在这里补一次「网格态不许 grab」，
+    // 否则从窗口打开到会话起来这段时间，鼠标一进格子就会把本机键盘抢走。
+    _applyGrabMode();
   }
 
   /// 体检：缩放和居中偏移是否都在容差内（只读，不改画布）
@@ -1938,6 +1969,10 @@ class _WallTileState extends State<_WallTile> {
     _sleepTimer?.cancel();
     final ts = _toolbarState;
     if (ts != null) kWallToolbarStates.remove(ts);
+    // 这一格被销毁时也要把本机键盘放回去（grab 没释放会让整机输入法失效）
+    try {
+      wallFfi(widget.peer.id)?.inputModel.enterOrLeave(false);
+    } catch (_) {}
     super.dispose();
   }
 
