@@ -504,6 +504,12 @@ class _AddressBookViewState extends State<AddressBookView> {
   bool _batch = false;
   final Set<String> _sel = {};
 
+  /// 排列方式：列表 / 网格（和首页设备列表那套一致）
+  bool _grid = false;
+
+  /// 名称正序 / 倒序
+  bool _asc = true;
+
   /// 行首的状态点读的是收藏/最近模型里的 online，模型收到
   /// callback_query_onlines 后会 notifyListeners，这里一并订阅才会跟着变红绿。
   late final Listenable _ticker = Listenable.merge([
@@ -530,7 +536,9 @@ class _AddressBookViewState extends State<AddressBookView> {
           e.tag.toLowerCase().contains(raw) ||
           e.note.toLowerCase().contains(raw);
     }).toList();
-    list.sort((a, b) => a.display.compareTo(b.display));
+    list.sort((a, b) => _asc
+        ? a.display.compareTo(b.display)
+        : b.display.compareTo(a.display));
     return list;
   }
 
@@ -554,7 +562,9 @@ class _AddressBookViewState extends State<AddressBookView> {
                   _tagPane(store),
                   Container(width: 1, color: _AC.line),
                   Expanded(
-                      child: list.isEmpty ? _empty(store) : _list(list)),
+                      child: list.isEmpty
+                          ? _empty(store)
+                          : (_grid ? _gridView(list) : _list(list))),
                 ],
               ),
             ),
@@ -770,6 +780,19 @@ class _AddressBookViewState extends State<AddressBookView> {
                 Text('共 ${list.length} 台设备',
                     style: const TextStyle(fontSize: 12, color: _AC.sub)),
                 const Spacer(),
+                _barIcon(
+                  _grid ? Icons.view_list_rounded : Icons.grid_on_rounded,
+                  _grid ? '列表排列' : '网格排列',
+                  () => setState(() => _grid = !_grid),
+                  active: _grid,
+                ),
+                _barIcon(
+                  Icons.swap_vert,
+                  _asc ? '改为倒序' : '改为正序',
+                  () => setState(() => _asc = !_asc),
+                  active: !_asc,
+                ),
+                const SizedBox(width: 2),
                 TextButton.icon(
                   onPressed: list.isEmpty
                       ? null
@@ -805,6 +828,211 @@ class _AddressBookViewState extends State<AddressBookView> {
       return;
     }
     showToast(n == 0 ? '该设备已在屏幕墙里' : '已加入屏幕墙');
+  }
+
+  /// 顶部小图标按钮（列表/网格、正倒序）
+  Widget _barIcon(IconData icon, String tip, VoidCallback onTap,
+      {bool active = false}) {
+    return Tooltip(
+      message: tip,
+      waitDuration: const Duration(milliseconds: 500),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(5),
+        child: SizedBox(
+          width: 30,
+          height: 28,
+          child: Icon(icon, size: 17, color: active ? _AC.blue : _AC.sub),
+        ),
+      ),
+    );
+  }
+
+  Widget _gridView(List<AbEntry> list) {
+    return GridView.builder(
+      padding: const EdgeInsets.all(12),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 268,
+        mainAxisExtent: 80,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+      ),
+      itemCount: list.length,
+      itemBuilder: (context, i) => _card(list[i]),
+    );
+  }
+
+  /// 网格卡片：一行标题（状态点 + 名称 + 标签 + 更多），一行头像 + 识别码/备注
+  Widget _card(AbEntry e) {
+    final status = _statusOf(e.id);
+    final checked = _sel.contains(e.id);
+    final seed = e.display.isEmpty ? e.id : e.display;
+    final letter = seed.isEmpty ? '?' : seed.substring(0, 1);
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        hoverColor: _AC.hover,
+        onTap: () {
+          if (_batch) {
+            setState(() => checked ? _sel.remove(e.id) : _sel.add(e.id));
+          } else {
+            widget.onConnect(e.id);
+          }
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: checked ? _AC.blue : const Color(0xFFEDEFF2)),
+          ),
+          padding: const EdgeInsets.fromLTRB(9, 5, 2, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (_batch)
+                    SizedBox(
+                      width: 24,
+                      child: Checkbox(
+                        value: checked,
+                        materialTapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                        onChanged: (v) => setState(
+                            () => v == true ? _sel.add(e.id) : _sel.remove(e.id)),
+                      ),
+                    )
+                  else
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                          color: _dotColor(status), shape: BoxShape.circle),
+                    ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      seed,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w500,
+                          color: _AC.text),
+                    ),
+                  ),
+                  if (e.tag.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(right: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: _AC.blue.withOpacity(0.07),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                      child: Text(e.tag,
+                          style:
+                              const TextStyle(fontSize: 10, color: _AC.blue)),
+                    ),
+                  _entryMenu(e),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: abAvatarColor(seed),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      letter.toUpperCase(),
+                      style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          formatAbId(e.id),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 11.5, color: _AC.sub),
+                        ),
+                        if (e.note.isNotEmpty)
+                          Text(
+                            e.note,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 10.5, color: Color(0xFF9AA3AF)),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 卡片右上角的「更多」菜单（和列表行同一套动作）
+  Widget _entryMenu(AbEntry e) {
+    return SizedBox(
+      width: 26,
+      height: 24,
+      child: PopupMenuButton<String>(
+        tooltip: '更多',
+        padding: EdgeInsets.zero,
+        icon: const Icon(Icons.more_horiz, size: 17, color: Color(0xFF9E9E9E)),
+        onSelected: (v) {
+          if (v == 'edit') {
+            _edit(context, e);
+          } else if (v == 'delete') {
+            _confirmDelete(context, e);
+          } else if (v == 'copy') {
+            _copyId(e.id);
+          } else if (v == 'wall') {
+            _addOneToWall(e.id);
+          }
+        },
+        itemBuilder: (_) => const [
+          PopupMenuItem(
+              value: 'wall',
+              height: 36,
+              child: Text('添加到屏幕墙', style: TextStyle(fontSize: 13))),
+          PopupMenuItem(
+              value: 'edit',
+              height: 36,
+              child: Text('编辑', style: TextStyle(fontSize: 13))),
+          PopupMenuItem(
+              value: 'copy',
+              height: 36,
+              child: Text('复制识别码', style: TextStyle(fontSize: 13))),
+          PopupMenuItem(
+              value: 'delete',
+              height: 36,
+              child: Text('删除',
+                  style: TextStyle(fontSize: 13, color: Color(0xFFE23B3B)))),
+        ],
+      ),
+    );
   }
 
   Widget _list(List<AbEntry> list) {
