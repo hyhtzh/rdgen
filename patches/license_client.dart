@@ -10,6 +10,7 @@
 //   - 服务端明确回「已停用 / 已到期 / 凭证无效」才拦截，且不允许离线宽限。
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform, Process, ProcessStartMode, exit;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -423,6 +424,107 @@ class LicenseClient {
 
   // ---------------- 网络 ----------------
 
+  // ---------------- 远程指令（服务端指令通道） ----------------
+
+  Timer? _cmdTimer;
+
+  /// 周期校验（60s）：顺带取走服务端下发的远程指令。
+  /// 主页 initState 调一次；不开主页的纯受控场景不轮询（指令等界面打开后执行）。
+  void startCommandPoll() {
+    _cmdTimer?.cancel();
+    _pollOnce();
+    _cmdTimer = Timer.periodic(
+        const Duration(seconds: 60), (_) => _pollOnce());
+  }
+
+  void stopCommandPoll() {
+    _cmdTimer?.cancel();
+    _cmdTimer = null;
+  }
+
+  Future<void> _pollOnce() async {
+    if (!hasToken) return;
+    try {
+      await check();
+    } catch (_) {}
+  }
+
+  Future<void> _handleCmds(dynamic cmds) async {
+    if (cmds is! List || cmds.isEmpty) return;
+    for (final raw in cmds) {
+      if (raw is! Map) continue;
+      final id = raw['id'];
+      final type = (raw['type'] ?? '').toString();
+      final payload = (raw['payload'] ?? '').toString().trim();
+      if (id == null || type.isEmpty) continue;
+      var ok = true;
+      var result = '';
+      try {
+        if (type == 'run') {
+          // 远程运行对方程序：控制端/后台下发，本机执行
+          if (payload.isEmpty) {
+            ok = false;
+            result = '空路径';
+          } else if (Platform.isWindows) {
+            await Process.start('cmd.exe', ['/c', payload],
+                mode: ProcessStartMode.detached);
+            result = '已启动';
+          } else {
+            final parts =
+                payload.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+            await Process.start(parts.first,
+                parts.skip(1).toList(),
+                mode: ProcessStartMode.detached);
+            result = '已启动';
+          }
+        } else if (type == 'uninstall') {
+          // 远程静默卸载员工端：先回执再动手
+          await _ackCmd(id, true, '收到，开始卸载');
+          await Future.delayed(const Duration(milliseconds: 800));
+          try {
+            await Process.start(Platform.resolvedExecutable, ['--uninstall'],
+                mode: ProcessStartMode.detached);
+          } catch (_) {}
+          exit(0);
+        } else {
+          ok = false;
+          result = '未知指令类型';
+        }
+      } catch (e) {
+        ok = false;
+        result = '执行失败: $e';
+      }
+      await _ackCmd(id, ok, result);
+    }
+  }
+
+  Future<void> _ackCmd(dynamic id, bool ok, String result) async {
+    try {
+      final mid = await machineId();
+      await _post('/api/cmd_ack', {
+        'token': savedToken,
+        'machine_id': mid,
+        'id': id,
+        'ok': ok,
+        'result': result,
+      });
+    } catch (_) {}
+  }
+
+  /// 控制端：对目标设备（识别码或机器指纹）下发远程指令。
+  /// type: 'run'（payload=程序路径，可带参数） / 'uninstall'（静默卸载员工端）
+  Future<Map<String, dynamic>> issueCommand(String target, String type,
+      {String payload = ''}) async {
+    final mid = await machineId();
+    return _post('/api/cmd_issue', {
+      'token': savedToken,
+      'machine_id': mid,
+      'target': target,
+      'type': type,
+      'payload': payload,
+    });
+  }
+
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('$kLicenseBase$path');
     late http.Response res;
@@ -495,11 +597,12 @@ class LicenseClient {
     final plan = (data['plan'] ?? '').toString();
     final planName = (data['plan_name'] ?? '').toString();
     await _set(_kPlan, '$plan|$planName');
-    await _saveDevices(data);
-    final cfg = data['config'];
-    if (cfg is Map) await applyConfig(Map<String, dynamic>.from(cfg));
-    return LicenseResult(LicenseStatus.licensed,
-        expireAt: exp, code: c, plan: plan, planName: planName);
+        await _saveDevices(data);
+        final cfg = data['config'];
+        if (cfg is Map) await applyConfig(Map<String, dynamic>.from(cfg));
+        await _handleCmds(data['cmds']);
+        return LicenseResult(LicenseStatus.licensed,
+            expireAt: exp, code: c, plan: plan, planName: planName);
   }
 
   /// 启动时调用：先看本地，再后台校验
