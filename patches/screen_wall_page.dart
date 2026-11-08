@@ -128,6 +128,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   bool _groupOn = false;
   String _groupPrimary = '';
 
+  /// 已经收到 down、还没收到 up 的设备 id。抬起的坐标不一定和按下时同格，
+  /// 但保证「按下的每台都会收到对应的抬起」，不会出现按键卡住。
+  final Set<String> _groupDown = {};
+
   /// 独立子窗口才有的 windowId；主窗口内压栈时为 null
   int? get _windowId => kWindowId;
 
@@ -437,8 +441,11 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 退出群控 / 页面销毁时，给所有被控端补一个「抬起」：
   /// 否则对端会一直以为左键按着，鼠标就"卡"住了。
   void _releaseGroupButtons() {
-    for (final p in _peers) {
-      final sess = wallFfi(p.id);
+    if (_groupDown.isEmpty) return;
+    final pending = _groupDown.toList();
+    _groupDown.clear();
+    for (final id in pending) {
+      final sess = wallFfi(id);
       if (sess == null) continue;
       try {
         bind.sessionSendMouse(
@@ -485,7 +492,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 显示原点。这样不管格子被缩放到多大，落点都和原生点击一致。
   void _groupPointer(String id, Offset local, bool down) {
     if (!_groupOn) return;
-    _groupPrimary = id;
+    if (down) _groupPrimary = id;
 
     double rx = 0, ry = 0;
     int pw = 0, ph = 0;
@@ -506,6 +513,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
     for (final p in _peers) {
       if (p.id == id) continue;
+      // 抬起：只补给真正按下过的那几台
+      if (!down && !_groupDown.contains(p.id)) continue;
       final sess = wallFfi(p.id);
       if (sess == null) continue;
       try {
@@ -525,6 +534,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         final int yi = y.round();
         final sid = sess.sessionId;
         if (down) {
+          _groupDown.add(p.id);
           // 先移动再按下：远端光标先到位，点击才落在主控点的那一处
           bind.sessionSendMouse(
               sessionId: sid,
@@ -543,6 +553,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                 'y': '$yi',
               }));
         } else {
+          _groupDown.remove(p.id);
           bind.sessionSendMouse(
               sessionId: sid,
               msg: json.encode({
