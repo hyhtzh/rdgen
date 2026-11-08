@@ -211,6 +211,10 @@ jobs:
           curl -sSL -o patch_wall_canvas.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py
           python patch_wall_canvas.py .
+          curl -sSL -o patch_default_view_only.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py
+          python patch_default_view_only.py .
+          grep -n "_hyApplyDefaultViewOnly" flutter/lib/desktop/pages/remote_page.dart
 
       - name: Set custom app version
         continue-on-error: true
