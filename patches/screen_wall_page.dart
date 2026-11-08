@@ -28,9 +28,12 @@ import 'package:flutter_hbb/utils/multi_window_manager.dart';
 const _kCapacities = [4, 9, 16, 32, 64];
 
 /// 同时保持多少路预览会话。
-/// 每路会话在 Rust 侧都有一份解码 + 输入钩子，铺太多会拖慢本机，
-/// 也会让键盘钩子/输入法互相打架（用户报过「开久了输入法失效」）。
-const _kMaxLive = 16;
+///
+/// 每路会话在本机都有一份解码线程 + 一路视频流，铺太多会把整机 CPU 吃满，
+/// 表现是进程消息循环饿死 → 输入法候选框弹不出来、键盘像失灵
+/// （用户报过「开启屏幕墙后整个电脑无法使用输入法」）。
+/// 9 路已经够看一个 3×3 墙；16/32 档超出的格子只显示卡片，点开再连。
+const _kMaxLive = 9;
 
 /// 取某一格的 FFI（会话、画布、输入模型都在里面）。
 ///
@@ -64,35 +67,80 @@ class _C {
   static const green = Color(0xFF34C759);
 }
 
-/// 屏幕墙只需要低帧画面，把全局 custom-fps 压到 2 再恢复。
-/// 墙现在是独立进程，被任务栏 X 直接关掉时 dispose 不会执行，所以额外存一份
-/// 备份 + dirty 标记，主窗口下次启动时兜底恢复（否则以后所有远程都变成 2 帧）。
+/// 屏幕墙只需要低帧画面，进墙时把全局 custom-fps 压到合法下限再恢复。
+///
+/// **值必须 ≥ 5**：RustDesk 的 io_loop 里有
+/// `if custom_fps < 5 || custom_fps > 120 { custom_fps = 30 }` 的兜底，
+/// 以前这里写的是 '2'，会被判非法直接回落成 **30 帧** —— 等于墙里
+/// 9~16 路一直在全速解码，整机被拖到输入法都弹不出来。这是本次的真凶。
+///
+/// 墙是独立进程，被任务栏 X 直接关掉时 dispose 不会执行，所以额外存一份
+/// 备份 + dirty 标记，主窗口下次启动时兜底恢复（否则以后所有远程都变成 5 帧）。
 class WallFps {
   static const _kFps = 'custom-fps';
   static const _kBackup = 'wall-fps-backup';
   static const _kDirty = 'wall-fps-dirty';
 
+  // 画质同理：墙里每格只有几百像素宽，却按 balanced/best 拉整屏原图，
+  // 解码量白白放大好几倍。网格态降到 low，放大成单屏再恢复。
+  static const _kQual = 'image_quality';
+  static const _kQualBackup = 'wall-qual-backup';
+  static const _kQualDirty = 'wall-qual-dirty';
+
+  /// RustDesk 允许的最小帧率；低于它会被当成非法值回落 30
+  static const _kLow = '5';
+  static const _kQualLow = 'low';
+
   static void begin() {
     try {
-      final dirty = bind.mainGetUserDefaultOption(key: _kDirty) == 'Y';
+      // 上次墙是任务栏 X / 崩溃退出的，dirty 会留在配置里。
+      // 先把值恢复回去，再重新备份当前值 —— 否则用户在这期间改过的设置
+      // 会被旧备份覆盖。
+      final dirtyFps = bind.mainGetUserDefaultOption(key: _kDirty) == 'Y';
       final cur = bind.mainGetUserDefaultOption(key: _kFps);
-      if (!dirty && cur.isNotEmpty && cur != '2') {
-        bind.mainSetUserDefaultOption(key: _kBackup, value: cur);
+      if (dirtyFps) {
+        restore();
+      } else {
+        // 历史版本写坏的 '2' 不能备份（它本身是非法值，读回来会变成 30）
+        final keep = (cur.isEmpty || cur == '2') ? '30' : cur;
+        bind.mainSetUserDefaultOption(key: _kBackup, value: keep);
         bind.mainSetUserDefaultOption(key: _kDirty, value: 'Y');
       }
-      bind.mainSetUserDefaultOption(key: _kFps, value: '2');
+
+      if (bind.mainGetUserDefaultOption(key: _kQualDirty) == 'Y') {
+        _restoreQuality();
+      } else {
+        final q = bind.mainGetUserDefaultOption(key: _kQual);
+        bind.mainSetUserDefaultOption(
+            key: _kQualBackup, value: q.isEmpty ? 'balanced' : q);
+        bind.mainSetUserDefaultOption(key: _kQualDirty, value: 'Y');
+      }
+
+      bind.mainSetUserDefaultOption(key: _kFps, value: _kLow);
+      bind.mainSetUserDefaultOption(key: _kQual, value: _kQualLow);
+    } catch (_) {}
+  }
+
+  static void _restoreQuality() {
+    try {
+      if (bind.mainGetUserDefaultOption(key: _kQualDirty) != 'Y') return;
+      final b = bind.mainGetUserDefaultOption(key: _kQualBackup);
+      bind.mainSetUserDefaultOption(
+          key: _kQual, value: b.isNotEmpty ? b : 'balanced');
+      bind.mainSetUserDefaultOption(key: _kQualDirty, value: 'N');
     } catch (_) {}
   }
 
   /// 恢复并清标记；主窗口启动时也调用它做兜底
   static void restore() {
     try {
-      if (bind.mainGetUserDefaultOption(key: _kDirty) != 'Y') return;
-      final backup = bind.mainGetUserDefaultOption(key: _kBackup);
-      if (backup.isNotEmpty) {
-        bind.mainSetUserDefaultOption(key: _kFps, value: backup);
+      if (bind.mainGetUserDefaultOption(key: _kDirty) == 'Y') {
+        final backup = bind.mainGetUserDefaultOption(key: _kBackup);
+        bind.mainSetUserDefaultOption(
+            key: _kFps, value: backup.isNotEmpty ? backup : '30');
+        bind.mainSetUserDefaultOption(key: _kDirty, value: 'N');
       }
-      bind.mainSetUserDefaultOption(key: _kDirty, value: 'N');
+      _restoreQuality();
     } catch (_) {}
   }
 }
@@ -105,7 +153,12 @@ class ScreenWallPage extends StatefulWidget {
 }
 
 class _ScreenWallPageState extends State<ScreenWallPage> {
-  int _capacity = 16;
+  /// 默认开 4 格（2×2）。
+  ///
+  /// 以前默认 16：一进墙就把收藏里 16 台全部建会话、同时拉 16 路视频，
+  /// 机器当场被拖满 —— 用户看到的是「打开屏幕墙后整个电脑输入法都不能用」。
+  /// 现在默认只连 4 路，用户切到 9/16 档才连更多，而且选择会记住。
+  int _capacity = 4;
   bool _live = true;
   bool _fullscreen = false;
 
@@ -156,6 +209,12 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   void initState() {
     super.initState();
     bind.mainLoadFavPeers();
+    // 上次用的档位（默认 4）。存在用户配置里，重启后不用每次重新切。
+    try {
+      final saved =
+          int.tryParse(bind.mainGetUserDefaultOption(key: 'wall-capacity'));
+      if (saved != null && _kCapacities.contains(saved)) _capacity = saved;
+    } catch (_) {}
     // 墙窗口里的小窗没有标签栏/窗口边框：把画布的边距置零，
     // 否则原生会按 28px 标签栏修正鼠标坐标 → 点哪里都差 28 像素。
     CanvasModel.wallNoEdge = true;
@@ -431,7 +490,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     _bigIds.remove(peer.id.replaceAll(' ', ''));
     _retryGen.remove(peer.id.replaceAll(' ', ''));
     // 移除的正好是放大那一格：退回网格，否则画面停在一个已删掉的设备上
-    if (_maxId == peer.id.replaceAll(' ', '')) _maxId = null;
+    if (_maxId == peer.id.replaceAll(' ', '')) _setMaxId(null);
     await _syncFavPeers(force: true);
     if (mounted) setState(() {});
     showToast('已从屏幕墙移除');
@@ -702,16 +761,47 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
   }
 
+  /// 切换「墙内放大」，同时同步帧率。
+  ///
+  /// 网格态 9~16 路都在跑，必须压到低帧（5 帧，RustDesk 允许的下限）；
+  /// 放大成单屏就是控制台，5 帧没法操作，要恢复用户自己的帧率。
+  void _setMaxId(String? id) {
+    if (_maxId == id) return;
+    _maxId = id;
+    _applyFpsForMode();
+  }
+
+  /// 网格态压帧/降画质，放大态恢复。
+  ///
+  /// `custom-fps` 的合法范围是 5~120，写更小的值会被 RustDesk 判非法、
+  /// 回落成 30（这就是以前「压了帧率还卡」的根因）。
+  void _applyFpsForMode() {
+    try {
+      final backFps = bind.mainGetUserDefaultOption(key: 'wall-fps-backup');
+      final backQual = bind.mainGetUserDefaultOption(key: 'wall-qual-backup');
+      if (_maxId != null) {
+        bind.mainSetUserDefaultOption(
+            key: 'custom-fps', value: backFps.isNotEmpty ? backFps : '30');
+        bind.mainSetUserDefaultOption(
+            key: 'image_quality',
+            value: backQual.isNotEmpty ? backQual : 'balanced');
+      } else {
+        bind.mainSetUserDefaultOption(key: 'custom-fps', value: '5');
+        bind.mainSetUserDefaultOption(key: 'image_quality', value: 'low');
+      }
+    } catch (_) {}
+  }
+
   /// Esc = 收回墙内放大。
   ///
   /// 放大后整墙都被画面盖住，必须有一个「不用找按钮」的退出方式，
   /// 否则用户只能关窗口。用全局键盘钩子而不是 Focus：RemotePage 内部
-  /// 会抢焦点，Focus.onKeyEvent 收不到；这里只在放大态吞掉 Esc，
-  /// 平时完全透传（不干扰远端键盘）。
+  /// 会抢焦点，Focus.onKeyEvent 收不到。这里只在放大态吞掉 Esc，
+  /// 平时完全透传（不干扰远端键盘、也不碰本机输入法）。
   bool _onKeyEvent(KeyEvent e) {
     if (_maxId == null) return false;
     if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.escape) {
-      setState(() => _maxId = null);
+      setState(() => _setMaxId(null));
       return true;
     }
     return false;
@@ -877,7 +967,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       }
     }
     return InkWell(
-      onTap: () => setState(() => _maxId = null),
+      onTap: () => setState(() => _setMaxId(null)),
       borderRadius: BorderRadius.circular(4),
       child: Container(
         height: 22,
@@ -1120,6 +1210,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       });
     }
     setState(() => _capacity = value);
+    try {
+      bind.mainSetUserDefaultOption(
+          key: 'wall-capacity', value: '$value');
+    } catch (_) {}
   }
 
   Widget _capacityChip(int value) {
@@ -1233,7 +1327,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     // 先让这一格的小窗关掉（live=false → 预览会话 dispose），
     // 再开大窗口：同一台设备在本机不会并着两路会话。
     setState(() {
-      if (_maxId == key) _maxId = null; // 墙内放大与独立窗口不叠加
+      if (_maxId == key) _setMaxId(null); // 墙内放大与独立窗口不叠加
       _bigIds.add(key);
     });
     Future.delayed(const Duration(milliseconds: 260), () async {
@@ -1432,7 +1526,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       opened: opened,
       maximized: maximized,
       onToggleMax: () => setState(() {
-        _maxId = maximized ? null : key;
+        _setMaxId(maximized ? null : key);
       }),
       onOpen: () => _openBig(peer),
       onRestorePreview: () => _restorePreview(peer),
@@ -1683,10 +1777,13 @@ class _WallTileState extends State<_WallTile> {
     } catch (_) {}
   }
 
-  /// 错开建会话的时间：16 路一起握手会把本机和对端都打满，
-  /// 表现就是「进墙很慢、半天才出画面」。
+  /// 错开建会话的时间：十几路一起握手会把本机和对端都打满，
+  /// 表现就是「进墙很慢、半天才出画面」，严重时整机发卡。
+  /// 前 4 格快速铺开（用户第一眼要看的就是这几格），其余每 450ms 补一路。
   void _scheduleSession() {
-    final delay = Duration(milliseconds: widget.order.clamp(0, 12) * 110);
+    final o = widget.order.clamp(0, 15);
+    final ms = o < 4 ? o * 150 : 1200 + (o - 4) * 450;
+    final delay = Duration(milliseconds: ms);
     if (delay == Duration.zero) {
       _ensureSession();
       return;
