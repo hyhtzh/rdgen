@@ -1040,6 +1040,30 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     });
     _setGroupListeners(_groupOn);
     if (wasOn && !_groupOn) _releaseGroupButtons();
+    // 群控开 = 要操作这么多台，把各路从「只看」切成可操作；
+    // 群控关 = 回到只看，避免退出群控后随手一点就落到别人机器上。
+    if (wasOn != _groupOn) _applyViewOnlyToAll(!_groupOn);
+  }
+
+  /// 把墙里所有会话的「只看」状态刷成目标值（群控开关联动）。
+  ///
+  /// 目标值一样就跳过：翻转会话选项同时会写设备配置并推给对端，
+  /// 不必要地翻来翻去会让对端的键盘/剪贴板开关反复跳。
+  Future<void> _applyViewOnlyToAll(bool viewOnly) async {
+    for (final p in _peers) {
+      final sess = wallFfi(p.id);
+      if (sess == null) continue;
+      try {
+        final sid = sess.sessionId;
+        final cur = await bind.sessionGetToggleOption(
+            sessionId: sid, arg: kOptionToggleViewOnly);
+        // 读不到（会话还没起来）就不动 Flutter 侧的状态，免得两边说法不一致
+        if (cur == null || cur == viewOnly) continue;
+        await bind.sessionToggleOption(
+            sessionId: sid, value: kOptionToggleViewOnly);
+        sess.ffiModel.setViewOnly(p.id, viewOnly);
+      } catch (_) {}
+    }
   }
 
   /// 已经买过卡密的用户，不必绕到授权详情，就地兑换
@@ -1781,16 +1805,26 @@ class _WallTileState extends State<_WallTile> {
     _applyGrabMode();
   }
 
-  /// 网格态禁止这一格 grab 本机键盘，放大成单屏才允许。
+  /// 网格态禁止这一格 grab 本机键盘，放大成单屏才允许；只看态一律不抢。
   ///
   /// Rust 侧 `session_enter_or_leave(true)` 会把 `KEYBOARD_HOOKED` 置 true、
   /// 装全局键盘钩子，把**整台电脑**的键盘交给远端。墙里 9 格并排，鼠标
   /// 一划过就在几个会话之间来回抢，本机输入法彻底拿不到键。
+  ///
+  /// 1.5.23 起所有会话默认是「只看画面」：只看的会话被 Rust 拦掉了输入，
+  /// 再 grab 本机键盘纯属白占着钩子，所以这里与 view-only 取交集。
   void _applyGrabMode() {
     final sess = wallFfi(widget.peer.id);
     if (sess == null) return;
     try {
-      final allow = widget.maximized;
+      // 群控开着的时候，主控格自己的点击走正常输入通道，会被「只看」吃掉，
+      // 所以这一路必须切成可操作（群控关掉时由墙统一切回只看）。
+      if (widget.onGroupPointer != null) _forceControlForGroup(sess);
+      var viewOnly = false;
+      try {
+        viewOnly = sess.ffiModel.viewOnly;
+      } catch (_) {}
+      final allow = widget.maximized && !viewOnly;
       if (_grabApplied == allow) return;
       _grabApplied = allow;
       final im = sess.inputModel;
@@ -1799,6 +1833,36 @@ class _WallTileState extends State<_WallTile> {
       // 释放不掉的 grab 会让本机键盘一直被远端占着。
       if (!allow) im.enterOrLeave(false);
     } catch (_) {}
+  }
+
+  /// 群控进行中：把这一路从「只看」切回「可操作」。
+  ///
+  /// 用「读当前值 → 确实是只看才翻」的方式，反复调用不会把状态翻乱；
+  /// 每轮体检都会调一次，所以群控中途才连上的格子也会自己纠过来。
+  bool _groupControlFixing = false;
+  void _forceControlForGroup(FFI sess) {
+    if (_groupControlFixing) return;
+    try {
+      if (!sess.ffiModel.viewOnly) return;
+    } catch (_) {
+      return;
+    }
+    _groupControlFixing = true;
+    () async {
+      try {
+        final sid = sess.sessionId;
+        final cur = await bind.sessionGetToggleOption(
+            sessionId: sid, arg: kOptionToggleViewOnly);
+        if (cur == null) return;
+        if (cur == true) {
+          await bind.sessionToggleOption(
+              sessionId: sid, value: kOptionToggleViewOnly);
+        }
+        sess.ffiModel.setViewOnly(widget.peer.id, false);
+      } catch (_) {} finally {
+        _groupControlFixing = false;
+      }
+    }();
   }
 
   /// 错开建会话的时间：十几路一起握手会把本机和对端都打满，
@@ -1857,8 +1921,10 @@ class _WallTileState extends State<_WallTile> {
     _fitTicks++;
     await _applyFit();
     if (!mounted || !_active) return;
-    // 稳定后放慢：9 路 × 400ms 的空转没必要，3 秒够用了
-    _armFit(_settled ? 3000 : 400);
+    // 稳定后放慢：9 路 × 400ms 的空转没必要，3 秒够用了。
+    // 放大成单屏时例外 —— 一轮只盯一路，保持 400ms，眼睛按钮切「可操作」
+    // 之后要立刻把本机键盘 grab 回来，不能让用户等 3 秒。
+    _armFit((_settled && !widget.maximized) ? 3000 : 400);
   }
 
   /// 把这一格的画布钉在「整屏塞进格子」的状态。
