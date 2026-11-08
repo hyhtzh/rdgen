@@ -28,6 +28,7 @@ PAGES = [
     'screen_wall_page.dart',
     'settings_page.dart',
     'address_book_page.dart',
+    'file_transfer_page.dart',
 ]
 
 SCREEN_WALL_APP_TYPE = 'kAppTypeScreenWall'
