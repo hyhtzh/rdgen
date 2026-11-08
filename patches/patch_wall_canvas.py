@@ -116,6 +116,33 @@ INPUT_ADD = """    // 【HyDesk】屏幕墙小窗：同一窗口里并着好几�
       x -= CanvasModel.leftToEdge;
     }"""
 
+# 键盘 grab：屏幕墙里最要命的一条。
+#
+# 鼠标进入某一格 → InputModel.enterOrLeave(true) → Rust 的
+# session_enter_or_leave(true) → keyboard::client::change_grab_status(Run)
+# → KEYBOARD_HOOKED=true + 装 rdev 全局键盘钩子，**把整台机器的键盘交给远端**。
+# 墙里 9 格并排，鼠标一划过就在几个 session 之间来回抢 owner（日志里
+# `[grab] Run/Wait ... releasing grab` 每秒刷好几条），本机输入法根本拿不到键，
+# 用户看到的就是「开启屏幕墙后整个电脑无法使用输入法」。
+#
+# 网格态只做预览/鼠标，不抢键盘；放大成单屏（控制台）才允许抢。
+GRAB_FIELD_ANCHOR = """  void enterOrLeave(bool enter) {
+    toReleaseKeys.release(handleKeyEvent);"""
+GRAB_FIELD_ADD = """  /// 【HyDesk】屏幕墙网格里的预览会话置 true：不去 grab 本机键盘。
+  bool wallNoGrab = false;
+
+  void enterOrLeave(bool enter) {
+    toReleaseKeys.release(handleKeyEvent);"""
+
+GRAB_CALL_ANCHOR = """    if (!isInputSourceFlutter) {
+      bind.sessionEnterOrLeave(sessionId: sessionId, enter: enter);
+    }"""
+GRAB_CALL_ADD = """    // 【HyDesk】墙里网格态不抢本机键盘（否则输入法整机失效）；
+    // 释放（enter=false）照常发，保证放大收回后一定把 grab 放掉。
+    if (!isInputSourceFlutter && !(wallNoGrab && enter)) {
+      bind.sessionEnterOrLeave(sessionId: sessionId, enter: enter);
+    }"""
+
 RESET_ANCHOR = """  reset() {
     _scale = _lastViewStyle.scale;"""
 RESET_ADD = """  reset() {
@@ -199,6 +226,10 @@ def main():
     # 鼠标坐标：墙里必须按「本格画面区原点」修正，否则点第二格会跳到很远
     if os.path.isfile(input_model):
         patch(input_model, INPUT_ANCHOR, INPUT_ADD, 'InputModel.wallOrigin')
+        patch(input_model, GRAB_FIELD_ANCHOR, GRAB_FIELD_ADD,
+              'InputModel.wallNoGrab')
+        patch(input_model, GRAB_CALL_ANCHOR, GRAB_CALL_ADD,
+              'InputModel.wallNoGrab.call')
     else:
         raise SystemExit('missing file: %s' % input_model)
 
