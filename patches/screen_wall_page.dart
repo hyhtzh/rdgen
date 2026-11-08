@@ -634,20 +634,18 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     } catch (_) {}
   }
 
-  /// 墙窗口当前是否由我们最大化（不依赖 native 的 isMaximized：
-  /// 自绘边框的子窗口在 Windows 上常常恒返回 false，于是「点了最大化就
-  /// 再也还原不了，只能关窗口」）。
+  /// 墙窗口当前是否由我们最大化。
+  ///
+  /// 不能只信 native 的 `isMaximized()`：自绘边框的子窗口在 Windows 上
+  /// 常常恒返回 false，于是「点一次最大化，之后再点还是最大化」——
+  /// 用户看到的就是「屏幕放大后无法缩小，只能关闭」。
+  /// 这里自己记状态，native 只当第一次的线索。
   bool _maxed = false;
-
-  /// 最大化之前的位置尺寸，还原时用
-  Rect? _normalFrame;
 
   Future<void> _toggleMaximize() async {
     final id = _windowId;
     if (id == null) return;
     final wc = WindowController.fromWindowId(id);
-    // 先看本地状态；第一次点的时候 native 也可能已经是最大化（用户手动拖的），
-    // 所以再问一次 native，两个都当线索。
     var isMax = _maxed;
     if (!isMax) {
       try {
@@ -656,22 +654,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     }
     try {
       if (isMax) {
-        try {
-          await wc.unmaximize();
-        } catch (_) {}
-        // 再显式恢复一次尺寸：unmaximize 在自绘边框窗口上有时不生效，
-        // 这才是「只能关闭」的兜底。
-        final f = _normalFrame;
-        if (f != null) {
-          try {
-            await wc.setFrame(f);
-          } catch (_) {}
-        }
+        await wc.unmaximize();
         _maxed = false;
       } else {
-        try {
-          _normalFrame = await wc.getFrame();
-        } catch (_) {}
         await wc.maximize();
         _maxed = true;
       }
