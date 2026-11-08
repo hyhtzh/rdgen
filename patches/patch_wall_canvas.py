@@ -25,6 +25,7 @@ import sys
 
 MODEL_REL = os.path.join('flutter', 'lib', 'models', 'model.dart')
 PAGE_REL = os.path.join('flutter', 'lib', 'desktop', 'pages', 'remote_page.dart')
+INPUT_REL = os.path.join('flutter', 'lib', 'models', 'input_model.dart')
 
 FIELD_ANCHOR = "  final _imageOverflow = false.obs;"
 FIELD_ADD = """  final _imageOverflow = false.obs;
@@ -88,7 +89,32 @@ FLAG_ADD = """  /// 最近一次布局尺寸，由 RemotePage 的 _ViewStyleUpda
 
   /// 【HyDesk】屏幕墙窗口里置 true：墙里的小窗没有标签栏/边框，
   /// 不能再按顶层窗口的边距去修正鼠标坐标。
-  static bool wallNoEdge = false;"""
+  static bool wallNoEdge = false;
+
+  /// 【HyDesk】本画布的画面区左上角在**窗口**里的坐标。
+  ///
+  /// 墙是「一个窗口里并着好几格」，鼠标事件给的是窗口全局坐标，而
+  /// canvas.x/y 只是画面在**本格内部**的偏移。以前统一减 topToEdge/
+  /// leftToEdge（= 顶层窗口的标签栏+边框），在墙里就只减掉了标题栏，
+  /// 每格自己的偏移一点没减 → 点第二格，远端光标跳到很远的地方。
+  /// 现在由墙里每格在布局完成后写进来，换算时按这个原点减。
+  Offset globalOrigin = Offset.zero;"""
+
+# input_model.dart：鼠标事件是「窗口全局坐标」，墙里必须减掉本格画面区的原点。
+INPUT_ANCHOR = """    y -= CanvasModel.topToEdge;
+    x -= CanvasModel.leftToEdge;"""
+INPUT_ADD = """    // 【HyDesk】屏幕墙小窗：同一窗口里并着好几格，每格画面区左上角都不同，
+    // 固定减顶层窗口的 topToEdge/leftToEdge 只减掉了标题栏，格子自己的偏移
+    // 还在 → 落点会被算到很远的地方。墙里改用画布自己上报的窗口原点。
+    if (CanvasModel.wallNoEdge) {
+      final _wallOrigin =
+          parent.target?.canvasModel.globalOrigin ?? Offset.zero;
+      x -= _wallOrigin.dx;
+      y -= _wallOrigin.dy;
+    } else {
+      y -= CanvasModel.topToEdge;
+      x -= CanvasModel.leftToEdge;
+    }"""
 
 RESET_ANCHOR = """  reset() {
     _scale = _lastViewStyle.scale;"""
@@ -160,6 +186,7 @@ def main():
     for p in (model, page):
         if not os.path.isfile(p):
             raise SystemExit('missing file: %s' % p)
+    input_model = os.path.join(root, INPUT_REL)
     patch(model, FIELD_ANCHOR, FIELD_ADD, 'CanvasModel.useLayoutSize')
     patch(model, FLAG_ANCHOR, FLAG_ADD, 'CanvasModel.wallNoEdge')
     patch(model, LEFT_ANCHOR, LEFT_ADD, 'CanvasModel.leftToEdge')
@@ -169,6 +196,11 @@ def main():
     patch(model, EARLY_ANCHOR, EARLY_ADD, 'CanvasModel.updateViewStyle.early')
     patch(model, SCALE_ANCHOR, SCALE_ADD, 'CanvasModel.updateViewStyle.fit')
     patch(model, RESET_ANCHOR, RESET_ADD, 'CanvasModel.reset.fit')
+    # 鼠标坐标：墙里必须按「本格画面区原点」修正，否则点第二格会跳到很远
+    if os.path.isfile(input_model):
+        patch(input_model, INPUT_ANCHOR, INPUT_ADD, 'InputModel.wallOrigin')
+    else:
+        raise SystemExit('missing file: %s' % input_model)
 
 
 if __name__ == '__main__':
