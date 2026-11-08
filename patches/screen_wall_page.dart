@@ -676,6 +676,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         _maxed = true;
       }
     } catch (_) {}
+    if (mounted) setState(() {});
   }
 
   Future<void> _closeWindow() async {
@@ -793,7 +794,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
                   await WindowController.fromWindowId(id).minimize();
                 } catch (_) {}
               }, tooltip: '最小化'),
-              _winButton(Icons.crop_square, _toggleMaximize, tooltip: '最大化 / 还原'),
+              _winButton(
+                  _maxed ? Icons.filter_none : Icons.crop_square,
+                  _toggleMaximize,
+                  tooltip: _maxed ? '还原窗口' : '最大化'),
               _winButton(Icons.close, _closeWindow, tooltip: '关闭'),
             ],
             const SizedBox(width: 4),
