@@ -6,6 +6,7 @@
 //  2) 主窗口内 Navigator 压栈（独立窗口创建失败时的降级，带返回栏）。
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show exit;
 import 'dart:math' as math;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
@@ -723,17 +724,54 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     if (mounted) setState(() {});
   }
 
+  /// 正在优雅关闭：格子先摘下树，再关窗口。期间 build 直接给空壳，
+  /// 防止轮询/重建把 RemotePage 又拉回树上。
+  bool _shutting = false;
+
   Future<void> _closeWindow() async {
+    if (_shutting) return;
     final id = _windowId;
     if (id == null) {
+      // 主窗口压栈的降级形态：正常 pop，路由销毁时整棵树连同
+      // RemotePage 一起 dispose，会话本来就是优雅关闭的。
       if (mounted) Navigator.of(context).maybePop();
       return;
     }
+    _shutting = true;
+    if (mounted) setState(() {});
+    // 1) 先把所有格子从树上摘掉：RemotePage 走完整 dispose
+    //    （释放 grab、销毁纹理、向对端发 sessionClose）。
+    //    之前是窗口一关整个进程直接死，4~9 路会话不发关闭消息，
+    //    对端/中继留着一堆半开连接 —— 用户接着单独连同一台设备时
+    //    握手困难，过一会儿还容易崩（就是这次要修的问题）。
+    await Future.delayed(const Duration(milliseconds: 150));
+    // 2) 兜底：树上没摘干净的（挂起、Offstage 里的）直接关 FFI。
+    //    已关过的再关一次是无害的（sessionClose 对已关会话是空操作）。
+    for (final p in _peers) {
+      final sess = wallFfi(p.id);
+      if (sess == null) continue;
+      try {
+        await sess.close(closeSession: true);
+      } catch (_) {}
+    }
+    // 3) 恢复全局帧率/画质（子进程销毁时 dispose 不会跑，这里手动恢复，
+    //    磁盘上的配置立刻回到墙外该有的值）
+    WallFps.restore();
+    // 4) 给 sessionClose / 输入释放一点冲刷时间再销毁窗口
+    await Future.delayed(const Duration(milliseconds: 400));
     try {
       final wc = WindowController.fromWindowId(id);
       await wc.setPreventClose(false);
       await wc.close();
     } catch (_) {}
+    // 5) 进程兜底：窗口销毁后引擎偶尔被 Rust 会话线程拽住不退，
+    //    留一个看不见的进程继续占着几路连接（表现同「关了墙还连不上」）。
+    //    1.5 秒后强退；主窗口压栈形态不走这里（_windowId == null）。
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      try {
+        exit(0);
+      } catch (_) {}
+    });
   }
 
   Future<void> _startDrag() async {
@@ -746,6 +784,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 关闭中：只剩空壳。不摘干净的话，周期同步会把 RemotePage 又 build 回来。
+    if (_shutting) {
+      return const Scaffold(backgroundColor: _C.bg, body: SizedBox.expand());
+    }
     return DefaultTextStyle.merge(
       style: const TextStyle(decoration: TextDecoration.none),
       child: Scaffold(
