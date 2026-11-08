@@ -146,6 +146,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   void initState() {
     super.initState();
     bind.mainLoadFavPeers();
+    // 墙窗口里的小窗没有标签栏/窗口边框：把画布的边距置零，
+    // 否则原生会按 28px 标签栏修正鼠标坐标 → 点哪里都差 28 像素。
+    CanvasModel.wallNoEdge = true;
     WallFps.begin();
     // 子窗口默认拦了系统关闭信号，这里放开，任务栏 X 才能正常关掉墙。
     // 窗口刚创建时 method channel 可能还没就绪，首帧后再补一次。
@@ -429,6 +432,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   @override
   void dispose() {
     _favTimer?.cancel();
+    CanvasModel.wallNoEdge = false;
     if (_groupOn) _releaseGroupButtons();
     _bigWatch?.cancel();
     WallFps.restore();
