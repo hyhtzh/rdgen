@@ -425,6 +425,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   @override
   void dispose() {
     _favTimer?.cancel();
+    if (_groupOn) _releaseGroupButtons();
     _bigWatch?.cancel();
     WallFps.restore();
     _setGroupListeners(false);
@@ -432,6 +433,25 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   // ---------------- 群控广播 ----------------
+
+  /// 退出群控 / 页面销毁时，给所有被控端补一个「抬起」：
+  /// 否则对端会一直以为左键按着，鼠标就"卡"住了。
+  void _releaseGroupButtons() {
+    for (final p in _peers) {
+      final sess = wallFfi(p.id);
+      if (sess == null) continue;
+      try {
+        bind.sessionSendMouse(
+            sessionId: sess.sessionId,
+            msg: json.encode({
+              'type': 'up',
+              'buttons': 'left',
+              'x': '0',
+              'y': '0',
+            }));
+      } catch (_) {}
+    }
+  }
 
   void _setGroupListeners(bool on) {
     try {
@@ -811,11 +831,13 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       _showUpgradeDialog('群控（20 元/月）', 'paGroup');
       return;
     }
+    final wasOn = _groupOn;
     setState(() {
       _groupOn = !_groupOn;
       if (!_groupOn) _groupPrimary = '';
     });
     _setGroupListeners(_groupOn);
+    if (wasOn && !_groupOn) _releaseGroupButtons();
   }
 
   /// 已经买过卡密的用户，不必绕到授权详情，就地兑换
@@ -1644,6 +1666,9 @@ class _WallTileState extends State<_WallTile> {
     _lastDownAt = isDouble ? DateTime.fromMillisecondsSinceEpoch(0) : now;
     _lastDownPos = e.localPosition;
     if (!isDouble) return;
+    // 群控开着时，双击就是「往所有被控端各点两下」，
+    // 不能再顺带把这一格放大（否则群控时双击必开大窗口）。
+    if (widget.onGroupPointer != null) return;
     // 双击就是「放大成大窗口」，不再先拦一层密码框。
     // 密码已经在墙里查过（本机配置那份 = 主窗口自动登录用的那份），
     // 真没有密码时大窗口自己会问，问过之后存下来，墙里下次也不用再问。
@@ -1794,6 +1819,8 @@ class _WallTileState extends State<_WallTile> {
         },
         onPointerUp: (e) =>
             widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
+        onPointerCancel: (e) => widget.onGroupPointer
+            ?.call(widget.peer.id, e.localPosition, false),
         child: ClipRect(child: page),
       );
       if (!_noSignal) return child;
@@ -1889,6 +1916,8 @@ class _WallTileState extends State<_WallTile> {
         widget.onGroupPointer?.call(widget.peer.id, e.localPosition, true);
       },
       onPointerUp: (e) =>
+          widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
+      onPointerCancel: (e) =>
           widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
       child: InkWell(
         onTap: action ?? widget.onOpen,
