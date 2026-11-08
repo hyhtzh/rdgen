@@ -18,6 +18,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
+import 'package:flutter_hbb/desktop/pages/file_transfer_page.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
@@ -167,6 +168,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   Timer? _idTimer;
   int _tab = 1; // 0 最近, 1 收藏, 2 地址簿
   bool _grid = false;
+
+  /// 文件传输宿主是否展开（宿主常驻 Stack，收起时传输继续跑）
+  bool _ftOpen = false;
   bool _asc = true;
   bool _showSearch = true;
   // 批量模式：勾选多台设备一次性加入屏幕墙（最近/收藏页）
@@ -201,6 +205,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         Timer.periodic(const Duration(seconds: 1), (_) => _refreshLocalId());
     // 原版首页负责定期向 Rust 查询设备在线状态，丢了它所有点都是红的
     PeerOnlineProbe.instance.start();
+    // 远程指令通道（远程运行程序 / 静默卸载员工端）：
+    // 60s 周期校验授权时顺带取走服务端下发的指令
+    LicenseClient.instance.startCommandPoll();
     _idFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
@@ -460,6 +467,222 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     _openWallInNewWindow();
   }
 
+  // ---------------- 文件传输 / 远程指令 ----------------
+
+  /// 打开（或聚焦）文件传输面板；presetId 为空时用输入框里的识别码
+  Future<void> _openFileTransfer([String? presetId]) async {
+    final id = (presetId ?? _idController.id).replaceAll(' ', '');
+    if (id.isEmpty) {
+      showToast('请输入远程识别码');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _ftOpen = true);
+    // 宿主在 Stack 里常驻，首帧后即可用
+    await Future.delayed(const Duration(milliseconds: 80));
+    final host = FileTransferHost.instance;
+    if (host == null) {
+      showToast('传输面板初始化中，请再点一次');
+      return;
+    }
+    host.openSession(id, password: _peerPassword(id), alias: _peerAlias(id));
+  }
+
+  String _peerPassword(String id) {
+    try {
+      for (final list
+          in [gFFI.favoritePeersModel.peers, gFFI.recentPeersModel.peers]) {
+        for (final p in list) {
+          if (p.id.replaceAll(' ', '') == id && p.password.isNotEmpty) {
+            return p.password;
+          }
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  String _peerAlias(String id) {
+    try {
+      for (final list
+          in [gFFI.favoritePeersModel.peers, gFFI.recentPeersModel.peers]) {
+        for (final p in list) {
+          if (p.id.replaceAll(' ', '') == id) return p.alias;
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /// 群发文件：一份文件同时发给多台设备（后台并行传输）
+  Future<void> _groupSend() async {
+    final peers = <Peer>[];
+    final seen = <String>{};
+    try {
+      for (final list
+          in [gFFI.favoritePeersModel.peers, gFFI.recentPeersModel.peers]) {
+        for (final p in list) {
+          final k = p.id.replaceAll(' ', '');
+          if (k.isEmpty || !seen.add(k)) continue;
+          peers.add(p);
+        }
+      }
+    } catch (_) {}
+    if (peers.isEmpty) {
+      showToast('设备列表为空，先连接或收藏几台设备');
+      return;
+    }
+    await showGroupSendDialog(context, peers);
+    if (mounted) setState(() => _ftOpen = true);
+  }
+
+  /// 设备右键菜单：传输文件 / 远程运行 / 远程卸载
+  Future<void> _peerMenu(Peer p, Offset pos) async {
+    final v = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx + 1, pos.dy + 1),
+      items: const [
+        PopupMenuItem(value: 'ft', child: Text('传输文件')),
+        PopupMenuItem(value: 'run', child: Text('远程运行程序')),
+        PopupMenuItem(
+            value: 'uninstall',
+            child: Text('卸载员工端（静默）', style: TextStyle(color: Color(0xFFE5484D)))),
+      ],
+    );
+    if (v == null || !mounted) return;
+    final id = p.id.replaceAll(' ', '');
+    switch (v) {
+      case 'ft':
+        _openFileTransfer(id);
+        break;
+      case 'run':
+        _remoteRunPrompt(id);
+        break;
+      case 'uninstall':
+        _uninstallConfirm(id, p.alias.isEmpty ? id : p.alias);
+        break;
+    }
+  }
+
+  Future<void> _remoteRunPrompt(String id) async {
+    final ctrl = TextEditingController();
+    final path = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('远程运行程序', style: TextStyle(fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: r'对方机器上的完整路径，如 C:\apps\tool.exe --silent',
+            isDense: true,
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('下发'),
+          ),
+        ],
+      ),
+    );
+    if (path == null || path.isEmpty) return;
+    try {
+      final r = await LicenseClient.instance
+          .issueCommand(id, 'run', payload: path);
+      showToast(r['ok'] == true ? '指令已下发，对方联网后自动执行' : (r['msg'] ?? '下发失败'));
+    } catch (e) {
+      showToast('下发失败: $e');
+    }
+  }
+
+  Future<void> _uninstallConfirm(String id, String alias) async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('远程卸载员工端', style: TextStyle(fontSize: 15)),
+        content: Text(
+          '将静默卸载「$alias」上的员工端程序（$id）。\n'
+          '对方客户端联网校验后自动卸载并退出，不需要对方确认。',
+          style: const TextStyle(fontSize: 13, color: Color(0xFF666666)),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE5484D)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确认卸载'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    try {
+      final r = await LicenseClient.instance.issueCommand(id, 'uninstall');
+      showToast(r['ok'] == true ? '卸载指令已下发' : (r['msg'] ?? '下发失败'));
+    } catch (e) {
+      showToast('下发失败: $e');
+    }
+  }
+
+  /// 传输浮球：后台有任务在跑时出现
+  Widget _buildFtBall() {
+    if (_ftOpen) return const SizedBox.shrink();
+    return Positioned(
+      right: 18,
+      bottom: 54,
+      child: ValueListenableBuilder<int>(
+        valueListenable: FileTransferHost.activeJobs,
+        builder: (context, n, _) {
+          if (n <= 0) return const SizedBox.shrink();
+          return GestureDetector(
+            onTap: () {
+              if (mounted) setState(() => _ftOpen = true);
+            },
+            child: Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2F6CF6),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0x332F6CF6),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Stack(
+                children: [
+                  const Center(
+                    child: Icon(Icons.swap_vert_circle_outlined,
+                        color: Colors.white, size: 26),
+                  ),
+                  Positioned(
+                    right: 2,
+                    top: 2,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFE5484D),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text('$n',
+                          style: const TextStyle(
+                              fontSize: 10, color: Colors.white)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _openWallInNewWindow() async {
     try {
       await rustDeskWinManager.newScreenWall();
@@ -498,23 +721,41 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       ),
       child: Container(
         color: Colors.white,
-        child: Column(
+        child: Stack(
           children: [
-            _buildTitleBar(),
-            _buildHeader(),
-            Container(height: 1, color: _C.line),
-            _buildToolbar(),
-            if (_showSearch) _buildSearchRow(),
-            Expanded(
-              child: _tab == 2
-                  ? AddressBookView(
-                      query: _searchController.text,
-                      onConnect: (id) => connect(context, id),
-                    )
-                  : _buildPeerArea(),
+            Column(
+              children: [
+                _buildTitleBar(),
+                _buildHeader(),
+                Container(height: 1, color: _C.line),
+                _buildToolbar(),
+                if (_showSearch) _buildSearchRow(),
+                Expanded(
+                  child: _tab == 2
+                      ? AddressBookView(
+                          query: _searchController.text,
+                          onConnect: (id) => connect(context, id),
+                        )
+                      : _buildPeerArea(),
+                ),
+                if (_batch && _tab != 2 && _batchSel.isNotEmpty) _batchBar(),
+                _buildStatusBar(),
+              ],
             ),
-            if (_batch && _tab != 2 && _batchSel.isNotEmpty) _batchBar(),
-            _buildStatusBar(),
+            // 常驻文件传输宿主：Offstage 只是不画，State/会话/任务都活着 ——
+            // 收进后台传输继续，这就是「后台文件传输」
+            Positioned.fill(
+              child: Offstage(
+                offstage: !_ftOpen,
+                child: FileTransferHost(
+                  onHide: () {
+                    if (mounted) setState(() => _ftOpen = false);
+                  },
+                ),
+              ),
+            ),
+            // 传输浮球：后台有任务时出现，点开回到传输面板
+            _buildFtBall(),
           ],
         ),
       ),
@@ -912,7 +1153,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         }
         switch (v) {
           case 'file':
-            connect(context, id, isFileTransfer: true);
+            _openFileTransfer();
             break;
           case 'terminal':
             connect(context, id, isTerminal: true);
@@ -998,6 +1239,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           _tabIcon(Icons.contacts_outlined, '地址簿', 2),
           const SizedBox(width: 4),
           _plainToolIcon(Icons.grid_view_rounded, '屏幕墙', _openWall),
+          _plainToolIcon(Icons.campaign_outlined, '群发文件', _groupSend),
           _plainToolIcon(Icons.settings_outlined, '设置', _openSettings),
           const Spacer(),
           if (_tab == 2) ...[
@@ -1421,7 +1663,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   Widget _peerRow(Peer p) {
     final checked = _batchSel.contains(p.id);
-    return InkWell(
+    // 右键：传输文件 / 远程运行 / 远程卸载（批量模式不响应）
+    return GestureDetector(
+      onSecondaryTapUp: _batch ? null : (d) => _peerMenu(p, d.globalPosition),
+      child: InkWell(
       onTap: () {
         if (_batch) {
           setState(
@@ -1501,10 +1746,18 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 icon: const Icon(Icons.more_horiz,
                     size: 18, color: Color(0xFF9E9E9E)),
                 onSelected: (v) {
+                  final pid = p.id.replaceAll(' ', '');
                   if (v == 'connect') {
                     _connectPeer(p);
                   } else if (v == 'wall') {
                     _addOneToWall(p.id);
+                  } else if (v == 'ft') {
+                    _openFileTransfer(pid);
+                  } else if (v == 'run') {
+                    _remoteRunPrompt(pid);
+                  } else if (v == 'uninstall') {
+                    _uninstallConfirm(
+                        pid, p.alias.isEmpty ? pid : p.alias);
                   } else if (v == 'fav') {
                     _toggleFav([p.id]);
                   } else if (v == 'copy') {
@@ -1518,6 +1771,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       value: 'connect',
                       height: 36,
                       child: Text('连接', style: TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'ft',
+                      height: 36,
+                      child: Text('传输文件',
+                          style: TextStyle(fontSize: 13))),
                   const PopupMenuItem(
                       value: 'wall',
                       height: 36,
@@ -1533,6 +1791,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       height: 36,
                       child: Text('复制识别码',
                           style: TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'run',
+                      height: 36,
+                      child: Text('远程运行程序',
+                          style: TextStyle(fontSize: 13))),
                   const PopupMenuDivider(height: 1),
                   const PopupMenuItem(
                       value: 'delete',
@@ -1540,11 +1803,18 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       child: Text('删除',
                           style: TextStyle(
                               fontSize: 13, color: Color(0xFFE23B3B)))),
+                  const PopupMenuItem(
+                      value: 'uninstall',
+                      height: 36,
+                      child: Text('卸载员工端（静默）',
+                          style: TextStyle(
+                              fontSize: 13, color: Color(0xFFE5484D)))),
                 ],
               ),
             ),
           ],
         ),
+      ),
       ),
     );
   }
