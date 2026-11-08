@@ -597,6 +597,23 @@ jobs:
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
           python3 patch_license.py . android
 
+      - name: Apply screen wall (android)
+        shell: bash
+        run: |
+          set -e
+          # 屏幕墙：拷页面 + 手机主页挂入口（档位/拉流上限在墙页内部按平台分支）
+          curl -sSL -o screen_wall_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart
+          curl -sSL -o address_book_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart
+          curl -sSL -o patch_wall_mobile.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_mobile.py
+          grep -q "_kMaxLive = Platform.isAndroid" screen_wall_page.dart \
+            || { echo 'wall page is not android-aware (upload failed?)'; exit 1; }
+          python3 patch_wall_mobile.py .
+          grep -q "ScreenWallPage" flutter/lib/mobile/pages/home_page.dart \
+            || { echo 'home entry patch failed'; exit 1; }
+
       - name: Hide server settings (android)
         shell: bash
         run: |
