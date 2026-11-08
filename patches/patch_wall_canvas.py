@@ -79,6 +79,39 @@ RESET_ADD = """  reset() {
       }
     }"""
 
+# 「尺寸/样式都没变就直接 return」这一段是「必须反复开关窗口才恢复自适应」的根源：
+# 会话第一次算缩放时画布尺寸可能还是整窗（1:1），之后尺寸再没变过，早退就把错的
+# 缩放一直留着。墙内改成「先补一次强制自适应，值本来就对才返回」。
+EARLY_ANCHOR = """    if (_lastViewStyle == viewStyle &&
+        _devicePixelRatio == ui.window.devicePixelRatio &&
+        style != kRemoteViewStyleCustom) {
+      return;
+    }"""
+EARLY_ADD = """    if (_lastViewStyle == viewStyle &&
+        _devicePixelRatio == ui.window.devicePixelRatio &&
+        style != kRemoteViewStyleCustom) {
+      // 【HyDesk】屏幕墙小窗：到这里说明会话认为「什么都没变」，
+      // 但缩放可能还是第一次按整窗尺寸算出来的那个。先补一次强制自适应，
+      // 值一致就直接返回（不产生多余重绘）。
+      if (!useLayoutSize) {
+        return;
+      }
+      final _dw0 = getDisplayWidth(), _dh0 = getDisplayHeight();
+      final _sz0 = getSize();
+      if (_dw0 <= 0 || _dh0 <= 0 || _sz0.width <= 0 || _sz0.height <= 0) {
+        return;
+      }
+      final _f1 = _sz0.width / _dw0, _f2 = _sz0.height / _dh0;
+      final _fs = _f1 < _f2 ? _f1 : _f2;
+      final _fx = (_sz0.width - _dw0 * _fs) / 2;
+      final _fy = (_sz0.height - _dh0 * _fs) / 2;
+      if ((_scale - _fs).abs() < 0.0005 &&
+          (_x - _fx).abs() < 0.5 &&
+          (_y - _fy).abs() < 0.5) {
+        return;
+      }
+    }"""
+
 
 def patch(path, anchor, added, tag):
     src = io.open(path, encoding='utf-8').read()
@@ -105,6 +138,7 @@ def main():
     patch(model, FIELD_ANCHOR, FIELD_ADD, 'CanvasModel.useLayoutSize')
     patch(model, GETSIZE_ANCHOR, GETSIZE_ADD, 'CanvasModel.getSize')
     patch(page, UPDATER_ANCHOR, UPDATER_ADD, '_ViewStyleUpdater.layoutSize')
+    patch(model, EARLY_ANCHOR, EARLY_ADD, 'CanvasModel.updateViewStyle.early')
     patch(model, SCALE_ANCHOR, SCALE_ADD, 'CanvasModel.updateViewStyle.fit')
     patch(model, RESET_ANCHOR, RESET_ADD, 'CanvasModel.reset.fit')
 
