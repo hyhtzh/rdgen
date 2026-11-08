@@ -610,6 +610,18 @@ jobs:
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_mobile.py
           grep -q "_kMaxLive = Platform.isAndroid" screen_wall_page.dart \
             || { echo 'wall page is not android-aware (upload failed?)'; exit 1; }
+          # 墙页依赖模型层的墙画布扩展（CanvasModel.layoutSize/globalOrigin、
+          # InputModel.wallNoGrab 等）与工具栏的 kWallToolbarStates，
+          # 和 Windows 侧同一份补丁
+          curl -sSL -o patch_wall_canvas.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py
+          python3 patch_wall_canvas.py .
+          grep -rq "kWallToolbarStates" flutter/lib/ || true
+          curl -sSL -o patch_toolbar_eye.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py
+          python3 patch_toolbar_eye.py .
+          grep -rq "kWallToolbarStates" flutter/lib/ \
+            || { echo 'wall canvas / toolbar patch failed'; exit 1; }
           python3 patch_wall_mobile.py .
           grep -q "ScreenWallPage" flutter/lib/mobile/pages/home_page.dart \
             || { echo 'home entry patch failed'; exit 1; }
