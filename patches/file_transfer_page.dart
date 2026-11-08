@@ -547,19 +547,24 @@ class _FilePaneState extends State<_FilePane> {
 
   // ---- 上传/下载 ----
 
-  /// OS 拖入（只能发生在“本机”来源）：把系统文件推到对方当前目录
-  Future<void> _sendDroppedFiles(List<XFile> files) async {
+  /// OS 拖入（只能发生在“本机”来源）：把系统文件推到对方当前目录。
+  /// 参数用 List<dynamic>：desktop_drop 不导出 XFile 类型，这里不显式引用。
+  Future<void> _sendDroppedFiles(List<dynamic> files) async {
     if (files.isEmpty) return;
     final m = widget.session.model;
     final items = SelectedItems(isLocal: true);
     for (final f in files) {
+      final name = (f.name as String?) ?? '';
+      final path = (f.path as String?) ?? '';
+      if (path.isEmpty) continue;
       final e = Entry();
-      e.name = f.name;
-      e.path = f.path;
-      final t = FileSystemEntity.typeSync(f.path);
+      e.name = name.isEmpty ? path.split(RegExp(r'[\\/]')).last : name;
+      e.path = path;
+      final t = FileSystemEntity.typeSync(path);
       e.entryType = t == FileSystemEntityType.directory ? 1 : 4;
       items.add(e);
     }
+    if (items.items.isEmpty) return;
     try {
       await m.localController
           .sendFiles(items, m.remoteController.directoryData());
@@ -1086,10 +1091,15 @@ Future<void> _startGroupSend(
   }
   showToast('开始群发 ${files.length} 个文件到 ${ids.length} 台设备');
   for (final id in ids) {
-    final p = peers.firstWhere((x) => x.id.replaceAll(' ', '') == id,
-        orElse: () => Peer(id: id));
+    Peer? p;
+    for (final x in peers) {
+      if (x.id.replaceAll(' ', '') == id) {
+        p = x;
+        break;
+      }
+    }
     host.openSession(id,
-        password: p.password, alias: p.alias.isEmpty ? id : p.alias);
+        password: p?.password ?? '', alias: (p != null && p.alias.isNotEmpty) ? p.alias : id);
     // 等远端目录就绪（最多 45s）再发，发送目标 = 对方主目录
     unawaited(() async {
       for (var i = 0; i < 90; i++) {
