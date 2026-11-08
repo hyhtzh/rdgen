@@ -6,7 +6,7 @@
 //  2) 主窗口内 Navigator 压栈（独立窗口创建失败时的降级，带返回栏）。
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show exit;
+import 'dart:io' show Platform, exit;
 import 'dart:math' as math;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
@@ -25,8 +25,11 @@ import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
-/// 布局档位 = 一屏最多铺几路（同时也就是列数²）
-const _kCapacities = [4, 9, 16, 32, 64];
+/// 布局档位 = 一屏最多铺几路（同时也就是列数²）。
+/// 手机端只给 4/9 两档：屏幕本来小，16 格以上每格小到看不见。
+const _kCapacitiesDesktop = [4, 9, 16, 32, 64];
+final List<int> _kCapacities =
+    Platform.isAndroid || Platform.isIOS ? const [4, 9] : _kCapacitiesDesktop;
 
 /// 同时保持多少路预览会话。
 ///
@@ -34,7 +37,8 @@ const _kCapacities = [4, 9, 16, 32, 64];
 /// 表现是进程消息循环饿死 → 输入法候选框弹不出来、键盘像失灵
 /// （用户报过「开启屏幕墙后整个电脑无法使用输入法」）。
 /// 9 路已经够看一个 3×3 墙；16/32 档超出的格子只显示卡片，点开再连。
-const _kMaxLive = 9;
+/// 手机端降到 4 路：手机解码能力弱，4 路实时预览已经够看，剩下的格子显示卡片。
+final int _kMaxLive = Platform.isAndroid || Platform.isIOS ? 4 : 9;
 
 /// 取某一格的 FFI（会话、画布、输入模型都在里面）。
 ///
@@ -767,11 +771,15 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     // 5) 进程兜底：窗口销毁后引擎偶尔被 Rust 会话线程拽住不退，
     //    留一个看不见的进程继续占着几路连接（表现同「关了墙还连不上」）。
     //    1.5 秒后强退；主窗口压栈形态不走这里（_windowId == null）。
-    Future.delayed(const Duration(milliseconds: 1500), () {
-      try {
-        exit(0);
-      } catch (_) {}
-    });
+    //    安卓上没有子窗口形态，但万一误入此分支也绝不能 exit——
+    //    手机端 exit(0) 会杀掉整个 App（墙只是 App 里的一个页面）。
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        try {
+          exit(0);
+        } catch (_) {}
+      });
+    }
   }
 
   Future<void> _startDrag() async {
