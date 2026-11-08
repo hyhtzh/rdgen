@@ -9,9 +9,12 @@
 RemotePage 塞进同一个窗口的格子里的，于是「窗口大小对应的缩放」被塞进 200px 的
 格子 —— 自适应算出来接近 1:1，看起来就是「原始尺寸，只看得到左上角」。
 
-改法（两处，锚点找不到直接报错，宁可构建失败也不要悄悄出一个没效果的包）：
+改法（锚点找不到直接报错，宁可构建失败也不要悄悄出一个没效果的包）：
 1. model.dart 的 CanvasModel 增加 useLayoutSize / layoutSize，getSize() 优先用 layoutSize；
-2. remote_page.dart 的 _ViewStyleUpdater 在布局时把真实尺寸写进 layoutSize。
+2. remote_page.dart 的 _ViewStyleUpdater 在布局时把真实尺寸写进 layoutSize；
+3. CanvasModel.updateViewStyle() 结尾：useLayoutSize 时无条件按格子自适应
+   （不看会话里存的 view-style，避免「明明设了 adaptive 还是 1:1」）；
+4. CanvasModel.reset() 同理，避免还原画布时把缩放打回 1:1。
 
 只有屏幕墙的格子会打开 useLayoutSize，普通远控窗口的行为完全不变。
 """
@@ -47,6 +50,35 @@ UPDATER_ADD = """        final newSize = Size(maxWidth, maxHeight);
           widget.canvasModel.layoutSize = newSize;
         }"""
 
+# updateViewStyle() 里这段是「按 view-style 算完缩放、准备摆放画布」的位置。
+# 放在它前面插：仍然走原逻辑，最后再把缩放强行改成「整屏塞进格子」。
+SCALE_ANCHOR = "    _resetCanvasOffset(displayWidth, displayHeight);"
+SCALE_ADD = """    // 【HyDesk】屏幕墙小窗：不管会话里存的 view-style 是什么，一律按格
+    // 子尺寸整屏适配。会话是连上之后才认这个设置的，墙里等不到那一刻，
+    // 所以这里直接在算缩放这一步兜住。
+    if (useLayoutSize && displayWidth > 0 && displayHeight > 0) {
+      final _sw = size.width, _sh = size.height;
+      if (_sw > 0 && _sh > 0) {
+        final _s1 = _sw / displayWidth, _s2 = _sh / displayHeight;
+        _scale = _s1 < _s2 ? _s1 : _s2;
+      }
+    }
+    _resetCanvasOffset(displayWidth, displayHeight);"""
+
+RESET_ANCHOR = """  reset() {
+    _scale = _lastViewStyle.scale;"""
+RESET_ADD = """  reset() {
+    _scale = _lastViewStyle.scale;
+    // 【HyDesk】屏幕墙小窗：还原画布也保持整屏自适应
+    if (useLayoutSize) {
+      final _sz = getSize();
+      final _dw = getDisplayWidth(), _dh = getDisplayHeight();
+      if (_dw > 0 && _dh > 0 && _sz.width > 0 && _sz.height > 0) {
+        final _s1 = _sz.width / _dw, _s2 = _sz.height / _dh;
+        _scale = _s1 < _s2 ? _s1 : _s2;
+      }
+    }"""
+
 
 def patch(path, anchor, added, tag):
     src = io.open(path, encoding='utf-8').read()
@@ -73,6 +105,8 @@ def main():
     patch(model, FIELD_ANCHOR, FIELD_ADD, 'CanvasModel.useLayoutSize')
     patch(model, GETSIZE_ANCHOR, GETSIZE_ADD, 'CanvasModel.getSize')
     patch(page, UPDATER_ANCHOR, UPDATER_ADD, '_ViewStyleUpdater.layoutSize')
+    patch(model, SCALE_ANCHOR, SCALE_ADD, 'CanvasModel.updateViewStyle.fit')
+    patch(model, RESET_ANCHOR, RESET_ADD, 'CanvasModel.reset.fit')
 
 
 if __name__ == '__main__':
