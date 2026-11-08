@@ -817,8 +817,58 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 放大成单屏就是控制台，5 帧没法操作，要恢复用户自己的帧率。
   void _setMaxId(String? id) {
     if (_maxId == id) return;
+    final prev = _maxId;
     _maxId = id;
     _applyFpsForMode();
+    // 已在跑的会话不会自动跟随全局选项（那套只影响“将要建”的会话），
+    // 放大/收回必须当场热推给受影响的那一路，切换才有即时反应。
+    unawaited(_pushFpsHot(prev, id));
+  }
+
+  /// 会话级帧率/画质热推送：改的是**正在拉流**的那一路会话，
+  /// 改完 refresh_video 让对端按新参数重新出图。
+  ///
+  /// 以前只写全局默认值：放大后画面仍按 5 帧 low 拉，要等很久才“看起来
+  /// 清晰了”，观感就是「切换没反应、卡」。
+  Future<void> _pushFpsHot(String? prev, String? cur) async {
+    final maxed = cur;
+    final restored = prev;
+    for (final entry in {
+      maxed: true, // 放大：恢复用户自己的帧率/画质
+      restored: false, // 刚收回的这路：压回墙的省流参数
+    }.entries) {
+      final key = entry.key;
+      if (key == null) continue;
+      final sess = wallFfi(key);
+      if (sess == null) continue;
+      try {
+        final sid = sess.sessionId;
+        final tag = '$sid';
+        if (tag == '0' ||
+            tag == '00000000-0000-0000-0000-000000000000') {
+          continue;
+        }
+        if (entry.value) {
+          final backFps = bind.mainGetUserDefaultOption(key: 'wall-fps-backup');
+          final backQual =
+              bind.mainGetUserDefaultOption(key: 'wall-qual-backup');
+          await bind.sessionSetCustomFps(
+              sessionId: sid, fps: int.tryParse(backFps) ?? 30);
+          await bind.sessionSetImageQuality(
+              sessionId: sid,
+              value: backQual.isNotEmpty ? backQual : 'balanced');
+        } else {
+          await bind.sessionSetCustomFps(sessionId: sid, fps: 5);
+          await bind.sessionSetImageQuality(sessionId: sid, value: 'low');
+        }
+        // refresh 用会话当前显示器（多屏对端 display 0 未必在放）
+        var disp = 0;
+        try {
+          disp = sess.ffiModel.pi.currentDisplay;
+        } catch (_) {}
+        await bind.sessionRefresh(sessionId: sid, display: disp);
+      } catch (_) {}
+    }
   }
 
   /// 网格态压帧/降画质，放大态恢复。
@@ -1398,6 +1448,13 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   void _openBig(Peer peer) {
     final key = peer.id.replaceAll(' ', '');
     final pw = _pwOf(peer);
+    // 安卓：没有多窗口能力，newRemoteDesktop 必失败；别先等 260ms 再试它，
+    // 直接走全屏连接流程，点了立刻有反应。
+    if (Platform.isAndroid || Platform.isIOS) {
+      setState(() => _bigIds.add(key));
+      connect(context, peer.id, password: pw.isEmpty ? null : pw);
+      return;
+    }
     // 先让这一格的小窗关掉（live=false → 预览会话 dispose），
     // 再开大窗口：同一台设备在本机不会并着两路会话。
     setState(() {
@@ -1919,8 +1976,17 @@ class _WallTileState extends State<_WallTile> {
   /// 表现就是「进墙很慢、半天才出画面」，严重时整机发卡。
   /// 前 4 格快速铺开（用户第一眼要看的就是这几格），其余每 450ms 补一路。
   void _scheduleSession() {
+    // 放大态这一格就是「单独看这一台」，必须立刻连——
+    // 以前超限格子（order >= 4）即使被放大也要先空等 1.2 秒错峰，
+    // 用户点卡片后看着黑屏干等，观感就是「切换慢」。
+    if (widget.maximized) {
+      _ensureSession();
+      return;
+    }
     final o = widget.order.clamp(0, 15);
-    final ms = o < 4 ? o * 150 : 1200 + (o - 4) * 450;
+    // 手机端只有 4 路预览，握手打不满，第一波铺密一点（80ms 间隔）
+    final first = Platform.isAndroid || Platform.isIOS ? 80 : 150;
+    final ms = o < 4 ? o * first : 1200 + (o - 4) * 450;
     final delay = Duration(milliseconds: ms);
     if (delay == Duration.zero) {
       _ensureSession();
