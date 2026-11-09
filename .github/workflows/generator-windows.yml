@@ -493,6 +493,15 @@ jobs:
                       print("Warning: RD_PRINTER_PORT not matched in RemotePrinter.cpp")
 
       - name: Install LLVM and Clang
+        id: llvm1
+        continue-on-error: true
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      # LLVM 包在 GitHub Releases 上，偶发 504 会让整轮构建白跑，补一次重试
+      - name: Install LLVM and Clang (retry)
+        if: steps.llvm1.outcome == 'failure'
         uses: KyleMayes/install-llvm-action@v1
         with:
           version: ${{ env.LLVM_VERSION }}
@@ -508,8 +517,21 @@ jobs:
         run: |
           flutter doctor -v
           flutter precache --windows
-          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
-          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          $url = 'https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip'
+          $ok = $false
+          for ($i = 1; $i -le 3; $i++) {
+            Write-Host "engine download attempt $i"
+            try {
+              Invoke-WebRequest -Uri $url -OutFile windows-x64-release.zip -MaximumRetryCount 3 -RetryIntervalSec 5
+              if ((Get-Item windows-x64-release.zip).Length -gt 1048576) { $ok = $true; break }
+              Write-Host "downloaded file too small, retrying"
+            } catch {
+              Write-Host "download failed: $_"
+            }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $ok) { throw "custom flutter engine download failed after 3 attempts" }
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release -Force
           mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
 
       - name: Patch flutter
@@ -551,10 +573,22 @@ jobs:
         env:
           VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.job.vcpkg-triplet }}
         run: |
-          if ! $VCPKG_ROOT/vcpkg \
-            install \
-            --triplet ${{ matrix.job.vcpkg-triplet }} \
-            --x-install-root="$VCPKG_ROOT/installed"; then
+          # vcpkg 的源码下载常常被 GitHub 5xx 打断（mfx_dispatch / aom / nasm 等），
+          # 一次失败就整轮 40 分钟重来太亏：这里最多重试 3 次，已编译的包会被复用。
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::notice::vcpkg install attempt $attempt"
+            if $VCPKG_ROOT/vcpkg \
+              install \
+              --triplet ${{ matrix.job.vcpkg-triplet }} \
+              --x-install-root="$VCPKG_ROOT/installed"; then
+              ok=1
+              break
+            fi
+            echo "::warning::vcpkg attempt $attempt failed (upstream download flake?), retrying in 20s"
+            sleep 20
+          done
+          if [ "$ok" != "1" ]; then
             find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
               echo "$_1:"
               echo "======"
