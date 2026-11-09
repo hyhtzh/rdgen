@@ -1241,7 +1241,7 @@ Future<void> showGroupSendDialog(BuildContext context, List<Peer> peers) async {
                                       const SizedBox(width: 8),
                                       Expanded(
                                         child: Text(
-                                          '${p.alias.isEmpty ? p.id : p.alias}（${p.id}）',
+                                          '${p.alias.isEmpty ? p.id : p.alias}',
                                           style: const TextStyle(fontSize: 12),
                                         ),
                                       ),
