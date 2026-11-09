@@ -40,6 +40,10 @@ import 'package:uuid/uuid.dart';
 // ---------------------------------------------------------------------------
 class WallRecorder {
   static bool on = false;
+  /// 【HyDesk】自动截图模式：与录屏独立开关。画面有变化才落一张 PNG，
+  /// 最短间隔 3 秒（拖动/播放时不刷屏），静止不截图。
+  /// 目录：<根目录>\<设备名>\截图\yyyyMMdd_HHmmssfff.png
+  static bool snapOn = false;
   static String root = r'D:\录屏';
   static Timer? _tick;
   static final Map<String, bool Function()> _lanes = {};
@@ -62,6 +66,9 @@ class WallRecorder {
     _tick = null;
     _lanes.clear();
   }
+
+  static void startSnap() => snapOn = true;
+  static void stopSnap() => snapOn = false;
 
   static String loadRoot() {
     try {
@@ -1140,6 +1147,10 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       const SizedBox(width: 10),
       _recordChip(),
       const SizedBox(width: 10),
+      _snapChip(),
+      const SizedBox(width: 10),
+      _recRootChip(),
+      const SizedBox(width: 10),
     ];
     final trailing = <Widget>[
       // 放大后最显眼的出口：墙上格子里的按钮可能被画面盖住/看不清，
@@ -1164,8 +1175,6 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       _iconButton(Icons.refresh, '刷新', () {
         _syncFavPeers(force: true);
       }),
-      _iconButton(Icons.folder_outlined, '录屏存储位置（按设备名分文件夹）',
-          _showRecRootDialog),
     ];
     return Container(
       height: mobile ? 44 : 42,
@@ -1255,9 +1264,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   void _toggleGroup() {
-    // 定价：4 屏（含）以下群控免费；4 屏以上按 20 元/月收费
+    // 收费：4 屏（含）以下群控免费；4 屏以上需要 group 附加包（价格在套餐里配置）
     if (!_groupOn && _capacity > 4 && !licenseFeature('group')) {
-      _showUpgradeDialog('群控（20 元/月）', 'paGroup');
+      _showUpgradeDialog('群控', 'paGroup');
       return;
     }
     final wasOn = _groupOn;
@@ -1492,6 +1501,92 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     showToast('自动录屏已开启：画面有操作才录，静止不录');
   }
 
+  /// 自动截图独立开关（与录屏分开启停；同一收费规则：4 路免费，超出 record 附加包）
+  Widget _snapChip() {
+    final on = WallRecorder.snapOn;
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => _toggleSnap(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: on ? const Color(0xFFE8F0FE) : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: on ? const Color(0xFF1B72D6) : _C.line),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              on ? Icons.camera_alt : Icons.camera_alt_outlined,
+              size: 12,
+              color: on ? const Color(0xFF1B72D6) : _C.sub,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              on ? '截图中' : '自动截图',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: on ? const Color(0xFF1B72D6) : _C.sub),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleSnap() async {
+    if (WallRecorder.snapOn) {
+      setState(() => WallRecorder.stopSnap());
+      showToast('已停止自动截图');
+      return;
+    }
+    // 4 路免费；墙里设备超过 4 路时需要 record 附加包（与录屏同一附加包）
+    if (_peers.length > 4 && !licenseFeature('record')) {
+      try {
+        await LicenseClient.instance.check();
+      } catch (_) {}
+      if (!licenseFeature('record')) {
+        _showUpgradeDialog('自动截图（4 路以上）', 'record');
+        return;
+      }
+    }
+    final root = WallRecorder.loadRoot();
+    try {
+      Directory(root).createSync(recursive: true);
+    } catch (_) {}
+    setState(() => WallRecorder.startSnap());
+    showToast('自动截图已开启：画面有操作才截图，静止不截图');
+  }
+
+  /// 录屏/截图存储位置胶囊：路径常驻可见，点击改路径。
+  Widget _recRootChip() {
+    final root = WallRecorder.loadRoot();
+    final short = root.length > 22 ? '…${root.substring(root.length - 21)}' : root;
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: _showRecRootDialog,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _C.line),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.folder_outlined, size: 12, color: _C.sub),
+            const SizedBox(width: 4),
+            Text('存储：$short',
+                style: const TextStyle(fontSize: 11.5, color: _C.sub)),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 收费档位 / 功能 未授权时弹的引导框
   void _showUpgradeDialog(String what, String productId) {
     showDialog(
@@ -1540,7 +1635,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   Future<void> _pickCapacity(int value) async {
-    // 定价：9 屏以下免费；16 屏 4 元/月、32 屏 12 元/月、64 屏 20 元/月
+    // 收费：9 屏以下免费；16/32/64 屏需要对应附加包（价格只在套餐里配置，
+    // 客户端不显示金额 —— 2026-11-09 用户明确要求）
     bool locked() =>
         (value == 16 && !licenseFeature('wall16')) ||
         (value == 32 && !licenseFeature('wall32')) ||
@@ -1553,8 +1649,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       } catch (_) {}
       if (!mounted) return;
       if (locked()) {
-        final price = value == 16 ? '4' : (value == 32 ? '12' : '20');
-        _showUpgradeDialog('$value 屏布局（$price 元/月）', 'pa$value');
+        _showUpgradeDialog('$value 屏布局', 'pa$value');
         return;
       }
       setState(() {});
@@ -2058,10 +2153,14 @@ class _WallTileState extends State<_WallTile> {
   int _recSeq = 0;
   DateTime _recLastActive = DateTime.now();
   bool _recBusy = false;
+  DateTime? _snapLastAt; // 上次截图时间（节流 ≥ 3 秒一张）
 
   bool _recTick() {
     if (!mounted) return false;
-    if (!WallRecorder.on || !widget.live || _sleeping || _noSignal) {
+    if ((!WallRecorder.on && !WallRecorder.snapOn) ||
+        !widget.live ||
+        _sleeping ||
+        _noSignal) {
       return true;
     }
     unawaited(_recCapture());
@@ -2093,17 +2192,45 @@ class _WallTileState extends State<_WallTile> {
       }
       _recLastActive = DateTime.now();
       _recLast = bytes;
-      _recSeg ??= _recNewSeg();
-      _recSeq++;
-      final f = File('$_recSeg'
-          '\\${_recSeq.toString().padLeft(6, '0')}.png');
-      await f.writeAsBytes(bytes, flush: true);
+      if (WallRecorder.on) {
+        _recSeg ??= _recNewSeg();
+        _recSeq++;
+        final f = File('$_recSeg'
+            '\\${_recSeq.toString().padLeft(6, '0')}.png');
+        await f.writeAsBytes(bytes, flush: true);
+      }
+      if (WallRecorder.snapOn) {
+        _snapMaybe(bytes);
+      }
     } catch (_) {
       // 磁盘满/目录被删等：先停这一格，下个周期再试
       _recSeg = null;
     } finally {
       _recBusy = false;
     }
+  }
+
+  /// 画面发生变化才截图；两张之间至少隔 3 秒（播放/拖动时不刷屏）。
+  void _snapMaybe(Uint8List bytes) {
+    final now = DateTime.now();
+    if (_snapLastAt != null &&
+        now.difference(_snapLastAt!) < const Duration(seconds: 3)) {
+      return;
+    }
+    _snapLastAt = now;
+    try {
+      final name = _sanitizeName(
+          widget.peer.alias.isEmpty ? widget.peer.id : widget.peer.alias);
+      final dir = '${WallRecorder.root}\\$name\\截图';
+      Directory(dir).createSync(recursive: true);
+      final t = now;
+      final ms = t.millisecond.toString().padLeft(3, '0');
+      final f = File('$dir'
+          '\\${t.year}${t.month.toString().padLeft(2, '0')}${t.day.toString().padLeft(2, '0')}'
+          '_${t.hour.toString().padLeft(2, '0')}${t.minute.toString().padLeft(2, '0')}'
+          '${t.second.toString().padLeft(2, '0')}_$ms.png');
+      f.writeAsBytesSync(bytes, flush: true);
+    } catch (_) {}
   }
 
   bool _sameFrame(Uint8List b) {
