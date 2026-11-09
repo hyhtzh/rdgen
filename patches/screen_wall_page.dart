@@ -975,7 +975,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       onPanStart: (_) => _startDrag(),
       onDoubleTap: _toggleMaximize,
       child: Container(
-        height: 32,
+        // 手机端标题栏加高：系统字体放大时按钮文字容易被压扁（用户报「按钮变形」）
+        height: (Platform.isAndroid || Platform.isIOS) ? 44 : 32,
         color: _C.bar,
         child: Row(
           children: [
@@ -1047,33 +1048,47 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     );
   }
 
-  /// 手机端标题栏右侧的「退出屏幕墙」按钮：比左上角小箭头显眼得多。
-  /// 退出走 _closeWindow：主窗口压栈形态下正常 pop，会话随路由销毁优雅关闭。
+  /// 手机端标题栏右侧的「退出屏幕墙」按钮。
+  ///
+  /// 2026-11-09 重做：原来是 height:24 + horizontal padding 的方角按钮，
+  /// 系统字体放大时文字撑破容器、圆角被压成异形（用户报「按钮变形」）。
+  /// 现在改成固定 32 高的胶囊（StadiumBorder）+ 文字缩放锁定，任何
+  /// 字体倍率下形状和字号都不变。
   Widget _mobileExitButton() {
-    return Padding(
-      padding: const EdgeInsets.only(right: 2),
-      child: InkWell(
-        onTap: _closeWindow,
-        borderRadius: BorderRadius.circular(5),
-        child: Container(
-          height: 24,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: const Color(0xFFE23B3B),
-            borderRadius: BorderRadius.circular(5),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: const [
-              Icon(Icons.close, size: 13, color: Colors.white),
-              SizedBox(width: 3),
-              Text('退出屏幕墙',
-                  style: TextStyle(
-                      fontSize: 11.5,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600)),
-            ],
+    return MediaQuery.withClampedTextScaling(
+      minScaleFactor: 1.0,
+      maxScaleFactor: 1.0,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: SizedBox(
+          height: 32,
+          child: Material(
+            color: const Color(0xFFE03A3A),
+            shape: const StadiumBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: _closeWindow,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.logout_rounded, size: 15, color: Colors.white),
+                    SizedBox(width: 6),
+                    Text('退出屏幕墙',
+                        maxLines: 1,
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            height: 1.0,
+                            letterSpacing: 0.2,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -1100,63 +1115,72 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   // ---------------- 工具条 ----------------
 
   Widget _buildToolbar() {
+    final mobile = Platform.isAndroid || Platform.isIOS;
+    // 手机竖屏放不下这一整排（用户截图里「群控 / 双击卡片放…」被切掉），
+    // 移动端改成横向可滚动，并去掉只对桌面有意义的提示文案。
+    final leading = <Widget>[
+      const Text('实时预览', style: TextStyle(fontSize: 12.5, color: _C.sub)),
+      const SizedBox(width: 2),
+      Transform.scale(
+        scale: 0.8,
+        child: Switch(
+          value: _live,
+          activeColor: _C.accent,
+          onChanged: (v) => setState(() => _live = v),
+        ),
+      ),
+      const SizedBox(width: 10),
+      Container(width: 1, height: 16, color: _C.line),
+      const SizedBox(width: 10),
+      const Text('布局', style: TextStyle(fontSize: 12.5, color: _C.sub)),
+      const SizedBox(width: 8),
+      ..._kCapacities.map(_capacityChip),
+      const SizedBox(width: 10),
+      _groupChip(),
+      const SizedBox(width: 10),
+      _recordChip(),
+      const SizedBox(width: 10),
+    ];
+    final trailing = <Widget>[
+      // 放大后最显眼的出口：墙上格子里的按钮可能被画面盖住/看不清，
+      // 顶栏这个一直在。
+      if (_maxId != null) ...[
+        _restoreFromMaxChip(),
+        const SizedBox(width: 8),
+      ],
+      if (_groupOn) ...[
+        const Icon(Icons.wifi_tethering, size: 13, color: Color(0xFF2FA45C)),
+        const SizedBox(width: 5),
+        const Text('群控中 · 键盘与鼠标点击广播到其余在线格子（点击某格设为主控）',
+            style: TextStyle(fontSize: 11.5, color: Color(0xFF2FA45C))),
+        const SizedBox(width: 8),
+      ],
+      if (!mobile) ...[
+        const Text('双击卡片放大/收回',
+            style: TextStyle(fontSize: 11.5, color: Color(0xFF6B7280))),
+        const SizedBox(width: 6),
+      ],
+      _iconButton(Icons.playlist_add_check, '添加设备到屏幕墙', _showAddPeersDialog),
+      _iconButton(Icons.refresh, '刷新', () {
+        _syncFavPeers(force: true);
+      }),
+      _iconButton(Icons.folder_outlined, '录屏存储位置（按设备名分文件夹）',
+          _showRecRootDialog),
+    ];
     return Container(
-      height: 42,
+      height: mobile ? 44 : 42,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: _C.line)),
       ),
-      child: Row(
-        children: [
-          const Text('实时预览',
-              style: TextStyle(fontSize: 12.5, color: _C.sub)),
-          const SizedBox(width: 2),
-          Transform.scale(
-            scale: 0.8,
-            child: Switch(
-              value: _live,
-              activeColor: _C.accent,
-              onChanged: (v) => setState(() => _live = v),
+      child: mobile
+          ? SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: [...leading, ...trailing]),
+            )
+          : Row(
+              children: [...leading, const Spacer(), ...trailing],
             ),
-          ),
-          const SizedBox(width: 10),
-          Container(width: 1, height: 16, color: _C.line),
-          const SizedBox(width: 10),
-          const Text('布局', style: TextStyle(fontSize: 12.5, color: _C.sub)),
-          const SizedBox(width: 8),
-          ..._kCapacities.map(_capacityChip),
-          const SizedBox(width: 10),
-          _groupChip(),
-          const SizedBox(width: 10),
-          _recordChip(),
-          const SizedBox(width: 10),
-          const Spacer(),
-          if (_maxId != null) ...[
-            // 放大后最显眼的出口：墙上格子里的按钮可能被画面盖住/看不清，
-            // 顶栏这个一直在。
-            _restoreFromMaxChip(),
-            const SizedBox(width: 8),
-          ],
-          if (_groupOn) ...[
-            const Icon(Icons.wifi_tethering,
-                size: 13, color: Color(0xFF2FA45C)),
-            const SizedBox(width: 5),
-            const Text('群控中 · 键盘与鼠标点击广播到其余在线格子（点击某格设为主控）',
-                style: TextStyle(fontSize: 11.5, color: Color(0xFF2FA45C))),
-            const SizedBox(width: 8),
-          ],
-          const Text('双击卡片放大/收回',
-              style: TextStyle(fontSize: 11.5, color: Color(0xFF6B7280))),
-          const SizedBox(width: 6),
-          _iconButton(Icons.playlist_add_check, '添加设备到屏幕墙',
-              _showAddPeersDialog),
-          _iconButton(Icons.refresh, '刷新', () {
-            _syncFavPeers(force: true);
-          }),
-          _iconButton(Icons.folder_outlined, '录屏存储位置（按设备名分文件夹）',
-              _showRecRootDialog),
-        ],
-      ),
     );
   }
 
