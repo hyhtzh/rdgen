@@ -89,6 +89,14 @@ jobs:
               rm ./WindowInjection/img.cpp
               mv img.cpp ./WindowInjection/img.cpp
             }
+            # hy: 自绘遮挡层（中文解锁提示 + 本地 Ctrl+P 解锁 + 防休眠），
+            # 覆盖第三方仓库里的 dllmain.cpp 后再编译。
+            if (Test-Path "$env:GITHUB_WORKSPACE/patches/privacy_dllmain.cpp") {
+              Copy-Item "$env:GITHUB_WORKSPACE/patches/privacy_dllmain.cpp" ./WindowInjection/dllmain.cpp -Force
+              Write-Host "privacy overlay: custom dllmain.cpp applied"
+            } else {
+              Write-Host "privacy overlay: patches/privacy_dllmain.cpp not found, keep upstream"
+            }
             msbuild ${{ env.project_path }} -p:Configuration=${{ inputs.configuration }} -p:Platform=${{ inputs.platform }} /p:TargetVersion=${{ inputs.target_version }}
 
       - name: Archive build artifacts
