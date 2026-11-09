@@ -42,6 +42,7 @@ class WallRecorder {
   static bool on = false;
   /// 【HyDesk】自动截图模式：与录屏独立开关。画面有变化才落一张 PNG，
   /// 最短间隔 3 秒（拖动/播放时不刷屏），静止不截图。
+  /// **按远端屏幕原始分辨率落盘**（不是格子的缩略图），放大查看不糊。
   /// 目录：<根目录>\<设备名>\截图\yyyyMMdd_HHmmssfff.png
   static bool snapOn = false;
   static String root = r'D:\录屏';
@@ -2154,6 +2155,7 @@ class _WallTileState extends State<_WallTile> {
   DateTime _recLastActive = DateTime.now();
   bool _recBusy = false;
   DateTime? _snapLastAt; // 上次截图时间（节流 ≥ 3 秒一张）
+  Uint8List? _snapLastPng; // 上一张截图（同分辨率才能比，静止不刷文件）
 
   bool _recTick() {
     if (!mounted) return false;
@@ -2175,32 +2177,31 @@ class _WallTileState extends State<_WallTile> {
     if (rb == null) return;
     _recBusy = true;
     try {
-      final img = await rb.toImage(pixelRatio: 1.0);
-      final data = await img.toByteData(format: ui.ImageByteFormat.png);
-      if (data == null) return;
-      final bytes = data.buffer.asUint8List().sublist(0, data.lengthInBytes);
-      if (_sameFrame(bytes)) {
-        // 不操作不录：静止超 60 秒结束分段
-        if (_recSeg != null &&
-            DateTime.now().difference(_recLastActive) >
-                const Duration(seconds: 60)) {
-          _recSeg = null;
-          _recSeq = 0;
-          _recLast = null;
-        }
-        return;
-      }
-      _recLastActive = DateTime.now();
-      _recLast = bytes;
+      // 录屏帧：PNG 序列按帧落盘，宽压在 1920 以内（4K 按帧写会把磁盘吃爆）
       if (WallRecorder.on) {
+        final bytes = await _rasterPng(rb, capW: 1920);
+        if (bytes == null) return;
+        if (_sameFrame(bytes)) {
+          // 不操作不录：静止超 60 秒结束分段
+          if (_recSeg != null &&
+              DateTime.now().difference(_recLastActive) >
+                  const Duration(seconds: 60)) {
+            _recSeg = null;
+            _recSeq = 0;
+            _recLast = null;
+          }
+          return;
+        }
+        _recLastActive = DateTime.now();
+        _recLast = bytes;
         _recSeg ??= _recNewSeg();
         _recSeq++;
-        final f = File('$_recSeg'
-            '\\${_recSeq.toString().padLeft(6, '0')}.png');
+        final f =
+            File('$_recSeg\\${_recSeq.toString().padLeft(6, '0')}.png');
         await f.writeAsBytes(bytes, flush: true);
       }
       if (WallRecorder.snapOn) {
-        _snapMaybe(bytes);
+        await _snapTick(rb);
       }
     } catch (_) {
       // 磁盘满/目录被删等：先停这一格，下个周期再试
@@ -2210,14 +2211,27 @@ class _WallTileState extends State<_WallTile> {
     }
   }
 
-  /// 画面发生变化才截图；两张之间至少隔 3 秒（播放/拖动时不刷屏）。
-  void _snapMaybe(Uint8List bytes) {
+  /// 截图：**远端屏幕原始分辨率**落盘，放大看不再糊。
+  ///
+  /// 原来的做法是 `pixelRatio: 1.0` 栅格化格子 —— PNG 只有格子的逻辑
+  /// 像素那么大（九宫格时 ~600px 宽），一放大就是马赛克（用户 2026-11-09
+  /// 报障「截图的图片太小，放大很模糊」）。现在按「远端屏幕像素 ÷ 格子宽」
+  /// 算采样倍率，RepaintBoundary 栅格化会把视频纹理按该倍率重采样，
+  /// 等于直接取到原始分辨率。时间节流放在栅格化**之前**（先判 3 秒再
+  /// 花几百万像素的栅格+PNG 编码，静止时不再白烧 CPU）。
+  Future<void> _snapTick(dynamic rb) async {
     final now = DateTime.now();
     if (_snapLastAt != null &&
         now.difference(_snapLastAt!) < const Duration(seconds: 3)) {
       return;
     }
     _snapLastAt = now;
+    final bytes = await _rasterPng(rb, capW: 2560);
+    if (bytes == null) return;
+    // 和上一张一模一样（同分辨率才可比）：静止屏幕不再刷文件
+    final last = _snapLastPng;
+    if (last != null && _sameAs(last, bytes)) return;
+    _snapLastPng = bytes;
     try {
       final name = _sanitizeName(
           widget.peer.alias.isEmpty ? widget.peer.id : widget.peer.alias);
@@ -2233,9 +2247,40 @@ class _WallTileState extends State<_WallTile> {
     } catch (_) {}
   }
 
+  /// 把格子这一层按「远端屏幕分辨率」栅格化成 PNG。
+  /// capW 是输出宽度上限（内存/磁盘护栏），达不到远端分辨率时至少 1.0。
+  Future<Uint8List?> _rasterPng(dynamic rb, {required int capW}) async {
+    final img = await rb.toImage(pixelRatio: _recRatio(rb, capW));
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) return null;
+    return data.buffer.asUint8List().sublist(0, data.lengthInBytes);
+  }
+
+  double _recRatio(dynamic rb, int capW) {
+    try {
+      final s = rb.size as Size;
+      if (s.width < 2) return 1.0;
+      final sess = wallFfi(widget.peer.id);
+      if (sess == null) return 1.0;
+      final c = sess.canvasModel;
+      final pw = c.getDisplayWidth();
+      if (pw <= 0) return 1.0;
+      var r = pw / s.width;
+      if (r < 1.0) r = 1.0;
+      if (s.width * r > capW) r = capW / s.width;
+      return r;
+    } catch (_) {}
+    return 1.0;
+  }
+
   bool _sameFrame(Uint8List b) {
     final a = _recLast;
-    if (a == null || a.length != b.length) return false;
+    if (a == null) return false;
+    return _sameAs(a, b);
+  }
+
+  bool _sameAs(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
     // PNG 头 60 字节是固定的，跳过；抽样比较足够判断「画面是否变化」
     final n = a.length;
     for (int i = 60; i < n; i += 997) {
