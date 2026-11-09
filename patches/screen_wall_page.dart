@@ -24,6 +24,7 @@ import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
+import 'package:uuid/uuid.dart';
 
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）。
 /// 手机端只给 4/9 两档：屏幕本来小，16 格以上每格小到看不见。
@@ -37,8 +38,9 @@ final List<int> _kCapacities =
 /// 表现是进程消息循环饿死 → 输入法候选框弹不出来、键盘像失灵
 /// （用户报过「开启屏幕墙后整个电脑无法使用输入法」）。
 /// 9 路已经够看一个 3×3 墙；16/32 档超出的格子只显示卡片，点开再连。
-/// 手机端降到 4 路：手机解码能力弱，4 路实时预览已经够看，剩下的格子显示卡片。
-final int _kMaxLive = Platform.isAndroid || Platform.isIOS ? 4 : 9;
+/// 手机端同样给 9 路（用户 2026-11-09 要求「切到 9 屏自动开启全部连接」）：
+/// 墙里全程压 5 帧 + low 画质，手机可以承受；4 屏档位下天然只有 4 路。
+final int _kMaxLive = 9;
 
 /// 取某一格的 FFI（会话、画布、输入模型都在里面）。
 ///
@@ -1771,6 +1773,17 @@ class _WallTile extends StatefulWidget {
 class _WallTileState extends State<_WallTile> {
   ToolbarState? _toolbarState;
 
+  /// 本格会话的独立 sessionId —— **手机端多会话的关键修复**。
+  ///
+  /// 上游 FFI 构造在移动端不生成新 id，而是用全局常量 `_constSessionId`
+  /// （原生手机 App 就是「单会话复用 gFFI」的设计）。墙里几路并发共用
+  /// 同一个 sessionId，Rust 会话表里互相顶掉 —— 表现就是只有第一格
+  /// 能连上、其余永远停在「Connecting...」（2026-11-09 用户报障）。
+  /// 桌面端 FFI 自己就会生成 UUID，不受影响；这里只给手机端显式传一份。
+  SessionID? _wallSid;
+
+  SessionID get _sid => _wallSid ??= Uuid().v4obj();
+
   /// 拟合定时器：会话什么时候连上不确定，一次性打几轮赶不上，
   /// 所以每 400ms 校一次（内部会先比尺寸，稳定后基本是空转）。
   Timer? _fitTimer;
@@ -1865,6 +1878,9 @@ class _WallTileState extends State<_WallTile> {
         _began = null;
         _fitTicks = 0;
         _settled = false;
+        // 挂起期间 RemotePage 已 dispose，唤醒要重建：换新 sessionId，
+        // 旧 id 在 Rust 侧可能还没清干净，复用会握手冲突。
+        _wallSid = null;
         if (widget.live) _startFitLoop();
       }
     }
@@ -1882,6 +1898,8 @@ class _WallTileState extends State<_WallTile> {
       _styleDone = false;
       _fitTimer?.cancel();
       _fitTimer = null;
+      // 新代次 = 全新会话：连 sessionId 一起换，避免和旧会话撞车
+      _wallSid = null;
       if (widget.live) _scheduleSession();
     }
     if (!widget.live && oldWidget.live) {
@@ -1984,9 +2002,12 @@ class _WallTileState extends State<_WallTile> {
       return;
     }
     final o = widget.order.clamp(0, 15);
-    // 手机端只有 4 路预览，握手打不满，第一波铺密一点（80ms 间隔）
-    final first = Platform.isAndroid || Platform.isIOS ? 80 : 150;
-    final ms = o < 4 ? o * first : 1200 + (o - 4) * 450;
+    // 手机端第一波覆盖全部 9 路（每路 180ms 错峰握手）；
+    // 桌面端保持「前 4 格快速铺开 + 其余 450ms 递进」。
+    final bool mobile = Platform.isAndroid || Platform.isIOS;
+    final ms = mobile
+        ? (o < 9 ? o * 180 : 1200 + (o - 9) * 450)
+        : (o < 4 ? o * 150 : 1200 + (o - 4) * 450);
     final delay = Duration(milliseconds: ms);
     if (delay == Duration.zero) {
       _ensureSession();
@@ -2118,6 +2139,15 @@ class _WallTileState extends State<_WallTile> {
       }
     }
     if (noSignal != _noSignal && mounted) setState(() => _noSignal = noSignal);
+
+    // 会话卡住时上游的「Connecting...」loading 弹窗不会自己消失
+    // （peer_info 永远不来，dismissAll 没机会跑）。12 秒无画面就把它撤掉，
+    // 让用户看到本格自己的「重连」入口，而不是永远的转圈。
+    if (noSignal && !_noSignal) {
+      try {
+        sess.dialogManager.dismissAll();
+      } catch (_) {}
+    }
 
     // 会话建好之后才能拿到 InputModel：在这里补一次「网格态不许 grab」，
     // 否则从窗口打开到会话起来这段时间，鼠标一进格子就会把本机键盘抢走。
@@ -2313,6 +2343,10 @@ class _WallTileState extends State<_WallTile> {
       // 复用旧 State 会出现「连不上、黑屏、怎么点都没反应」。
       key: ValueKey('page_${widget.peer.id}_${widget.retry}'),
       id: widget.peer.id,
+      // 手机端传独立 sessionId（见 _wallSid 注释）——否则多格共用上游的
+      // _constSessionId，Rust 会话表互相顶掉，只有第一格能连上。
+      // 桌面端 FFI 自己生成 UUID，保持 null 不改变既有行为。
+      sessionId: Platform.isAndroid || Platform.isIOS ? _sid : null,
       // 空密码就不传：让 Rust 用本机保存的密码登录（= 主窗口那份密码），
       // 主窗口能免密直连的设备，墙里也不会再问一遍。
       password: widget.password.isEmpty ? null : widget.password,
