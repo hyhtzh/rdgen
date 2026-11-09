@@ -6,7 +6,7 @@
 //  2) 主窗口内 Navigator 压栈（独立窗口创建失败时的降级，带返回栏）。
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, exit;
+import 'dart:io' show Platform, exit, Directory, File;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
