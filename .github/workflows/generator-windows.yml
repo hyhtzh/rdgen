@@ -910,10 +910,17 @@ jobs:
           if [[ "${{ env.MSI_VERSION }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             VER4="10.$( echo '${{ env.MSI_VERSION }}' | cut -d. -f2 ).$( echo '${{ env.MSI_VERSION }}' | cut -d. -f3 ).0"
           fi
-          sed -i -e "s|__PRODUCT__|${{ env.appname }}|g" \
-                 -e "s|__MSI__|./SignOutput/${{ env.filename }}.msi|g" \
-                 -e "s|__VER4__|$VER4|g" \
-                 -e "s|__COMPANY__|${{ env.compname }}|g" agent_setup.nsi
+          # NSIS File 指令不解析相对路径（实测 no files found），必须注入绝对 Windows 路径
+          MSI_WIN=$(cygpath -w "$(pwd)/SignOutput/${{ env.filename }}.msi")
+          python -c "
+import sys
+msi, ver4, product, company = sys.argv[1:5]
+src = open('agent_setup.nsi', encoding='utf-8').read()
+src = (src.replace('__PRODUCT__', product).replace('__MSI__', msi)
+          .replace('__VER4__', ver4).replace('__COMPANY__', company))
+open('agent_setup.nsi', 'w', encoding='utf-8-sig').write(src)
+print('nsi placeholders replaced; msi =', msi)
+" "$MSI_WIN" "$VER4" "${{ env.appname }}" "${{ env.compname }}"
           grep -n "__PRODUCT__\|__MSI__\|__VER4__\|__COMPANY__" agent_setup.nsi && { echo "placeholder left unreplaced"; exit 1; } || true
           "$MAKE" agent_setup.nsi
           mv "${{ env.appname }}_Setup.exe" "./SignOutput/${{ env.filename }}_Setup.exe"
