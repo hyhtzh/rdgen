@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, exit;
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
@@ -25,6 +26,63 @@ import 'package:flutter_hbb/desktop/pages/license_client.dart';
 import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:uuid/uuid.dart';
+
+// ---------------------------------------------------------------------------
+// 【HyDesk】自动录屏 / 截图（管理端执行）
+//
+// 机制：墙里每一路画面本来就在解码，直接把格子截图存成 PNG 序列——
+// 画面有变化才落盘（既是录像帧也是截图），静止不写文件；
+// 连续 60 秒无变化自动结束当前分段，再有操作开新分段。
+// 目录：<根目录>\<设备名>\<yyyyMMdd_HHmmss>\000001.png…
+// 根目录可自定义（存用户配置 wall-rec-root，默认 D:\录屏）。
+// 收费：4 路免费；开录时在墙里的设备超过 4 路需要 record 附加包，
+// 与屏幕墙档位/群控同一套体系（licenseFeature），客户端不显示金额。
+// ---------------------------------------------------------------------------
+class WallRecorder {
+  static bool on = false;
+  static String root = r'D:\录屏';
+  static Timer? _tick;
+  static final Map<String, bool Function()> _lanes = {};
+
+  static void register(String id, bool Function() alive) => _lanes[id] = alive;
+  static void unregister(String id) => _lanes.remove(id);
+
+  static void start() {
+    on = true;
+    _tick?.cancel();
+    _tick = Timer.periodic(const Duration(seconds: 2), (_) {
+      // 返回 false = 这一格已销毁，顺手清掉，防泄漏
+      _lanes.removeWhere((_, f) => !f());
+    });
+  }
+
+  static void stop() {
+    on = false;
+    _tick?.cancel();
+    _tick = null;
+    _lanes.clear();
+  }
+
+  static String loadRoot() {
+    try {
+      final v = bind.mainGetOptionSync(key: 'wall-rec-root');
+      if (v != null && v.isNotEmpty) root = v;
+    } catch (_) {}
+    return root;
+  }
+
+  static Future<void> saveRoot(String v) async {
+    root = v;
+    try {
+      await bind.mainSetOption(key: 'wall-rec-root', value: v);
+    } catch (_) {}
+  }
+}
+
+String _sanitizeName(String s) => s
+    .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+    .trim()
+    .replaceAll(RegExp(r'\s+'), '_');
 
 /// 布局档位 = 一屏最多铺几路（同时也就是列数²）。
 /// 手机端只给 4/9 两档：屏幕本来小，16 格以上每格小到看不见。
@@ -1069,6 +1127,9 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           ..._kCapacities.map(_capacityChip),
           const SizedBox(width: 10),
           _groupChip(),
+          const SizedBox(width: 10),
+          _recordChip(),
+          const SizedBox(width: 10),
           const Spacer(),
           if (_maxId != null) ...[
             // 放大后最显眼的出口：墙上格子里的按钮可能被画面盖住/看不清，
@@ -1092,6 +1153,8 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           _iconButton(Icons.refresh, '刷新', () {
             _syncFavPeers(force: true);
           }),
+          _iconButton(Icons.folder_outlined, '录屏存储位置（按设备名分文件夹）',
+              _showRecRootDialog),
         ],
       ),
     );
@@ -1297,6 +1360,112 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(e.msg), duration: const Duration(seconds: 3)));
     }
+  }
+
+  /// 自定义录屏存储位置：每路设备在根目录下按设备名单独建文件夹
+  Future<void> _showRecRootDialog() async {
+    final ctrl = TextEditingController(text: WallRecorder.loadRoot());
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('录屏存储位置',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(controller: ctrl, decoration: const InputDecoration(suffixText: '')),
+            const SizedBox(height: 8),
+            const Text('每路设备在该目录下按设备名单独建文件夹；\n画面有操作才录制，静止自动停止。',
+                style: TextStyle(fontSize: 12, color: _C.sub)),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _C.accent),
+              onPressed: () {
+                final p = ctrl.text.trim();
+                if (p.isEmpty) return;
+                Navigator.of(ctx).pop(p);
+              },
+              child: const Text('保存')),
+        ],
+      ),
+    ).then((v) async {
+      if (v is String && v.isNotEmpty) {
+        await WallRecorder.saveRoot(v);
+        showToast('已保存，之后的录屏存到：$v');
+      }
+    });
+  }
+
+  /// 自动录屏/截图开关（4 路免费，超过 4 路需 record 附加包，与档位同一套体系）
+  Widget _recordChip() {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => _toggleRecord(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: WallRecorder.on
+              ? const Color(0xFFFDECEC)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: WallRecorder.on
+                  ? const Color(0xFFE5484D)
+                  : _C.line),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              WallRecorder.on ? Icons.fiber_manual_record : Icons.videocam_outlined,
+              size: 12,
+              color: WallRecorder.on
+                  ? const Color(0xFFE5484D)
+                  : _C.sub,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              WallRecorder.on ? '录屏中' : '自动录屏',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: WallRecorder.on
+                      ? const Color(0xFFE5484D)
+                      : _C.sub),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleRecord() async {
+    if (WallRecorder.on) {
+      setState(() => WallRecorder.stop());
+      showToast('已停止自动录屏');
+      return;
+    }
+    // 4 路免费；墙里设备超过 4 路时需要 record 附加包
+    if (_peers.length > 4 && !licenseFeature('record')) {
+      try {
+        await LicenseClient.instance.check();
+      } catch (_) {}
+      if (!licenseFeature('record')) {
+        _showUpgradeDialog('自动录屏/截图（4 路以上）', 'record');
+        return;
+      }
+    }
+    final root = WallRecorder.loadRoot();
+    try {
+      Directory(root).createSync(recursive: true);
+    } catch (_) {}
+    setState(() => WallRecorder.start());
+    showToast('自动录屏已开启：画面有操作才录，静止不录');
   }
 
   /// 收费档位 / 功能 未授权时弹的引导框
@@ -1858,6 +2027,84 @@ class _WallTileState extends State<_WallTile> {
   /// 画面区的 key：用来算它在窗口里的位置（鼠标坐标换算的基准）
   final GlobalKey _imgKey = GlobalKey();
 
+  // ---- 自动录屏 / 截图（【HyDesk】，详见 WallRecorder 注释）----
+  final GlobalKey _recKey = GlobalKey();
+  String? _recSeg; // 当前分段目录（null = 未在录）
+  Uint8List? _recLast; // 上一帧 PNG，帧对比判断「有没有操作」
+  int _recSeq = 0;
+  DateTime _recLastActive = DateTime.now();
+  bool _recBusy = false;
+
+  bool _recTick() {
+    if (!mounted) return false;
+    if (!WallRecorder.on || !widget.live || _sleeping || _noSignal) {
+      return true;
+    }
+    unawaited(_recCapture());
+    return true;
+  }
+
+  Future<void> _recCapture() async {
+    if (_recBusy) return;
+    final ctx = _recKey.currentContext;
+    if (ctx == null) return;
+    final dynamic rb = ctx.findRenderObject();
+    if (rb == null) return;
+    _recBusy = true;
+    try {
+      final img = await rb.toImage(pixelRatio: 1.0);
+      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) return;
+      final bytes = data.buffer.asUint8List().sublist(0, data.lengthInBytes);
+      if (_sameFrame(bytes)) {
+        // 不操作不录：静止超 60 秒结束分段
+        if (_recSeg != null &&
+            DateTime.now().difference(_recLastActive) >
+                const Duration(seconds: 60)) {
+          _recSeg = null;
+          _recSeq = 0;
+          _recLast = null;
+        }
+        return;
+      }
+      _recLastActive = DateTime.now();
+      _recLast = bytes;
+      _recSeg ??= _recNewSeg();
+      _recSeq++;
+      final f = File('$_recSeg'
+          '\\${_recSeq.toString().padLeft(6, '0')}.png');
+      await f.writeAsBytes(bytes, flush: true);
+    } catch (_) {
+      // 磁盘满/目录被删等：先停这一格，下个周期再试
+      _recSeg = null;
+    } finally {
+      _recBusy = false;
+    }
+  }
+
+  bool _sameFrame(Uint8List b) {
+    final a = _recLast;
+    if (a == null || a.length != b.length) return false;
+    // PNG 头 60 字节是固定的，跳过；抽样比较足够判断「画面是否变化」
+    final n = a.length;
+    for (int i = 60; i < n; i += 997) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  String _recNewSeg() {
+    final name = _sanitizeName(
+        widget.peer.alias.isEmpty ? widget.peer.id : widget.peer.alias);
+    final now = DateTime.now();
+    final seg = '${WallRecorder.root}\\$name'
+        '\\${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
+        '_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+    Directory(seg).createSync(recursive: true);
+    _recSeq = 0;
+    return seg;
+  }
+
   /// 把「画面区左上角在窗口里的坐标」写给画布。
   ///
   /// 鼠标事件（`PointerEvent.position`）给的是**窗口全局坐标**，而画布的
@@ -2390,6 +2637,8 @@ class _WallTileState extends State<_WallTile> {
       password: widget.password.isEmpty ? null : widget.password,
       toolbarState: _toolbarState!,
     );
+    // 录屏 lane 注册：build 会反复调，幂等；销毁的格子由定时器自动清
+    WallRecorder.register(widget.peer.id, _recTick);
     return LayoutBuilder(builder: (context, cons) {
       final w = cons.maxWidth;
       final h = cons.maxHeight;
@@ -2419,7 +2668,11 @@ class _WallTileState extends State<_WallTile> {
             widget.onGroupPointer?.call(widget.peer.id, e.localPosition, false),
         onPointerCancel: (e) => widget.onGroupPointer
             ?.call(widget.peer.id, e.localPosition, false),
-        child: ClipRect(child: page),
+        child: RepaintBoundary(
+          // 【HyDesk】录屏采样点：截图从这一层取，不影响渲染
+          key: _recKey,
+          child: ClipRect(child: page),
+        ),
       );
       if (!_noSignal) return child;
       return Stack(children: [
