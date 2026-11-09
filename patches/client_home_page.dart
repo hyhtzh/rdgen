@@ -533,6 +533,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   }
 
   String _peerAlias(String id) {
+    // 优先地址簿别名：地址簿里改了名，文件传输标签/会话名同步用新名字
+    final ab = _abAliasOf(id);
+    if (ab.isNotEmpty) return ab;
     try {
       for (final list
           in [gFFI.favoritePeersModel.peers, gFFI.recentPeersModel.peers]) {
