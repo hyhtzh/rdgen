@@ -286,13 +286,19 @@ jobs:
             exit 0
           fi
           echo "app version -> $AV"
-          sed -i -e "s|^version = \".*\"|version = \"$AV\"|" ./Cargo.toml
-          sed -i "/name = \"rustdesk\"/ {n; s/version = \".*\"/version = \"$AV\"/}" ./Cargo.lock
+          # Cargo 的 [package] version 只接受严格 semver（x.y.z），
+          # 带字母后缀的版本（如 1.5.27f）会让 cargo build 直接解析失败。
+          # Cargo 用净化后的 CV，MSI/NSIS 等仍用完整 AV。
+          CV="$(echo "$AV" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          echo "cargo version -> $CV"
+          sed -i -e "s|^version = \".*\"|version = \"$CV\"|" ./Cargo.toml
+          sed -i "/name = \"rustdesk\"/ {n; s/version = \".*\"/version = \"$CV\"/}" ./Cargo.lock
           grep '^version = ' ./Cargo.toml
           # MSBuild imports the env var VERSION as the $(Version) property, and a
           # branch name such as "master" is not a valid NuGet version, which makes
-          # "nuget restore" fail for the WiX MSI project. Keep the numeric version.
-          echo "MSI_VERSION=$AV" >> "$GITHUB_ENV"
+          # "nuget restore" fail for the WiX MSI project. Keep the numeric version
+          # (WiX ProductVersion also rejects letter suffixes like 1.5.28f).
+          echo "MSI_VERSION=$CV" >> "$GITHUB_ENV"
 
       - name: Apply allow_custom_update patch
         continue-on-error: true
