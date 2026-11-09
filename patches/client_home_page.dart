@@ -579,6 +579,15 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return n.isEmpty ? p.id : n;
   }
 
+  /// 卡片副标题行：设备已命名（有别名）就不显示识别码，防止 ID 外泄
+  /// （2026-11-09 需求：重命名后隐藏 ID 号）。未命名时仍显示 ID 便于辨认。
+  String _subLineOf(Peer p) {
+    if (_displayName(p).isNotEmpty) {
+      return p.hostname.isEmpty ? '已命名设备' : p.hostname;
+    }
+    return p.id;
+  }
+
   /// 群发文件：一份文件同时发给多台设备（后台并行传输）
   Future<void> _groupSend() async {
     final peers = <Peer>[];
@@ -1869,9 +1878,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    _displayName(p).isEmpty
-                        ? (p.hostname.isEmpty ? '未命名设备' : p.hostname)
-                        : p.id,
+                    _subLineOf(p),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 12, color: _C.sub),
@@ -2059,7 +2066,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    p.id,
+                    _subLineOf(p),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 11.5, color: _C.sub),
