@@ -274,7 +274,11 @@ jobs:
           if [ -z "$AV" ]; then
             # The rustdesk checkout replaces the repo root, so .github/version.txt
             # from this generator repo is not on disk any more: fetch it remotely.
-            AV="$(curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/.github/version.txt" | tr -d ' \r\n\t' || true)"
+            # Use the API (no CDN cache): raw.githubusercontent may serve a stale
+            # version.txt for up to 5 min after bump_version.py commits.
+            AV="$(curl -fsSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/contents/.github/version.txt?ref=${{ github.ref_name }}" \
+              | python -c 'import json,sys,base64; print(base64.b64decode(json.load(sys.stdin)["content"]).decode().strip())' 2>/dev/null || true)"
           fi
           if [ -z "$AV" ]; then
             echo "no app_version available, keep upstream version"
