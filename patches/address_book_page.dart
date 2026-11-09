@@ -965,13 +965,15 @@ class _AddressBookViewState extends State<AddressBookView> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(
-                          formatAbId(e.id),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 11.5, color: _AC.sub),
-                        ),
+                        // 重命名后隐藏识别码，防 ID 泄露；未命名仍显示便于辨认
+                        if (e.alias.isEmpty)
+                          Text(
+                            formatAbId(e.id),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11.5, color: _AC.sub),
+                          ),
                         if (e.note.isNotEmpty)
                           Text(
                             e.note,
@@ -1053,9 +1055,11 @@ class _AddressBookViewState extends State<AddressBookView> {
     final seed = e.display.isEmpty ? e.id : e.display;
     final letter = seed.isEmpty ? '?' : seed.substring(0, 1);
     final user = store.username.isEmpty ? '' : store.username;
-    final second = user.isEmpty
-        ? formatAbId(e.id)
-        : '$user@${formatAbId(e.id)}';
+    // 已命名设备不再显示识别码（防泄露）；未命名的照常显示
+    final named = e.alias.trim().isNotEmpty;
+    final second = named
+        ? ''
+        : (user.isEmpty ? formatAbId(e.id) : '$user@${formatAbId(e.id)}');
     return InkWell(
       onTap: () {
         if (_batch) {
@@ -1143,12 +1147,18 @@ class _AddressBookViewState extends State<AddressBookView> {
                     ],
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    e.note.isEmpty ? second : '$second · ${e.note}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11.5, color: _AC.sub),
-                  ),
+                  Builder(builder: (_) {
+                    final line = second.isEmpty
+                        ? e.note
+                        : (e.note.isEmpty ? second : '$second · ${e.note}');
+                    if (line.isEmpty) return const SizedBox.shrink();
+                    return Text(
+                      line,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, color: _AC.sub),
+                    );
+                  }),
                 ],
               ),
             ),
