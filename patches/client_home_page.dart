@@ -936,13 +936,24 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               children: [
                 const Icon(Icons.person_outline, size: 16, color: _C.sub),
                 const SizedBox(width: 7),
-                const Text('本机识别码',
+                // ID 两个字做视觉强调（2026-11-09 用户要求：只优化「ID」标签，
+                // 数字保持常规样式）
+                const Text('ID',
                     style: TextStyle(
-                        fontSize: 14,
-                        height: 1.35,
-                        color: _C.sub,
+                        fontSize: 15,
+                        height: 1.2,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 3,
+                        color: _C.text,
                         // 中文走雅黑；不写 fontFamily 时 Flutter 会先用 Roboto 再回退，
                         // 回退字形会带上 Roboto 的度量，小字更糊。
+                        fontFamilyFallback: _cnFonts)),
+                const SizedBox(width: 8),
+                const Text('本机识别码',
+                    style: TextStyle(
+                        fontSize: 11,
+                        height: 1.2,
+                        color: _C.sub,
                         fontFamilyFallback: _cnFonts)),
                 const Spacer(),
                 _squareIconButton(Icons.copy_rounded, () => _copy(_localId),
@@ -955,10 +966,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                // w700 在 Windows 上会挑到「雅黑 Bold」并额外做加粗处理，
-                // 大号数字糊成一团；w500 落到 Regular，笔画干净。
-                fontSize: 28,
-                fontWeight: FontWeight.w500,
+                // 数字恢复原设计样式（29/w700，2026-11-09 用户要求：
+                // 优化的是「ID」标签，不是数字）
+                fontSize: 29,
+                fontWeight: FontWeight.w700,
                 letterSpacing: 2.0,
                 color: _C.text,
                 fontFamilyFallback: _cnFonts,
