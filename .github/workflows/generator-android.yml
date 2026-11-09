@@ -623,6 +623,16 @@ jobs:
           grep -rq "kWallToolbarStates" flutter/lib/ \
             || { echo 'wall canvas / toolbar patch failed'; exit 1; }
           python3 patch_wall_mobile.py .
+          # 与 Windows 同款：会话建好默认「只看画面」，要操作得开群控/点眼睛
+          curl -sSL -o patch_default_view_only.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py
+          python3 patch_default_view_only.py .
+          # 安卓隐私屏收费：未开通不给开关，菜单换增值引导
+          curl -sSL -o patch_mobile_privacy_gate.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_privacy_gate.py
+          python3 patch_mobile_privacy_gate.py .
+          grep -q "hyPrivacyLicensed" flutter/lib/mobile/pages/remote_page.dart \
+            || { echo 'mobile privacy gate patch failed'; exit 1; }
           grep -q "ScreenWallPage" flutter/lib/mobile/pages/home_page.dart \
             || { echo 'home entry patch failed'; exit 1; }
 
