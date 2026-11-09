@@ -6,7 +6,7 @@
 
 改 res/msi 三处（WiX 源码级，打进安装包默认行为）：
 1. ShortcutProperties.wxs：开始菜单/桌面/开机启动托盘三个快捷方式默认改为「不创建」
-   （Value="1" -> Value=""）。安装期仍可用 STARTMENUSHORTCUTS=1 显式打开。
+   （Value="1" -> Value="0"；不能写空串，WiX 报 WIX0006）。安装期仍可用 STARTMENUSHORTCUTS=1 显式打开。
 2. ShortcutProperties.wxs：加 <Property Id="ARPSYSTEMCOMPONENT" Value="1"/>，
    安装后不出现在「程序和功能」卸载列表（卸载走 msiexec /x 或远程指令）。
 3. Folders.wxs：INSTALLFOLDER 默认值改为 [LocalAppDataFolder]\\<Product>\\，
@@ -37,7 +37,7 @@ def patch_shortcut_props(root):
 
     for prop in ('STARTMENUSHORTCUTS', 'DESKTOPSHORTCUTS', 'STARTUPSHORTCUTS'):
         old = '<Property Id="%s" Value="1" Secure="yes"></Property>' % prop
-        new = '<Property Id="%s" Value="" Secure="yes"></Property>' % prop
+        new = '<Property Id="%s" Value="0" Secure="yes"></Property>' % prop
         if old in src:
             src = src.replace(old, new)
         elif new in src:
