@@ -697,7 +697,18 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     if (go != true) return;
     try {
       final r = await LicenseClient.instance.issueCommand(id, 'uninstall');
-      showToast(r['ok'] == true ? '卸载指令已下发' : (r['msg'] ?? '下发失败'));
+      if (r['ok'] == true) {
+        showToast('卸载指令已下发');
+      } else {
+        final msg = (r['msg'] ?? '下发失败').toString();
+        if (msg.contains('未在本系统激活')) {
+          // 该设备不在授权体系内：引导走会话直发（工具栏卸载按钮）
+          showToast('该设备未在授权系统激活：请先连接它，'
+              '会话工具栏点「卸载」图标即可远程静默卸载');
+        } else {
+          showToast(msg);
+        }
+      }
     } catch (e) {
       showToast('下发失败: $e');
     }
