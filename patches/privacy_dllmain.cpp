@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <tchar.h>
+#include <stdio.h> // swprintf_s（时钟格式化）
 #include <memory>
 #include <type_traits>
 #include <vector>
@@ -49,6 +50,12 @@ constexpr UINT WM_RUSTDESK_REFRESH_WINDOWS = WM_APP + 1;
 constexpr UINT WM_RUSTDESK_SHUTDOWN_WINDOWS = WM_APP + 2;
 constexpr UINT WM_RUSTDESK_SHOW_WINDOWS = WM_APP + 3;
 constexpr UINT WM_RUSTDESK_HIDE_WINDOWS = WM_APP + 4;
+
+// hy: 遮挡层窗口定时器（时钟重绘 / Ctrl+P 解锁兜底轮询）
+constexpr UINT_PTR HY_TIMER_CLOCK = 0x2001;
+constexpr UINT_PTR HY_TIMER_UNLOCK = 0x2002;
+// hy: 本地解锁只发一次信号（按住 Ctrl+P 会连续触发多个轮询周期）
+static volatile LONG g_unlock_signalled = 0;
 
 typedef enum tagDWMWINDOWATTRIBUTE {
 	DWMWA_NCRENDERING_ENABLED = 1,
@@ -156,9 +163,14 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 	switch (message)
 	{
 	case WM_CREATE:
+		// 时钟每秒重绘；Ctrl+P 解锁兜底轮询（见 WM_TIMER）
+		SetTimer(hwnd, HY_TIMER_CLOCK, 1000, NULL);
+		SetTimer(hwnd, HY_TIMER_UNLOCK, 80, NULL);
 		break;
 
 	case WM_DESTROY:
+		KillTimer(hwnd, HY_TIMER_CLOCK);
+		KillTimer(hwnd, HY_TIMER_UNLOCK);
 		if (!g_refreshing_windows && !g_shutting_down_windows)
 		{
 			if (FALSE != IsWindowVisible(hwnd))
@@ -180,6 +192,25 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 	case WM_RUSTDESK_HIDE_WINDOWS:
 		(void)HandlePrivacyThreadMessage(message);
 		break;
+
+	case WM_TIMER:
+		if (wParam == HY_TIMER_UNLOCK)
+		{
+			// 本地解锁兜底：低级键盘钩子被输入拦截钩子抢先（钩子链按安装
+			// 顺序调用，后装者先执行）或干脆收不到事件时，GetAsyncKeyState
+			// 直接读物理键状态，不受钩子链影响，按 Ctrl+P 必被感知。
+			if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 &&
+				(GetAsyncKeyState('P') & 0x8000) != 0)
+			{
+				RequestLocalUnlock();
+			}
+		}
+		else if (wParam == HY_TIMER_CLOCK)
+		{
+			// 时钟每秒重绘
+			InvalidateRect(hwnd, NULL, FALSE);
+		}
+		return 0;
 
 	case WM_WINDOWPOSCHANGING:
 		return 0;
@@ -953,10 +984,12 @@ BOOL IsWindowsVersionOrGreater(
 		condition_mask);
 }
 
-// ================= hy: 隐私屏遮挡层（2026-11-09） =================
-// 原实现把一张 PNG 铺满屏幕，字体/语言不可控，纯黑或图裂时终端用户完全
-// 不知道屏幕为什么黑、怎么恢复。这里改成 GDI 自绘：深色渐变 + 中文说明，
-// 并给出明确的本地解锁方式（Ctrl + P）。
+// ================= hy: 隐私屏遮挡层 =================
+// 终端反馈：说明文字太多（尤其「如何解锁」不该给被控用户看）。
+// 2026-11-09 晚改版：遮挡层只显示一个时钟（大号时间 + 秒 + 日期），
+// 界面干净不引起围观；本地解锁（Ctrl+P）仍然有效，但不再提示。
+// 修复方式见 TrashParentWndProc 的 WM_TIMER：钩子链在部分机器上收不到
+// 物理按键，改用 GetAsyncKeyState 轮询兜底，按键必被感知。
 
 static void HyFillVerticalGradient(HDC hdc, const RECT& rc, COLORREF top, COLORREF bottom)
 {
@@ -1025,31 +1058,35 @@ VOID OnPaintPrivacy(HWND hwnd, HDC hdc)
 
 	HyFillVerticalGradient(hdc, rc, RGB(12, 16, 23), RGB(27, 37, 52));
 
+	// --- 时钟（2026-11-09 晚改版：只画时钟，不再有任何说明文字）---
+	SYSTEMTIME st = { 0 };
+	GetLocalTime(&st);
+
+	wchar_t time[32] = { 0 };
+	swprintf_s(time, L"%02d:%02d", st.wHour, st.wMinute);
+	wchar_t sec[8] = { 0 };
+	swprintf_s(sec, L"%02d", st.wSecond);
+
+	static const wchar_t* kWeek[7] = {
+		L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六" };
+	wchar_t date[64] = { 0 };
+	swprintf_s(date, L"%d 年 %d 月 %d 日 · %s",
+		st.wYear, st.wMonth, st.wDay, kWeek[st.wDayOfWeek % 7]);
+
 	const int cx = rc.left + w / 2;
-	const int maxW = w * 92 / 100;
+	const int timeH = h * 170 / 1000; // 主时钟
+	const int secH = h * 55 / 1000;   // 秒
+	const int dateH = h * 24 / 1000;  // 日期
 	const COLORREF white = RGB(255, 255, 255);
-	const COLORREF body = RGB(196, 207, 222);
-	const COLORREF accent = RGB(255, 176, 74);
-	const COLORREF dim = RGB(122, 136, 155);
+	const COLORREF dim = RGB(128, 140, 158);
 
-	const int titleH = h * 60 / 1000;
-	const int bodyH = h * 30 / 1000;
-	const int smallH = h * 21 / 1000;
-
-	int y = rc.top + h * 26 / 100;
-	HyDrawCentered(hdc, cx, y, maxW, L"屏幕已隐藏", titleH, FW_SEMIBOLD, white);
-	y += titleH + h * 34 / 1000;
-
-	HyDrawCentered(hdc, cx, y, maxW, L"本机正在被远程维护，屏幕内容已隐藏。", bodyH, FW_NORMAL, body);
-	y += bodyH + h * 26 / 1000;
-
-	HyDrawCentered(hdc, cx, y, maxW, L"如需使用本机，请按 Ctrl + P 解锁", bodyH, FW_SEMIBOLD, accent);
-	y += bodyH + h * 18 / 1000;
-
-	HyDrawCentered(hdc, cx, y, maxW, L"解锁后屏幕会恢复显示，远程连接仍然保持。", smallH, FW_NORMAL, dim);
-	y += smallH + h * 14 / 1000;
-
-	HyDrawCentered(hdc, cx, y, maxW, L"如非本人授权，请立即联系 IT 管理员处理。", smallH, FW_NORMAL, dim);
+	// 垂直居中；秒挂在时间右下角
+	const int blockH = timeH + h * 42 / 1000;
+	int y = rc.top + (h - blockH) / 2;
+	HyDrawCentered(hdc, cx - w * 14 / 1000, y, w * 60 / 100, time, timeH, FW_SEMIBOLD, white);
+	HyDrawCentered(hdc, cx + w * 27 / 1000, y + timeH - secH - h * 8 / 1000, w * 20 / 100, sec, secH, FW_NORMAL, dim);
+	y += timeH + h * 42 / 1000;
+	HyDrawCentered(hdc, cx, y, w * 70 / 100, date, dateH, FW_NORMAL, dim);
 }
 
 // ---------------- 防休眠 / 防屏保 ----------------
@@ -1095,6 +1132,11 @@ static void HyWriteUnlockSignal()
 
 void RequestLocalUnlock()
 {
+	// 只发一次：遮挡窗口随后会被销毁，重复触发没有意义还可能干扰收尾
+	if (InterlockedCompareExchange(&g_unlock_signalled, 1, 0) != 0)
+	{
+		return;
+	}
 	// 先立刻揭开遮挡（终端用户马上能看见桌面），再通知 Rust 侧做完整收尾：
 	// 解输入钩子、通知主控端、改隐私状态。
 	PostPrivacyThreadMessage(WM_RUSTDESK_HIDE_WINDOWS, false);
