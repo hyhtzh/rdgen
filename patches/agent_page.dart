@@ -16,7 +16,7 @@ import 'package:flutter_hbb/models/server_model.dart';
 /// 无密码外显、无开关、无设置入口、无连接入口，配合构建期参数
 /// （无托盘 / 无快捷方式 / 服务自启）构成纯后台被控端。
 class AgentPage extends StatefulWidget {
-  const AgentPage({Key? key}) : super(key);
+  const AgentPage({Key? key}) : super(key: key);
 
   @override
   State<AgentPage> createState() => _AgentPageState();
