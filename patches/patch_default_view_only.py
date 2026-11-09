@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""每路远控会话建好后，自动切到「只看画面」（只读），用户点工具栏的眼睛按钮才可操作。
+"""每路远控会话建好后，自动切到「只看画面」（只读），用户点工具栏的眼睛按钮才可操作；
+并且自动把视图调成「自适应」（画面随窗口大小缩放，2026-11-09 需求）。
 
 用法: python patch_default_view_only.py <rustdesk 源码根目录>
 
@@ -35,7 +36,9 @@ CALL_ANCHOR = """    _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
 CALL_ADD = """    _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
       _ffi.canvasModel.activateLocalCursor();
       // 【HyDesk】默认只看：连上就先给「只看画面」，要操作得自己点眼睛按钮
-      unawaited(_hyApplyDefaultViewOnly());"""
+      unawaited(_hyApplyDefaultViewOnly());
+      // 【HyDesk】自动自适应：画面随窗口大小自动缩放，不用再进视图菜单选
+      unawaited(_hyApplyAutoAdaptive());"""
 
 # 3) 方法：塞在 _RemotePageState 的最后一个成员之后
 CLASS_END_ANCHOR = """  @override
@@ -71,6 +74,19 @@ METHOD_ADD = """  @override
       }
     } catch (e) {
       debugPrint('HyDesk default view-only failed: $e');
+    }
+  }
+
+  /// 【HyDesk】自动自适应（2026-11-09）：打开远程会话就把 view-style 定成
+  /// 自适应，画面按窗口大小自动缩放；原先默认是原始分辨率，小窗口里
+  /// 得手动进「显示」菜单选自适应，用户报了体验问题。
+  Future<void> _hyApplyAutoAdaptive() async {
+    try {
+      await bind.sessionSetViewStyle(
+          sessionId: sessionId, value: kRemoteViewStyleAdaptive);
+      if (mounted) await _ffi.canvasModel.updateViewStyle();
+    } catch (e) {
+      debugPrint('HyDesk auto adaptive failed: $e');
     }
   }
 }"""
