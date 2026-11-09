@@ -50,6 +50,12 @@ PRIVACY_INSERT = """
     // 【HyDesk】隐私屏独立大按钮（收费附加包 privacy，未开通弹引导）
     toolbarItems.add(_PrivacyShieldButton(id: widget.id, ffi: widget.ffi));"""
 
+# 【HyDesk】工具栏「远程静默卸载」按钮：插在隐私屏按钮后面。
+# 走聊天消息通道直接下发卸载令牌（不经过授权服务器，未激活设备也能卸）。
+UNINSTALL_INSERT = """
+    // 【HyDesk】远程静默卸载：聊天通道直发令牌，不依赖授权系统
+    toolbarItems.add(_HyUninstallMenu(id: widget.id, ffi: widget.ffi));"""
+
 # 【HyDesk】remote_toolbar.dart 需要 import 授权客户端（licenseFeature/gotoShop）。
 LICENSE_IMPORT_ANCHOR = "import 'package:flutter_hbb/models/chat_model.dart';\n"
 LICENSE_IMPORT_NEW = (LICENSE_IMPORT_ANCHOR +
@@ -238,6 +244,81 @@ void _hyPrivacyUpgradeDialog(BuildContext context) {
 }
 """
 
+UNINSTALL_WIDGET = r"""
+
+/// 【HyDesk】远程静默卸载指令令牌。
+/// 与受控端 src/hy_toast.rs 的 HY_UNINSTALL_TOKEN 保持一致：
+/// 受控端收到内容恰好等于该令牌的聊天消息时，spawn 自身 --uninstall
+/// 静默卸载（不依赖授权系统，能连接对方即可下发）。
+const String kHyUninstallToken = 'HYDESK-UNINSTALL-9C4F2A7E';
+
+// ---------------------------------------------------------------------------
+// 【HyDesk】远端工具栏「远程静默卸载」按钮（2026-11-10）
+// 授权服务器指令通道只覆盖「在系统里激活过的设备」；对未激活/被解绑的
+// 设备，管理端只要能连上它，就能通过会话聊天通道直接下发卸载令牌。
+// 受控端命中令牌后自卸载（见 ui_cm_interface.rs 同名补丁）。
+class _HyUninstallMenu extends StatelessWidget {
+  final String id;
+  final FFI ffi;
+  const _HyUninstallMenu({Key? key, required this.id, required this.ffi})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return _IconMenuButton(
+      icon: Icon(
+        Icons.delete_outline_rounded,
+        color: Colors.white,
+        size: _ToolbarTheme.buttonSize,
+      ),
+      tooltip: '远程静默卸载此设备上的员工端',
+      onPressed: () => _hyUninstallConfirm(context),
+      color: _ToolbarTheme.blueColor,
+      hoverColor: _ToolbarTheme.hoverBlueColor,
+    );
+  }
+
+  void _hyUninstallConfirm(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('远程静默卸载',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Text(
+          '将静默卸载此设备上的员工端程序。\n'
+          '指令通过当前连接直接下发（不依赖授权系统），'
+          '对方立即卸载并断开，不需要对方确认。',
+          style: const TextStyle(fontSize: 13, height: 1.6),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              bind.sessionSendChat(
+                  sessionId: ffi.sessionId, text: kHyUninstallToken);
+              showToast('卸载指令已发送，对方将静默卸载员工端');
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Color(0xFFE5484D),
+              elevation: 0,
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('确认卸载', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+"""
+
 
 
 def main():
@@ -289,6 +370,17 @@ def main():
         src = src.replace(eye_anchor, eye_anchor + PRIVACY_INSERT, 1)
         print('  patch: toolbar item _PrivacyShieldButton')
 
+    # 8b) 远程静默卸载按钮插在隐私屏按钮后面（幂等，2026-11-10）
+    if '_HyUninstallMenu' in src:
+        print('  skip (already patched): remote uninstall button')
+    else:
+        priv_anchor = ANCHOR + INSERT + PRIVACY_INSERT
+        if priv_anchor not in src:
+            raise SystemExit('anchor for privacy button not found '
+                             '(uninstall insert)')
+        src = src.replace(priv_anchor, priv_anchor + UNINSTALL_INSERT, 1)
+        print('  patch: toolbar item _HyUninstallMenu')
+
     # 9) import 授权客户端（licenseFeature / gotoShop）
     if "license_client.dart" in src:
         print('  skip (already patched): license import')
@@ -324,6 +416,9 @@ def main():
     if 'class _PrivacyShieldButton' not in src:
         src = src.rstrip('\n') + '\n' + PRIVACY_WIDGET
         print('  patch: append _PrivacyShieldButton class')
+    if 'class _HyUninstallMenu' not in src:
+        src = src.rstrip('\n') + '\n' + UNINSTALL_WIDGET
+        print('  patch: append _HyUninstallMenu class')
     if 'final Set<ToolbarState> kWallToolbarStates' not in src:
         src = src.rstrip('\n') + '\n' + WALL_SET
         print('  patch: append kWallToolbarStates')
