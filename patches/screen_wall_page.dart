@@ -53,6 +53,9 @@ class WallRecorder {
   /// 目录：<根目录>\<设备名>\截图\yyyyMMdd_HHmmssfff.png
   static bool snapOn = false;
   static String root = r'D:\录屏';
+  /// 【HyDesk】录像分段时长（分钟）：默认 5，存储位置对话框里可改
+  /// （2026-11-09 用户要求「5 分钟一段视频，支持自定义时长」）。
+  static int segMin = 5;
   static Timer? _tick;
   static final Map<String, bool Function()> _lanes = {};
   /// 【HyDesk】原生视频录制：每格注册自己的启停回调。
@@ -123,6 +126,23 @@ class WallRecorder {
       if (v != null && v.isNotEmpty) root = v;
     } catch (_) {}
     return root;
+  }
+
+  /// 分段时长（分钟）：1~240 合法，其余回退 5。
+  static int loadSeg() {
+    try {
+      final v = bind.mainGetOptionSync(key: 'wall-rec-segmin');
+      final m = int.tryParse(v ?? '');
+      if (m != null && m >= 1 && m <= 240) segMin = m;
+    } catch (_) {}
+    return segMin;
+  }
+
+  static Future<void> saveSeg(int m) async {
+    segMin = m;
+    try {
+      await bind.mainSetOption(key: 'wall-rec-segmin', value: '$m');
+    } catch (_) {}
   }
 
   static Future<void> saveRoot(String v) async {
@@ -1445,18 +1465,35 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 自定义录屏存储位置：每路设备在根目录下按设备名单独建文件夹
   Future<void> _showRecRootDialog() async {
     final ctrl = TextEditingController(text: WallRecorder.loadRoot());
+    final segCtrl =
+        TextEditingController(text: '${WallRecorder.loadSeg()}');
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('录屏存储位置',
+        title: const Text('录像存储设置',
             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const Text('存储位置',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
             TextField(controller: ctrl, decoration: const InputDecoration(suffixText: '')),
+            const SizedBox(height: 12),
+            const Text('录像分段时长（分钟，1~240）',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            TextField(
+                controller: segCtrl,
+                keyboardType: TextInputType.number,
+                decoration:
+                    const InputDecoration(hintText: '5', suffixText: '分钟')),
             const SizedBox(height: 8),
-            const Text('每路设备在该目录下按设备名单独建文件夹（录像/截图）；\n录像为视频文件（webm/mp4），停止后自动归档。',
+            const Text(
+                '每路设备在该目录下按设备名单独建文件夹（录像/截图）。\n'
+                '录像为视频文件（webm/mp4），按上述时长自动分段；\n'
+                '画面静止超 60 秒自动暂停，有操作自动续录新段。',
                 style: TextStyle(fontSize: 12, color: _C.sub)),
           ],
         ),
@@ -1469,15 +1506,24 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
               onPressed: () {
                 final p = ctrl.text.trim();
                 if (p.isEmpty) return;
-                Navigator.of(ctx).pop(p);
+                final m = int.tryParse(segCtrl.text.trim());
+                Navigator.of(ctx).pop({'path': p, 'seg': m});
               },
               child: const Text('保存')),
         ],
       ),
     ).then((v) async {
-      if (v is String && v.isNotEmpty) {
-        await WallRecorder.saveRoot(v);
-        showToast('已保存，之后的录屏存到：$v');
+      if (v is Map) {
+        final p = (v['path'] as String?) ?? '';
+        if (p.isNotEmpty) {
+          await WallRecorder.saveRoot(p);
+        }
+        final m = v['seg'] as int?;
+        if (m != null && m >= 1 && m <= 240) {
+          await WallRecorder.saveSeg(m);
+        }
+        if (mounted) setState(() {});
+        showToast('已保存：存储 $p，分段 ${WallRecorder.segMin} 分钟');
       }
     });
   }
@@ -1541,11 +1587,12 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       }
     }
     final root = WallRecorder.loadRoot();
+    final seg = WallRecorder.loadSeg();
     try {
       Directory(root).createSync(recursive: true);
     } catch (_) {}
     setState(() => WallRecorder.start());
-    showToast('自动录像已开启：生成视频文件（webm/mp4），保存在 $root');
+    showToast('自动录像已开启：视频文件存 $root，每段 $seg 分钟，静止不录');
   }
 
   /// 自动截图独立开关（与录屏分开启停；同一收费规则：4 路免费，超出 record 附加包）
@@ -2213,6 +2260,7 @@ class _WallTileState extends State<_WallTile> {
   DateTime _vidLastActive = DateTime.now(); // 画面最后变化时间
   Uint8List? _actLastPng; // 上一张低清快照（静止检测用）
   Timer? _vidWatch;
+  bool _vidOp = false; // 暂停/续录并发护栏
 
   /// 这一格在墙里显示的设备名：地址簿别名 > peer 别名 > ID
   /// （截图目录、录像归档共用；名字跟随重命名，文件名不暴露识别码）。
@@ -2298,10 +2346,12 @@ class _WallTileState extends State<_WallTile> {
     unawaited(_vidArchive());
   }
 
-  /// 静止检测：3 秒一次，96px 低清快照对比（CPU 可忽略）。
-  /// 有变化 → 续录；静止超 60 秒 → 暂停封存。
+  /// 静止检测 + 定时分段：3 秒一次，96px 低清快照对比（CPU 可忽略）。
+  /// · 有变化 → 续录；
+  /// · 静止超 60 秒 → 暂停封存（静止不录）；
+  /// · 录满一段（默认 5 分钟，可自定义）→ 封存后立即开新段。
   Future<void> _vidWatchTick() async {
-    if (!mounted || !_vidOn) return;
+    if (!mounted || !_vidOn || _vidOp) return;
     try {
       final ctx = _recKey.currentContext;
       final dynamic rb = ctx?.findRenderObject();
@@ -2318,7 +2368,27 @@ class _WallTileState extends State<_WallTile> {
               const Duration(seconds: 60)) {
         unawaited(_vidPause());
       }
+      // 定时滚动分段：每段录满就封存开新段
+      final segStart = _vidStartAt;
+      if (_vidLive && segStart != null) {
+        final seg = WallRecorder.loadSeg();
+        if (DateTime.now().difference(segStart) > Duration(minutes: seg)) {
+          unawaited(_vidRoll());
+        }
+      }
     } catch (_) {}
+  }
+
+  /// 封存当前段并立即开新段（定时滚动用，与静止暂停互斥）。
+  Future<void> _vidRoll() async {
+    if (_vidOp) return;
+    _vidOp = true;
+    try {
+      await _vidPause();
+      await _vidResume();
+    } finally {
+      _vidOp = false;
+    }
   }
 
   /// 停录归档：Rust 侧落盘的是 outgoing_<id>_时间_display0_vp9.webm，
