@@ -1006,8 +1006,57 @@ Future<void> showGroupSendDialog(BuildContext context, List<Peer> peers) async {
                   ],
                 ),
                 const SizedBox(height: 12),
-                const Text('② 发给哪些设备（发送到对方主目录）',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                Row(
+                  children: [
+                    const Text('② 发给哪些设备（发送到对方主目录）',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 8),
+                    Text('已选 ${sel.length}/${online.length}',
+                        style: const TextStyle(fontSize: 11, color: _C.sub)),
+                    const Spacer(),
+                    InkWell(
+                      onTap: () => setDg(() {
+                        if (sel.length == online.length) {
+                          sel.clear();
+                        } else {
+                          sel
+                            ..clear()
+                            ..addAll(online.map((p) => p.id));
+                        }
+                      }),
+                      borderRadius: BorderRadius.circular(4),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        child: Row(
+                          children: [
+                            Icon(
+                              online.isNotEmpty &&
+                                      sel.length == online.length
+                                  ? Icons.check_box
+                                  : Icons.check_box_outline_blank,
+                              size: 15,
+                              color: online.isNotEmpty &&
+                                      sel.length == online.length
+                                  ? _C.accent
+                                  : _C.sub,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              online.isNotEmpty &&
+                                      sel.length == online.length
+                                  ? '取消全选'
+                                  : '全选',
+                              style: const TextStyle(
+                                  fontSize: 12, color: _C.accent),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 6),
                 Expanded(
                   child: Container(
