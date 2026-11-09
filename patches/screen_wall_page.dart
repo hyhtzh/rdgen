@@ -30,12 +30,19 @@ import 'package:uuid/uuid.dart';
 // ---------------------------------------------------------------------------
 // 【HyDesk】自动录屏 / 截图（管理端执行）
 //
-// 机制：墙里每一路画面本来就在解码，直接把格子截图存成 PNG 序列——
-// 画面有变化才落盘（既是录像帧也是截图），静止不写文件；
-// 连续 60 秒无变化自动结束当前分段，再有操作开新分段。
-// 目录：<根目录>\<设备名>\<yyyyMMdd_HHmmss>\000001.png…
-// 根目录可自定义（存用户配置 wall-rec-root，默认 D:\录屏）。
-// 收费：4 路免费；开录时在墙里的设备超过 4 路需要 record 附加包，
+// 录屏（2026-11-09 重做）：**原生视频文件**，不再是 PNG 帧序列
+// （用户报障「只能截图，没有录像视频」）。每一路墙会话调上游
+// sessionRecordScreen，由 Rust 侧 Recorder 把会话视频流编码成
+// .webm/.mp4（VP8/VP9 → webm，H264/H265 → mp4），Windows 自带播放器直接放。
+// · 落盘目录通过本地选项 video-save-directory 对齐到墙自定义根目录；
+// · 停止/格子销毁时归档：<根>\<设备名>\录像\<设备名>_时间.webm
+//   （文件名以重命名后的设备名为主，不暴露识别码）；
+// · 录像期间该路临时提到 20fps/balanced（墙平时 5fps/low 录出来没法看），
+//   停录恢复 5fps/low。
+// 自动截图：与录屏独立开关，画面有变化才栅格化一张 PNG
+// （远端屏幕原始分辨率），最短间隔 3 秒，静止不截图。
+// 目录：<根目录>\<设备名>\截图\yyyyMMdd_HHmmssfff.png
+// 收费：4 路免费；墙里设备超过 4 路需要 record 附加包，
 // 与屏幕墙档位/群控同一套体系（licenseFeature），客户端不显示金额。
 // ---------------------------------------------------------------------------
 class WallRecorder {
@@ -48,28 +55,67 @@ class WallRecorder {
   static String root = r'D:\录屏';
   static Timer? _tick;
   static final Map<String, bool Function()> _lanes = {};
+  /// 【HyDesk】原生视频录制：每格注册自己的启停回调。
+  /// key = 设备 id，value = ctl(true/false) 启/停该路的 sessionRecordScreen。
+  static final Map<String, Future<void> Function(bool)> _vids = {};
 
   static void register(String id, bool Function() alive) => _lanes[id] = alive;
   static void unregister(String id) => _lanes.remove(id);
+  static void registerVideo(String id, Future<void> Function(bool) ctl) =>
+      _vids[id] = ctl;
+  static void unregisterVideo(String id) => _vids.remove(id);
 
   static void start() {
     on = true;
-    _tick?.cancel();
-    _tick = Timer.periodic(const Duration(seconds: 2), (_) {
-      // 返回 false = 这一格已销毁，顺手清掉，防泄漏
-      _lanes.removeWhere((_, f) => !f());
-    });
+    _prepareThenStart();
+  }
+
+  /// 先把原生录像的落盘目录对齐到墙根目录（Rust 侧 Recorder::new 时读取），
+  /// 再逐路启动，避免目录还没写入就开始录。
+  static void _prepareThenStart() async {
+    try {
+      await bind.mainSetLocalOption(
+          key: 'video-save-directory', value: root);
+    } catch (_) {}
+    for (final ctl in _vids.values.toList()) {
+      unawaited(ctl(true));
+    }
+    _ensureTick();
   }
 
   static void stop() {
     on = false;
-    _tick?.cancel();
-    _tick = null;
+    for (final ctl in _vids.values.toList()) {
+      unawaited(ctl(false));
+    }
+    if (!snapOn) {
+      _tick?.cancel();
+      _tick = null;
+    }
     _lanes.clear();
   }
 
-  static void startSnap() => snapOn = true;
-  static void stopSnap() => snapOn = false;
+  /// 截图/录像共用的存活巡检（销毁的格子自动清注册，防泄漏）。
+  static void _ensureTick() {
+    _tick ??= Timer.periodic(const Duration(seconds: 2), (_) {
+      _lanes.removeWhere((_, f) => !f());
+    });
+  }
+
+  /// 【HyDesk】修复：只开「自动截图」不开录像时，周期器也要跑
+  /// （旧实现 tick 只在录像 start() 里启动，导致截图开关单独开无效）。
+  static void startSnap() {
+    snapOn = true;
+    _ensureTick();
+  }
+
+  static void stopSnap() {
+    snapOn = false;
+    if (!on) {
+      _tick?.cancel();
+      _tick = null;
+    }
+  }
 
   static String loadRoot() {
     try {
@@ -1410,7 +1456,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           children: [
             TextField(controller: ctrl, decoration: const InputDecoration(suffixText: '')),
             const SizedBox(height: 8),
-            const Text('每路设备在该目录下按设备名单独建文件夹；\n画面有操作才录制，静止自动停止。',
+            const Text('每路设备在该目录下按设备名单独建文件夹（录像/截图）；\n录像为视频文件（webm/mp4），停止后自动归档。',
                 style: TextStyle(fontSize: 12, color: _C.sub)),
           ],
         ),
@@ -1465,7 +1511,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             ),
             const SizedBox(width: 4),
             Text(
-              WallRecorder.on ? '录屏中' : '自动录屏',
+              WallRecorder.on ? '录像中' : '自动录像',
               style: TextStyle(
                   fontSize: 11.5,
                   color: WallRecorder.on
@@ -1481,7 +1527,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   Future<void> _toggleRecord() async {
     if (WallRecorder.on) {
       setState(() => WallRecorder.stop());
-      showToast('已停止自动录屏');
+      showToast('已停止自动录像，视频已按设备名归档');
       return;
     }
     // 4 路免费；墙里设备超过 4 路时需要 record 附加包
@@ -1499,7 +1545,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
       Directory(root).createSync(recursive: true);
     } catch (_) {}
     setState(() => WallRecorder.start());
-    showToast('自动录屏已开启：画面有操作才录，静止不录');
+    showToast('自动录像已开启：生成视频文件（webm/mp4），保存在 $root');
   }
 
   /// 自动截图独立开关（与录屏分开启停；同一收费规则：4 路免费，超出 record 附加包）
@@ -2156,66 +2202,190 @@ class _WallTileState extends State<_WallTile> {
 
   // ---- 自动录屏 / 截图（【HyDesk】，详见 WallRecorder 注释）----
   final GlobalKey _recKey = GlobalKey();
-  String? _recSeg; // 当前分段目录（null = 未在录）
-  Uint8List? _recLast; // 上一帧 PNG，帧对比判断「有没有操作」
-  int _recSeq = 0;
-  DateTime _recLastActive = DateTime.now();
-  bool _recBusy = false;
   DateTime? _snapLastAt; // 上次截图时间（节流 ≥ 3 秒一张）
   Uint8List? _snapLastPng; // 上一张截图（同分辨率才能比，静止不刷文件）
 
-  bool _recTick() {
-    if (!mounted) return false;
-    if ((!WallRecorder.on && !WallRecorder.snapOn) ||
-        !widget.live ||
-        _sleeping ||
-        _noSignal) {
-      return true;
-    }
-    unawaited(_recCapture());
-    return true;
+  // ---- 【HyDesk】原生视频录制（2026-11-09 重做：录像 = 视频文件）----
+  bool _vidOn = false; // 墙录像开关开着（本路应录）
+  bool _vidLive = false; // Rust 录制器当前在录（静止暂停时为 false）
+  DateTime? _vidStartAt; // 本段录像起点（归档时按 mtime 匹配文件）
+  bool _vidBusy = false;
+  DateTime _vidLastActive = DateTime.now(); // 画面最后变化时间
+  Uint8List? _actLastPng; // 上一张低清快照（静止检测用）
+  Timer? _vidWatch;
+
+  /// 这一格在墙里显示的设备名：地址簿别名 > peer 别名 > ID
+  /// （截图目录、录像归档共用；名字跟随重命名，文件名不暴露识别码）。
+  String _wallDevName() {
+    var n = widget.peer.alias;
+    try {
+      final nid = widget.peer.id.replaceAll(' ', '').trim();
+      for (final e in AddressBookStore.instance.entries) {
+        if (e.id.replaceAll(' ', '').trim() == nid &&
+            e.alias.trim().isNotEmpty) {
+          n = e.alias.trim();
+          break;
+        }
+      }
+    } catch (_) {}
+    return _sanitizeName(n.isEmpty ? widget.peer.id : n);
   }
 
-  Future<void> _recCapture() async {
-    if (_recBusy) return;
-    final ctx = _recKey.currentContext;
-    if (ctx == null) return;
-    final dynamic rb = ctx.findRenderObject();
-    if (rb == null) return;
-    _recBusy = true;
+  /// 原生录像启停（墙级开关）：录像期间临时提帧率/画质（墙平时 5fps/low
+  /// 录出来没法看），停录恢复。**静止不录**（2026-11-09 用户要求）：画面静止
+  /// 60 秒自动暂停（文件封存归档），有操作自动开新文件续录。
+  Future<void> _vidCtl(bool start) async {
+    if (_vidBusy) return;
+    if (start == _vidOn) return;
+    final sess = wallFfi(widget.peer.id);
+    if (sess == null) return;
+    _vidBusy = true;
     try {
-      // 录屏帧：PNG 序列按帧落盘，宽压在 1920 以内（4K 按帧写会把磁盘吃爆）
-      if (WallRecorder.on) {
-        final bytes = await _rasterPng(rb, capW: 1920);
-        if (bytes == null) return;
-        if (_sameFrame(bytes)) {
-          // 不操作不录：静止超 60 秒结束分段
-          if (_recSeg != null &&
-              DateTime.now().difference(_recLastActive) >
-                  const Duration(seconds: 60)) {
-            _recSeg = null;
-            _recSeq = 0;
-            _recLast = null;
-          }
-          return;
-        }
-        _recLastActive = DateTime.now();
-        _recLast = bytes;
-        _recSeg ??= _recNewSeg();
-        _recSeq++;
-        final f =
-            File('$_recSeg\\${_recSeq.toString().padLeft(6, '0')}.png');
-        await f.writeAsBytes(bytes, flush: true);
-      }
-      if (WallRecorder.snapOn) {
-        await _snapTick(rb);
+      if (start) {
+        try {
+          await bind.sessionSetCustomFps(sessionId: sess.sessionId, fps: 20);
+          await bind.sessionSetImageQuality(
+              sessionId: sess.sessionId, value: 'balanced');
+        } catch (_) {}
+        _vidOn = true;
+        _vidLastActive = DateTime.now();
+        unawaited(_vidResume());
+        _vidWatch?.cancel();
+        _vidWatch = Timer.periodic(const Duration(seconds: 3), (_) {
+          unawaited(_vidWatchTick());
+        });
+      } else {
+        _vidOn = false;
+        _vidWatch?.cancel();
+        _vidWatch = null;
+        if (_vidLive) await _vidPause();
+        try {
+          await bind.sessionSetCustomFps(sessionId: sess.sessionId, fps: 5);
+          await bind.sessionSetImageQuality(
+              sessionId: sess.sessionId, value: 'low');
+        } catch (_) {}
       }
     } catch (_) {
-      // 磁盘满/目录被删等：先停这一格，下个周期再试
-      _recSeg = null;
     } finally {
-      _recBusy = false;
+      _vidBusy = false;
     }
+  }
+
+  /// 开始/恢复一段录像（每次恢复都是新文件，时间戳独立）。
+  Future<void> _vidResume() async {
+    final sess = wallFfi(widget.peer.id);
+    if (sess == null) return;
+    try {
+      try {
+        sessionRefreshVideo(sess.sessionId, sess.ffiModel.pi);
+      } catch (_) {}
+      await bind.sessionRecordScreen(sessionId: sess.sessionId, start: true);
+      _vidLive = true;
+      _vidStartAt = DateTime.now().subtract(const Duration(seconds: 2));
+      _vidLastActive = DateTime.now();
+    } catch (_) {}
+  }
+
+  /// 结束当前一段（停止录制器，文件封存归档）。
+  Future<void> _vidPause() async {
+    _vidLive = false;
+    final sess = wallFfi(widget.peer.id);
+    if (sess != null) {
+      try {
+        await bind.sessionRecordScreen(sessionId: sess.sessionId, start: false);
+      } catch (_) {}
+    }
+    unawaited(_vidArchive());
+  }
+
+  /// 静止检测：3 秒一次，96px 低清快照对比（CPU 可忽略）。
+  /// 有变化 → 续录；静止超 60 秒 → 暂停封存。
+  Future<void> _vidWatchTick() async {
+    if (!mounted || !_vidOn) return;
+    try {
+      final ctx = _recKey.currentContext;
+      final dynamic rb = ctx?.findRenderObject();
+      if (rb == null) return;
+      final bytes = await _rasterPng(rb, capW: 96);
+      if (bytes == null) return;
+      final changed = _actLastPng == null || !_sameAs(_actLastPng!, bytes);
+      _actLastPng = bytes;
+      if (changed) {
+        _vidLastActive = DateTime.now();
+        if (!_vidLive) unawaited(_vidResume());
+      } else if (_vidLive &&
+          DateTime.now().difference(_vidLastActive) >
+              const Duration(seconds: 60)) {
+        unawaited(_vidPause());
+      }
+    } catch (_) {}
+  }
+
+  /// 停录归档：Rust 侧落盘的是 outgoing_<id>_时间_display0_vp9.webm，
+  /// 挪到 <根>\<设备名>\录像\ 下并改名为 <设备名>_时间.webm——
+  /// 文件名以重命名后的设备名为主（2026-11-09 用户要求，不暴露识别码）。
+  Future<void> _vidArchive() async {
+    final start = _vidStartAt;
+    _vidStartAt = null;
+    if (start == null) return;
+    try {
+      final dev = _wallDevName();
+      final dir = '${WallRecorder.root}\\$dev\\录像';
+      Directory(dir).createSync(recursive: true);
+      final pid = widget.peer.id.replaceAll(' ', '');
+      final prefix = 'outgoing_$pid';
+      final root = Directory(WallRecorder.root);
+      if (!root.existsSync()) return;
+      final ms = start.millisecondsSinceEpoch ~/ 1000 - 1;
+      for (final ent in root.listSync().whereType<File>().toList()) {
+        final base = ent.path.split('\\').last;
+        if (!base.startsWith(prefix)) continue;
+        final st = ent.statSync();
+        if (st.modified.millisecondsSinceEpoch ~/ 1000 < ms) continue;
+        // 原文件名里内嵌的启动时间（yyyyMMddHHmmssfff）
+        var ts = '';
+        final m = RegExp(r'_(\d{17})_display').firstMatch(base);
+        if (m != null) {
+          final d = m.group(1)!;
+          ts = '${d.substring(0, 8)}_${d.substring(8, 14)}';
+        } else {
+          final t = st.modified;
+          ts = '${t.year}${t.month.toString().padLeft(2, '0')}'
+              '${t.day.toString().padLeft(2, '0')}'
+              '_${t.hour.toString().padLeft(2, '0')}'
+              '${t.minute.toString().padLeft(2, '0')}';
+        }
+        final ext = base.toLowerCase().endsWith('.mp4') ? '.mp4' : '.webm';
+        var dst = File('$dir\\${dev}_$ts$ext');
+        var i = 1;
+        while (dst.existsSync()) {
+          dst = File('$dir\\${dev}_${ts}_$i$ext');
+          i++;
+        }
+        try {
+          ent.renameSync(dst.path);
+        } catch (_) {
+          // 跨卷/被占用：复制后删
+          try {
+            dst.writeAsBytesSync(ent.readAsBytesSync(), flush: true);
+            ent.deleteSync();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  bool _recTick() {
+    if (!mounted) return false;
+    if (!WallRecorder.snapOn || !widget.live || _sleeping || _noSignal) {
+      return true;
+    }
+    final ctx = _recKey.currentContext;
+    if (ctx == null) return true;
+    final dynamic rb = ctx.findRenderObject();
+    if (rb == null) return true;
+    unawaited(_snapTick(rb));
+    return true;
   }
 
   /// 截图：**远端屏幕原始分辨率**落盘，放大看不再糊。
@@ -2240,8 +2410,7 @@ class _WallTileState extends State<_WallTile> {
     if (last != null && _sameAs(last, bytes)) return;
     _snapLastPng = bytes;
     try {
-      final name = _sanitizeName(
-          widget.peer.alias.isEmpty ? widget.peer.id : widget.peer.alias);
+      final name = _wallDevName();
       final dir = '${WallRecorder.root}\\$name\\截图';
       Directory(dir).createSync(recursive: true);
       final t = now;
@@ -2280,32 +2449,16 @@ class _WallTileState extends State<_WallTile> {
     return 1.0;
   }
 
-  bool _sameFrame(Uint8List b) {
-    final a = _recLast;
-    if (a == null) return false;
-    return _sameAs(a, b);
-  }
-
   bool _sameAs(Uint8List a, Uint8List b) {
     if (a.length != b.length) return false;
-    // PNG 头 60 字节是固定的，跳过；抽样比较足够判断「画面是否变化」
+    // PNG 头 60 字节是固定的，跳过；抽样比较足够判断「画面是否变化」。
+    // 大图步长 997，小图（静止检测的 96px 快照）自适应加密到 ~200 个采样点。
     final n = a.length;
-    for (int i = 60; i < n; i += 997) {
+    final step = n > 120000 ? 997 : (n ~/ 200 > 0 ? n ~/ 200 : 1);
+    for (int i = 60; i < n; i += step) {
       if (a[i] != b[i]) return false;
     }
     return true;
-  }
-
-  String _recNewSeg() {
-    final name = _sanitizeName(
-        widget.peer.alias.isEmpty ? widget.peer.id : widget.peer.alias);
-    final now = DateTime.now();
-    final seg = '${WallRecorder.root}\\$name'
-        '\\${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
-        '_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
-    Directory(seg).createSync(recursive: true);
-    _recSeq = 0;
-    return seg;
   }
 
   /// 把「画面区左上角在窗口里的坐标」写给画布。
@@ -2667,12 +2820,20 @@ class _WallTileState extends State<_WallTile> {
   void dispose() {
     _fitTimer?.cancel();
     _sleepTimer?.cancel();
+    _vidWatch?.cancel();
+    _vidWatch = null;
     final ts = _toolbarState;
     if (ts != null) kWallToolbarStates.remove(ts);
     // 这一格被销毁时也要把本机键盘放回去（grab 没释放会让整机输入法失效）
     try {
       wallFfi(widget.peer.id)?.inputModel.enterOrLeave(false);
     } catch (_) {}
+    // 录像中的格子被销毁/移出墙：停录并归档（视频文件按设备名落位）
+    if (_vidOn) {
+      unawaited(_vidCtl(false));
+    }
+    WallRecorder.unregisterVideo(widget.peer.id);
+    WallRecorder.unregister(widget.peer.id);
     super.dispose();
   }
 
@@ -2842,6 +3003,11 @@ class _WallTileState extends State<_WallTile> {
     );
     // 录屏 lane 注册：build 会反复调，幂等；销毁的格子由定时器自动清
     WallRecorder.register(widget.peer.id, _recTick);
+    // 原生视频录制：注册启停回调；墙已经在录的话，迟到的格子自动补录
+    WallRecorder.registerVideo(widget.peer.id, _vidCtl);
+    if (WallRecorder.on && !_vidOn && widget.live) {
+      unawaited(_vidCtl(true));
+    }
     return LayoutBuilder(builder: (context, cons) {
       final w = cons.maxWidth;
       final h = cons.maxHeight;
