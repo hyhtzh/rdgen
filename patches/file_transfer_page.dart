@@ -354,11 +354,13 @@ class _FileTransferHostState extends State<FileTransferHost> {
         ),
       );
     }
-    return Row(
+    // 参考图样式：上下双栏 —— 远程目录在上、本机目录在下（Win7 经典布局），
+    // 每栏带「标题 + 路径条 + 图标工具条」，盘符根目录平铺成瓷砖。
+    return Column(
       children: [
-        Expanded(child: _FilePane(session: s, isLocal: true)),
-        Container(width: 1, color: _C.line),
-        Expanded(child: _FilePane(session: s, isLocal: false)),
+        Expanded(flex: 11, child: _FilePane(session: s, isLocal: false)),
+        Container(height: 1, color: _C.line),
+        Expanded(flex: 9, child: _FilePane(session: s, isLocal: true)),
       ],
     );
   }
@@ -402,12 +404,40 @@ class _FileTransferHostState extends State<FileTransferHost> {
               ),
             ),
           ),
+          _overallProgress(),
           if (_drawerOpen)
             Container(
               constraints: const BoxConstraints(maxHeight: 210),
               child: _buildJobList(),
             ),
         ],
+      ),
+    );
+  }
+
+  /// 全部会话的总进度条（参考图底部那条进度显示），无任务时不占位。
+  Widget _overallProgress() {
+    var sum = 0.0;
+    var total = 0;
+    for (final s in _sessions.values) {
+      try {
+        for (final j in s.model.jobController.jobTable) {
+          if (j.state == JobState.inProgress) {
+            total++;
+            sum += j.percent;
+          }
+        }
+      } catch (_) {}
+    }
+    if (total == 0) return const SizedBox.shrink();
+    return Container(
+      height: 3,
+      color: const Color(0xFFEEF0F4),
+      child: LinearProgressIndicator(
+        value: sum / total,
+        minHeight: 3,
+        backgroundColor: Colors.transparent,
+        valueColor: const AlwaysStoppedAnimation(_C.accent),
       ),
     );
   }
@@ -641,26 +671,34 @@ class _FilePaneState extends State<_FilePane> {
   Widget _buildHeader(_FtSession s) {
     final isRemote = !widget.isLocal;
     return Container(
-      height: 40,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      color: isRemote ? _C.accentBg : _C.panel,
+      height: 38,
+      padding: const EdgeInsets.only(left: 10, right: 8),
+      decoration: BoxDecoration(
+        color: _C.panel,
+        border: Border(
+            bottom: BorderSide(
+                color: isRemote ? _C.accentBg : _C.line, width: 1)),
+      ),
       child: Row(
         children: [
           Icon(isRemote ? Icons.computer_outlined : Icons.desktop_windows,
               size: 15, color: isRemote ? _C.accent : _C.sub),
-          const SizedBox(width: 6),
+          const SizedBox(width: 5),
           Text(
-            isRemote ? '对方 · ${s.alias}' : '本机',
+            isRemote ? '远程目录 · ${s.alias}' : '本地目录',
             style: TextStyle(
-                fontSize: 12,
+                fontSize: 12.5,
                 fontWeight: FontWeight.w600,
                 color: isRemote ? _C.accent : Colors.black87),
           ),
-          const Spacer(),
+          const SizedBox(width: 10),
+          // 路径条：点击弹输入框跳转（参考图里的目录下拉）
+          Expanded(child: _pathBar(s)),
+          const SizedBox(width: 8),
           _hBtn(Icons.home_outlined, '主目录', () async {
             await controller.openDirectory(controller.homePath);
           }),
-          _hBtn(Icons.arrow_upward, '上级', () async {
+          _hBtn(Icons.arrow_upward, '上一级', () async {
             final cur = controller.directory.value.path;
             final parent = _parentOf(cur, controller.options.value.isWindows);
             if (parent != null && parent != cur) {
@@ -671,9 +709,10 @@ class _FilePaneState extends State<_FilePane> {
             await controller.openDirectory(controller.directory.value.path,
                 isBack: true);
           }),
+          if (isRemote) ...[
+            _hBtn(Icons.play_arrow_rounded, '远程运行选中的 .exe', () => _runSelected()),
+          ],
           const SizedBox(width: 6),
-          if (isRemote)
-            _hBtn(Icons.play_arrow_rounded, '远程运行', () => _runSelected()),
           InkWell(
             onTap: _sendSelection,
             borderRadius: BorderRadius.circular(6),
@@ -694,6 +733,74 @@ class _FilePaneState extends State<_FilePane> {
         ],
       ),
     );
+  }
+
+  /// 路径条：等宽字体显示当前目录，点击弹框跳转任意目录。
+  Widget _pathBar(_FtSession s) {
+    return Obx(() {
+      final path = controller.directory.value.path;
+      final label = path.isEmpty ? '根目录' : path;
+      return InkWell(
+        onTap: () => _jumpDialog(s, path),
+        borderRadius: BorderRadius.circular(4),
+        child: Container(
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: _C.bg,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: _C.line),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.folder_outlined, size: 12, color: _C.sub),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 11, fontFamily: 'monospace', color: _C.sub)),
+              ),
+              const Icon(Icons.keyboard_arrow_down, size: 14, color: _C.sub),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+
+  Future<void> _jumpDialog(_FtSession s, String cur) async {
+    final ctrl = TextEditingController(text: cur);
+    final target = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(widget.isLocal ? '跳转本地目录' : '跳转远程目录',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+              hintText: r'例如 C:\Users 或 /home', isDense: true),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _C.accent),
+              onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+              child: const Text('跳转')),
+        ],
+      ),
+    );
+    if (target is String && target.isNotEmpty) {
+      try {
+        await controller.openDirectory(target);
+      } catch (_) {
+        _toast('目录不存在或无法打开');
+      }
+    }
   }
 
   Future<void> _runSelected() async {
@@ -775,11 +882,53 @@ class _FilePaneState extends State<_FilePane> {
             child: Text('读取目录中…',
                 style: TextStyle(fontSize: 12, color: _C.sub)));
       }
+      // 盘符根目录（参考图样式）：平铺成大瓷砖，不再是窄列表行
+      final allDrives = entries.isNotEmpty && entries.every((e) => e.isDrive);
+      if (allDrives) {
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(14),
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              for (final e in entries) _driveTile(s, e),
+            ],
+          ),
+        );
+      }
       return ListView.builder(
         itemCount: entries.length,
         itemBuilder: (context, i) => _entryRow(s, entries[i], selected),
       );
     });
+  }
+
+  /// 盘符瓷砖：大图标 + 卷标，单击进入。
+  Widget _driveTile(_FtSession s, Entry e) {
+    return InkWell(
+      onTap: () => controller.openDirectory(e.path),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 96,
+        height: 84,
+        decoration: BoxDecoration(
+          color: _C.panel,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _C.line),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.storage, size: 30, color: _C.sub),
+            const SizedBox(height: 8),
+            Text(e.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.black87)),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _entryRow(_FtSession s, Entry e, List<Entry> selected) {
