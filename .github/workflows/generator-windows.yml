@@ -912,7 +912,10 @@ jobs:
           fi
           # NSIS File 指令不解析相对路径（实测 no files found），必须注入绝对 Windows 路径
           MSI_WIN=$(cygpath -w "$(pwd)/SignOutput/${{ env.filename }}.msi")
-          python -c "import sys; src = open('agent_setup.nsi', encoding='utf-8').read(); src = src.replace('__PRODUCT__', sys.argv[2]).replace('__MSI__', sys.argv[1]).replace('__VER4__', sys.argv[3]).replace('__COMPANY__', sys.argv[4]); open('agent_setup.nsi', 'w', encoding='utf-8-sig').write(src); print('nsi placeholders replaced; msi =', sys.argv[1])" "$MSI_WIN" "${{ env.appname }}" "$VER4" "${{ env.compname }}"
+          # 注意：nsi 必须保持纯 ASCII 且“无 BOM”，UTF-8 BOM 会被 makensis 当成非法命令(?;)
+          python -c "import sys; raw = open('agent_setup.nsi','rb').read().lstrip(b'\xef\xbb\xbf'); src = raw.decode('ascii'); src = src.replace('__PRODUCT__', sys.argv[2]).replace('__MSI__', sys.argv[1]).replace('__VER4__', sys.argv[3]).replace('__COMPANY__', sys.argv[4]); open('agent_setup.nsi','w',encoding='ascii',newline='\n').write(src); print('nsi placeholders replaced; msi =', sys.argv[1])" "$MSI_WIN" "${{ env.appname }}" "$VER4" "${{ env.compname }}"
+          # 复核文件头干净（BOM 或中文都会让 makensis 报 Invalid command）
+          head -c 3 agent_setup.nsi | od -An -tx1 | grep -q "ef bb bf" && { echo "nsi has BOM, aborting"; exit 1; } || true
           grep -n "__PRODUCT__\|__MSI__\|__VER4__\|__COMPANY__" agent_setup.nsi && { echo "placeholder left unreplaced"; exit 1; } || true
           "$MAKE" agent_setup.nsi
           mv "${{ env.appname }}_Setup.exe" "./SignOutput/${{ env.filename }}_Setup.exe"
