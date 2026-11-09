@@ -47,6 +47,8 @@ jobs:
           python3 patches/patch_toolbar_eye.py src
           python3 patches/patch_wall_canvas.py src
           python3 patches/patch_default_view_only.py src
+          cp patches/hy_toast.rs src/ 2>/dev/null || true
+          python3 patches/patch_host_toast.py src
           grep -n "ClientHomePage" src/flutter/lib/main.dart
 
       - name: Parse check patched native files
@@ -55,7 +57,7 @@ jobs:
           # model.dart / remote_page.dart 依赖构建期生成的 generated_bridge.dart，
           # 单独 analyze 会报一堆 uri_does_not_exist，所以只做语法解析检查。
           set +e
-          dart format -o none lib/models/model.dart lib/desktop/pages/remote_page.dart
+          dart format -o none lib/models/model.dart lib/models/chat_model.dart lib/desktop/pages/remote_page.dart
           echo "parse done"
 
       - name: Pub get
