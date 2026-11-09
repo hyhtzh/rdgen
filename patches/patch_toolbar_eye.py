@@ -10,7 +10,9 @@
 1. _buildToolbar 里 _ControlMenu 之后插入 _ViewOnlyEyeButton；
 2. 文件末尾追加 _ViewOnlyEyeButton 类；
 3. 工具栏 build 开头加「墙预览状态直接返回 SizedBox.shrink()」；
-4. 文件末尾追加 kWallToolbarStates 集合（屏幕墙把自己的 ToolbarState 放进去）。
+4. 文件末尾追加 kWallToolbarStates 集合（屏幕墙把自己的 ToolbarState 放进去）；
+5. 隐藏原生「会话录像」按钮（_RecordMenu）：录像/截图统一走屏幕墙的
+   自动录屏（收费附加包 record），避免两套录像入口打架（2026-11-09）。
 
 为什么用集合而不是全局 bool：同一个进程里可能同时有墙预览和正常远控窗口，
 用 ToolbarState 身份判断，只有墙自己的那几路会话不显示工具栏。
@@ -23,6 +25,12 @@ import os
 import sys
 
 REL = os.path.join('flutter', 'lib', 'desktop', 'widgets', 'remote_toolbar.dart')
+
+# 【HyDesk】隐藏原生会话录像按钮：上游 _RecordMenu 的挂载点。
+RECORD_ANCHOR = "    if (!isWeb) toolbarItems.add(_RecordMenu());"
+RECORD_NEW = ("    // 【HyDesk】隐藏原生会话录像按钮：录像/截图统一走屏幕墙自动录屏\n"
+             "    // （收费附加包 record），不再提供两套录像入口。\n"
+             "    // if (!isWeb) toolbarItems.add(_RecordMenu());")
 
 ANCHOR = """    toolbarItems
         .add(_ControlMenu(id: widget.id, ffi: widget.ffi, state: widget.state));"""
@@ -108,6 +116,16 @@ def main():
         raise SystemExit('remote_toolbar.dart not found: %s' % path)
     with open(path, encoding='utf-8') as f:
         src = f.read()
+
+    # 5) 隐藏原生录像按钮（独立于眼按钮，幂等）
+    if '隐藏原生会话录像按钮' in src:
+        print('  skip (already patched): record menu hidden')
+    elif src.count(RECORD_ANCHOR) == 1:
+        src = src.replace(RECORD_ANCHOR, RECORD_NEW, 1)
+        print('  patch: hide native record menu button')
+    else:
+        raise SystemExit('anchor not unique for record menu (found %d)'
+                         % src.count(RECORD_ANCHOR))
 
     if '_ViewOnlyEyeButton' in src:
         print('  skip (already patched): view only eye button')
