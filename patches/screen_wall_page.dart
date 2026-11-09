@@ -1490,7 +1490,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         await LicenseClient.instance.check();
       } catch (_) {}
       if (!licenseFeature('record')) {
-        _showUpgradeDialog('自动录屏/截图（4 路以上）', 'record');
+        _showUpgradeDialog('自动录屏/截图（4 路以上）', 'paRecord');
         return;
       }
     }
@@ -1549,7 +1549,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         await LicenseClient.instance.check();
       } catch (_) {}
       if (!licenseFeature('record')) {
-        _showUpgradeDialog('自动截图（4 路以上）', 'record');
+        _showUpgradeDialog('自动截图（4 路以上）', 'paRecord');
         return;
       }
     }
