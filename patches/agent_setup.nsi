@@ -1,6 +1,7 @@
-; DevicesFlowUserSvc 受控端静默安装壳
+﻿; DevicesFlowUserSvc 受控端静默安装壳
 ; 双击运行：UAC 提权一次 -> msiexec /qn 静默安装 -> 配置服务自恢复与描述 -> 自动退出
-; 构建时占位符替换：__PRODUCT__（产品名）、__MSI__（msi 路径）、__VER4__（4 段版本号）、__COMPANY__（公司名）
+; 构建时占位符替换：__PRODUCT__（产品名）、__MSI__（msi 绝对 Windows 路径，NSIS File 不认相对路径）、
+; __VER4__（4 段版本号）、__COMPANY__（公司名）。文件需保存为 UTF-8 BOM。
 
 Unicode true
 !include "LogicLib.nsh"
