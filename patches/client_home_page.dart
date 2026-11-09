@@ -1956,7 +1956,24 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return AnimatedBuilder(
       animation: gFFI.serverModel,
       builder: (context, _) {
-        final ok = _localId.isNotEmpty;
+        // 真正的在线判断：上游 ServerModel 每 500ms 轮询
+        // bind.mainGetConnectStatus()，status_num: 1=就绪 0=连接中 -1=未就绪/连不上。
+        // 之前这里只看「本机 ID 是否非空」，ID 一旦拿到就永远不变 ——
+        // 服务器中途挂掉仍显示「已连接安全加密链路」，是假在线。
+        final st = gFFI.serverModel.connectStatus;
+        final hasId = _localId.isNotEmpty;
+        final int color;
+        final String text;
+        if (st == 1) {
+          color = _C.green;
+          text = hasId ? '已连接安全加密链路' : '正在获取设备ID…';
+        } else if (st == 0) {
+          color = const Color(0xFFE0A100);
+          text = '正在连接服务器…';
+        } else {
+          color = const Color(0xFFE5484D);
+          text = '未联网（服务器不可达）';
+        }
         return Container(
           height: 34,
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1969,13 +1986,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 width: 7,
                 height: 7,
                 decoration: BoxDecoration(
-                  color: ok ? _C.green : const Color(0xFFE0A100),
+                  color: Color(color),
                   shape: BoxShape.circle,
                 ),
               ),
               const SizedBox(width: 7),
               Text(
-                ok ? '已连接安全加密链路' : '正在连接服务器…',
+                text,
                 style: const TextStyle(
                     fontSize: 13,
                     height: 1.3,
