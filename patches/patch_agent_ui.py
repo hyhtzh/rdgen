@@ -129,16 +129,24 @@ def patch_privacy_local_unlock(root):
         print('privacy local unlock already patched')
         return
 
-    anchor = '    fn turn_on_privacy(&mut self, conn_id: i32) -> ResultType<bool> {\n'
-    if anchor not in src:
-        raise SystemExit('patch failed: turn_on_privacy anchor not found')
-
-    src = src.replace(
-        anchor,
-        anchor
-        + '        // hy_local_unlock_watcher\n'
-        + '        start_local_unlock_watcher(conn_id);\n',
-        1)
+    anchor = '        let should_start_broker = self.handlers.is_default();\n'
+    if anchor in src:
+        src = src.replace(
+            anchor,
+            anchor
+            + '        // hy_local_unlock_watcher\n'
+            + '        start_local_unlock_watcher(conn_id);\n',
+            1)
+    else:
+        fallback = '    fn turn_on_privacy(&mut self, conn_id: i32) -> ResultType<bool> {\n'
+        if fallback not in src:
+            raise SystemExit('patch failed: turn_on_privacy anchor not found')
+        src = src.replace(
+            fallback,
+            fallback
+            + '        // hy_local_unlock_watcher\n'
+            + '        start_local_unlock_watcher(conn_id);\n',
+            1)
 
     helper = r'''
 // hy_local_unlock_watcher: 本地解锁信号（遮挡窗口按 Ctrl+P 后写文件）
