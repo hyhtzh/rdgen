@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
@@ -166,6 +167,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   final _searchController = TextEditingController();
 
   Timer? _idTimer;
+  /// API 服务器探针：1=可达 0=不可达。与 Rust 的 ID 服务器状态合并判断，
+  /// 两者任一失败都算「未联网」——只看 connectStatus 时，API/部分组件挂掉
+  /// 仍会显示已连接（用户 2026-11-09 报离线仍显示已连接）。
+  int _apiOk = 1;
+  Timer? _netProbe;
   int _tab = 1; // 0 最近, 1 收藏, 2 地址簿
   bool _grid = false;
 
@@ -190,6 +196,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     bind.mainLoadRecentPeers();
     _loadFavIds();
     AddressBookStore.instance.load();
+    // 地址簿改名/同步完成后刷新列表名称（最近/收藏与地址簿名称同步）
+    AddressBookStore.instance.addListener(_onAbChanged);
     // 设置页依赖的全局状态，原版由 DesktopHomePage 注册，这里必须补上
     ensureStopServiceState();
     // 屏幕墙进程如果是被任务栏 X 直接关掉的，低帧率配置可能没恢复，这里兜底
@@ -203,6 +211,12 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     // 原版首页靠 1s 定时器刷新本机 ID，替换页面后必须自己拉
     _idTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => _refreshLocalId());
+    // API 服务器探针：立即探一次，之后每 20 秒复探。
+    // 只靠 Rust 的 rendezvous 状态时，API 服务器挂掉状态栏仍绿 —— 加一道
+    // 独立 HTTP 探测，任一失败即显示「未联网」。
+    _probeApi();
+    _netProbe =
+        Timer.periodic(const Duration(seconds: 20), (_) => _probeApi());
     // 原版首页负责定期向 Rust 查询设备在线状态，丢了它所有点都是红的
     PeerOnlineProbe.instance.start();
     // 远程指令通道（远程运行程序 / 静默卸载员工端）：
@@ -314,7 +328,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   @override
   void dispose() {
     windowManager.removeListener(this);
+    AddressBookStore.instance.removeListener(_onAbChanged);
     _idTimer?.cancel();
+    _netProbe?.cancel();
     PeerOnlineProbe.instance.stop();
     _idController.dispose();
     _idFocusNode.dispose();
@@ -354,6 +370,20 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     try {
       await gFFI.serverModel.fetchID();
     } catch (_) {}
+  }
+
+  /// 探测 API 服务器可达性（状态栏离线判断的独立证据链）。
+  Future<void> _probeApi() async {
+    var ok = false;
+    try {
+      final res = await http
+          .head(Uri.parse(kAbBase))
+          .timeout(const Duration(seconds: 6));
+      ok = res.statusCode < 500;
+    } catch (_) {}
+    if (mounted && _apiOk != (ok ? 1 : 0)) {
+      setState(() => _apiOk = ok ? 1 : 0);
+    }
   }
 
   // ---------------- 数据 ----------------
@@ -512,6 +542,41 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       }
     } catch (_) {}
     return '';
+  }
+
+  // ---------------- 名称同步（地址簿 → 最近/收藏列表） ----------------
+  //
+  // 用户在地址簿里给设备改名后，最近/收藏列表也要用同一个名字
+  // （2026-11-09 需求：最近的设备名字和地址簿名称同步）。
+  // 地址簿是 ChangeNotifier，改名/同步完成会 notify，主页监听后刷新即可。
+
+  void _onAbChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// 设备在地址簿里的别名（没有则为空串）。
+  String _abAliasOf(String id) {
+    try {
+      for (final e in AddressBookStore.instance.entries) {
+        if (_normId(e.id) == _normId(id) && e.alias.trim().isNotEmpty) {
+          return e.alias.trim();
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /// 显示名（可能为空）：地址簿别名 > peer 自身别名。
+  String _displayName(Peer p) {
+    final ab = _abAliasOf(p.id);
+    if (ab.isNotEmpty) return ab;
+    return p.alias;
+  }
+
+  /// 显示名兜底到 ID：列表卡片标题、删除确认等处使用。
+  String _displayNameOrId(Peer p) {
+    final n = _displayName(p);
+    return n.isEmpty ? p.id : n;
   }
 
   /// 群发文件：一份文件同时发给多台设备（后台并行传输）
@@ -1254,6 +1319,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               () => setState(() => _showSearch = !_showSearch),
               active: _showSearch,
             ),
+            _plainToolIcon(Icons.post_add, '批量添加收藏', _showBatchFavDialog),
             _plainToolIcon(Icons.playlist_add_check, '批量', () {
               setState(() {
                 _batch = !_batch;
@@ -1532,6 +1598,84 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     });
   }
 
+  /// 批量添加收藏（2026-11-09）：一次粘贴多台设备。
+  /// 每行一台，三种写法：`ID`、`ID 密码`、`ID:密码`（分隔符还支持中文冒号/逗号）。
+  /// ID 必填；密码可选，写进 peer 配置后连接免输。收藏即屏幕墙名单。
+  Future<void> _showBatchFavDialog() async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('批量添加收藏',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: ctrl,
+                maxLines: 8,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '每行一台设备，例如：\n123456789\n987654321 密码\n555 666 777:密码',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                  'ID 必填；密码可选（ID后跟空格/冒号）。添加后设备进入收藏夹与屏幕墙。',
+                  style: TextStyle(fontSize: 12, color: _C.sub)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _C.blue),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('添加')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final ids = <String>[];
+    var pwdCount = 0;
+    for (var raw in ctrl.text.split(RegExp(r'[\n;；]'))) {
+      var line = raw.trim();
+      if (line.isEmpty) continue;
+      String? pwd;
+      final m = RegExp(r'^([0-9A-Za-z]+)\s*[:：,，\s]\s*(.+)$').firstMatch(line);
+      if (m != null) {
+        line = m.group(1)!;
+        pwd = m.group(2)!.trim();
+      }
+      final id = line.replaceAll(' ', '');
+      if (id.isEmpty) continue;
+      if (!ids.contains(id)) ids.add(id);
+      if (pwd != null && pwd.isNotEmpty) {
+        pwdCount++;
+        try {
+          await bind.mainSetPeerOption(id: id, key: 'password', value: pwd);
+        } catch (_) {}
+      }
+    }
+    ctrl.dispose();
+    if (ids.isEmpty) {
+      showToast('没有识别到有效的设备 ID');
+      return;
+    }
+    await _toggleFav(ids, add: true);
+    if (!mounted) return;
+    showToast('已处理 ${ids.length} 台设备' +
+        (pwdCount > 0 ? '（含密码 ${pwdCount} 台）' : '') +
+        '，收藏夹与屏幕墙已更新');
+  }
+
   Future<void> _addOneToWall(String id) async {
     final n = await addPeersToScreenWall([id]);
     if (!mounted) return;
@@ -1590,7 +1734,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   }
 
   Future<void> _deletePeer(Peer p) async {
-    final name = p.alias.isNotEmpty ? p.alias : formatAbId(p.id);
+    final name = _displayNameOrId(p);
     final ok = await _confirmDelete('删除「$name」？',
         '只从本机$_listName列表移除，不影响对方设备，也不会解绑授权。');
     if (ok != true) return;
@@ -1712,7 +1856,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       const SizedBox(width: 7),
                       Flexible(
                         child: Text(
-                          p.alias.isEmpty ? p.id : p.alias,
+                          _displayNameOrId(p),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1725,7 +1869,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    p.alias.isEmpty
+                    _displayName(p).isEmpty
                         ? (p.hostname.isEmpty ? '未命名设备' : p.hostname)
                         : p.id,
                     maxLines: 1,
@@ -1878,7 +2022,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       const SizedBox(width: 5),
                       Expanded(
                         child: Text(
-                          p.alias.isEmpty ? p.id : p.alias,
+                          _displayNameOrId(p),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1931,7 +2075,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   /// 原生风格头像：彩色圆角方块（按名称哈希取色）+ 白色平台图标
   Widget _avatar(Peer p, {double size = 32}) {
-    final seed = p.alias.isEmpty ? p.id : p.alias;
+    final seed = _displayNameOrId(p);
     return Container(
       width: size,
       height: size,
@@ -1956,23 +2100,25 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return AnimatedBuilder(
       animation: gFFI.serverModel,
       builder: (context, _) {
-        // 真正的在线判断：上游 ServerModel 每 500ms 轮询
-        // bind.mainGetConnectStatus()，status_num: 1=就绪 0=连接中 -1=未就绪/连不上。
-        // 之前这里只看「本机 ID 是否非空」，ID 一旦拿到就永远不变 ——
-        // 服务器中途挂掉仍显示「已连接安全加密链路」，是假在线。
+        // 真正的在线判断 = Rust 的 rendezvous 状态 + 独立 API 探测：
+        //   status_num: 1=就绪 0=连接中 -1=未就绪/连不上；
+        //   _apiOk: api.hydesk.cn 是否可达（20s 周期探针）。
+        // 只看 connectStatus 时 API/组件挂掉仍显示绿（假在线），
+        // 只看探针时 ID 服务器挂掉又测不出 —— 两者任一失败都算未联网。
         final st = gFFI.serverModel.connectStatus;
+        final offline = st == -1 || _apiOk == 0;
         final hasId = _localId.isNotEmpty;
         final Color color;
         final String text;
-        if (st == 1) {
-          color = _C.green;
-          text = hasId ? '已连接安全加密链路' : '正在获取设备ID…';
-        } else if (st == 0) {
-          color = const Color(0xFFE0A100);
-          text = '正在连接服务器…';
-        } else {
+        if (offline) {
           color = const Color(0xFFE5484D);
           text = '未联网（服务器不可达）';
+        } else if (st == 1) {
+          color = _C.green;
+          text = hasId ? '已连接安全加密链路' : '正在获取设备ID…';
+        } else {
+          color = const Color(0xFFE0A100);
+          text = '正在连接服务器…';
         }
         return Container(
           height: 34,
