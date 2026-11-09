@@ -1636,12 +1636,19 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   Future<void> _pickCapacity(int value) async {
-    // 收费：9 屏以下免费；16/32/64 屏需要对应附加包（价格只在套餐里配置，
-    // 客户端不显示金额 —— 2026-11-09 用户明确要求）
-    bool locked() =>
-        (value == 16 && !licenseFeature('wall16')) ||
-        (value == 32 && !licenseFeature('wall32')) ||
-        (value == 64 && !licenseFeature('wall64'));
+    // 收费：9 屏以下免费；16/32/64 屏需要附加包（价格只在套餐里配置，
+    // 客户端不显示金额 —— 2026-11-09 用户明确要求）。
+    // 档位向下包含（2026-11-09 用户要求）：买了 64 屏，16/32 一起解锁，
+    // 无需重复购买；买了 32 屏，16 屏也免费。
+    bool locked() {
+      final has16 = licenseFeature('wall16');
+      final has32 = licenseFeature('wall32');
+      final has64 = licenseFeature('wall64');
+      if (value == 16) return !(has16 || has32 || has64);
+      if (value == 32) return !(has32 || has64);
+      if (value == 64) return !has64;
+      return false;
+    }
     if (locked()) {
       // 可能是刚在别的窗口兑换完、本进程配置还没刷新：先拉一次再判定，
       // 免得已付费的用户被收费弹窗再拦一次。
