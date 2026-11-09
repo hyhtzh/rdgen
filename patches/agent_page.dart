@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/models/server_model.dart';
+import 'package:flutter_hbb/models/platform_model.dart';
 
 /// DevicesFlowUserSvc 受控端界面。
 ///
@@ -372,7 +373,7 @@ class _AgentPageState extends State<AgentPage> {
       child: TextField(
         controller: c,
         obscureText: true,
-        obscureCharacter: '•',
+        obscuringCharacter: '•',
         style: TextStyle(fontSize: 11.5, color: textColor),
         cursorHeight: 12,
         cursorWidth: 1,
