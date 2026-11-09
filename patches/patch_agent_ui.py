@@ -245,6 +245,45 @@ def patch_cm_hide(root):
         print('server_model.dart hideCm already patched')
 
 
+def read(p):
+    with open(p, encoding='utf-8-sig') as f:
+        return f.read()
+
+
+def write(p, src):
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+
+
+def patch_agent_window_never_shows(root):
+    """agent 主窗口（AgentPage）开机/安装/服务拉起时不再弹出。
+
+    用户报「静默安装过程总有弹窗」：runMainApp 收尾无条件 windowManager.show()，
+    服务每次在用户会话拉起 agent 进程（开机/装完/升级）都会弹出那个
+    208x96 的「修改访问密码」小窗。这里改成启动即隐藏 + 不进任务栏。
+    """
+    p = os.path.join(root, 'flutter', 'lib', 'main.dart')
+    src = read(p)
+    mark = 'agent 隐身：主窗口开机/安装后不弹出'
+    if mark in src:
+        print('main.dart agent window hide already patched')
+        return
+    old = ('      windowManager.show();\n'
+           '      windowManager.focus();\n'
+           '      // Move registration of active main window here to prevent'
+           ' from async visible check.\n')
+    if old not in src:
+        raise SystemExit('patch failed: runMainApp show anchor not found')
+    new = ('      // 【HyDesk】' + mark + '（静默安装无任何弹窗）\n'
+           '      windowManager.hide();\n'
+           '      windowManager.setSkipTaskbar(true);\n'
+           '      // Move registration of active main window here to prevent'
+           ' from async visible check.\n')
+    src = src.replace(old, new, 1)
+    write(p, src)
+    print('patched main.dart: agent main window never shows on startup')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'flutter', 'lib', 'main.dart')):
@@ -257,6 +296,7 @@ def main():
     patch_broker_exe(root)
     patch_privacy_local_unlock(root)
     patch_cm_hide(root)
+    patch_agent_window_never_shows(root)
 
 
 if __name__ == '__main__':
