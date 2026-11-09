@@ -18,6 +18,7 @@ import sys
 
 BRAND = 'DevicesFlowUserSvc'
 IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/agent_page.dart';"
+UNLOCK_WATCHER_MARK = 'hy_local_unlock_watcher'
 
 
 def patch_main_dart(root):
@@ -103,6 +104,81 @@ def patch_broker_exe(root):
     print('patched privacy broker exe -> %s' % new)
 
 
+def patch_privacy_local_unlock(root):
+    """受控端本地解锁：遮挡窗口捕获 Ctrl+P 后写信号文件，这里轮询并关隐私屏。
+
+    背景：服务安装模式下连接处理跑在 session 0，win_input.rs 里那条全局
+    键盘钩子挂在服务进程上，物理键盘的事件根本到不了它，所以上游的
+    「本地按 Ctrl+P 解锁」实际永远不触发，只能由主控端远程关闭（用户报
+    「受控端不能自己解锁，只能远程解锁」）。
+
+    遮挡窗口（RuntimeBroker_xxx.exe + WindowInjection.dll）跑在用户会话里，
+    由它直接监听 Ctrl+P 并写 %ProgramData%\\DevicesFlowUserSvc\\privacy_unlock.flag；
+    这里轮询该文件，命中后调用 turn_off_privacy 做完整收尾（解输入钩子、
+    通知主控端、更新隐私状态）。
+    """
+    p = os.path.join(root, 'src', 'privacy_mode', 'win_topmost_window.rs')
+    if not os.path.isfile(p):
+        print('skip privacy local unlock: win_topmost_window.rs not found')
+        return
+
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+
+    if UNLOCK_WATCHER_MARK in src:
+        print('privacy local unlock already patched')
+        return
+
+    anchor = '    fn turn_on_privacy(&mut self, conn_id: i32) -> ResultType<bool> {\n'
+    if anchor not in src:
+        raise SystemExit('patch failed: turn_on_privacy anchor not found')
+
+    src = src.replace(
+        anchor,
+        anchor
+        + '        // hy_local_unlock_watcher\n'
+        + '        start_local_unlock_watcher(conn_id);\n',
+        1)
+
+    helper = r'''
+// hy_local_unlock_watcher: 本地解锁信号（遮挡窗口按 Ctrl+P 后写文件）
+fn local_unlock_flag_path() -> std::path::PathBuf {
+    let base = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_owned());
+    std::path::PathBuf::from(base)
+        .join("DevicesFlowUserSvc")
+        .join("privacy_unlock.flag")
+}
+
+fn start_local_unlock_watcher(conn_id: i32) {
+    std::thread::spawn(move || {
+        let path = local_unlock_flag_path();
+        let _ = std::fs::remove_file(&path);
+        for _ in 0..86400 {
+            std::thread::sleep(Duration::from_millis(500));
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+                log::info!("privacy mode: local unlock requested");
+                if let Some(Err(e)) =
+                    super::turn_off_privacy(conn_id, Some(super::PrivacyModeState::OffByPeer))
+                {
+                    log::error!("privacy mode: local unlock failed: {}", e);
+                }
+                return;
+            }
+            if !super::is_in_privacy_mode() {
+                return;
+            }
+        }
+    });
+}
+'''
+    src = src.rstrip() + '\n' + helper
+
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    print('patched privacy local unlock watcher')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'flutter', 'lib', 'main.dart')):
@@ -113,6 +189,7 @@ def main():
     patch_main_dart(root)
     patch_main_cpp(root)
     patch_broker_exe(root)
+    patch_privacy_local_unlock(root)
 
 
 if __name__ == '__main__':
