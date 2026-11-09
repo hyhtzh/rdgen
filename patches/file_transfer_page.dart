@@ -1113,6 +1113,8 @@ Future<void> _startGroupSend(
         showToast('$id 连接超时，跳过');
         return;
       }
+      // 发送目标：优先 D:\群发文件，D 盘不可用时回退主目录
+      await _switchGroupSendTarget(id, s);
       final items = SelectedItems(isLocal: true);
       for (final f in files) {
         final e = Entry();
@@ -1129,4 +1131,36 @@ Future<void> _startGroupSend(
       }
     }());
   }
+}
+
+/// 群发落点：D:\群发文件（无则创建），D 盘不存在/无权限时保持主目录。
+/// openDirectory 会真实读取远端目录并更新 currentDir，失败仅返回 false，
+/// 不会弹错误框，适合无人值守链路。
+Future<void> _switchGroupSendTarget(String id, _FtSession s) async {
+  const target = r'D:\群发文件';
+  const dRoot = r'D:\';
+  final rc = s.model.remoteController;
+  var rootOk = false;
+  try {
+    rootOk = await rc.openDirectory(dRoot);
+  } catch (_) {}
+  if (!rootOk) {
+    // 对方没有 D 盘或拒绝访问：留在主目录
+    return;
+  }
+  var dirOk = false;
+  try {
+    dirOk = await rc.openDirectory(target);
+  } catch (_) {}
+  if (!dirOk) {
+    // 目录不存在：远端创建后重试一次（createDir 无回执，稍等）
+    try {
+      await rc.createDir(target);
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 600));
+    try {
+      dirOk = await rc.openDirectory(target);
+    } catch (_) {}
+  }
+  // dirOk == false 时留在 D:\ 根目录（仍优于主目录散放）
 }
