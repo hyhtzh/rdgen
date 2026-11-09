@@ -23,6 +23,7 @@ import 'package:flutter_hbb/models/file_model.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
+import 'package:flutter_hbb/desktop/pages/address_book_page.dart';
 
 // ---------------------------------------------------------------------------
 // 颜色（与主页一致的浅色系）
@@ -1039,11 +1040,26 @@ class _SendFile {
   _SendFile(this.name, this.path, this.isDir);
 }
 
+/// 【HyDesk】群发设备列表显示名：地址簿别名 > peer 自身别名 > ID。
+/// 2026-11-09 需求：群发文件对话框里的设备名称与地址簿同步
+/// （地址簿里改过名，群发列表也用同一个名字，不再各显示各的）。
+String _gsDisplayName(Peer p) {
+  try {
+    final nid = p.id.replaceAll(' ', '').trim();
+    for (final e in AddressBookStore.instance.entries) {
+      if ((e.id.replaceAll(' ', '').trim() == nid) &&
+          e.alias.trim().isNotEmpty) {
+        return e.alias.trim();
+      }
+    }
+  } catch (_) {}
+  return p.alias.isEmpty ? p.id : p.alias;
+}
+
 Future<void> showGroupSendDialog(BuildContext context, List<Peer> peers) async {
   final files = <_SendFile>[];
   final sel = <String>{};
-  final pathCtrl = TextEditingController();
-  await showDialog(
+  final pathCtrl = TextEditingController();  await showDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setDg) {
@@ -1241,7 +1257,7 @@ Future<void> showGroupSendDialog(BuildContext context, List<Peer> peers) async {
                                       const SizedBox(width: 8),
                                       Expanded(
                                         child: Text(
-                                          '${p.alias.isEmpty ? p.id : p.alias}',
+                                          _gsDisplayName(p),
                                           style: const TextStyle(fontSize: 12),
                                         ),
                                       ),
