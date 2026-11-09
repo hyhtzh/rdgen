@@ -221,7 +221,7 @@ void _hyPrivacyUpgradeDialog(BuildContext context) {
         ElevatedButton(
           onPressed: () {
             Navigator.of(ctx).pop();
-            gotoShop(context, productId: 'privacy');
+            gotoShop(context, productId: 'paPrivacy');
           },
           style: ElevatedButton.styleFrom(
             backgroundColor: Color(0xFF1B72D6),
