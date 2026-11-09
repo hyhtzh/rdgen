@@ -693,11 +693,13 @@ const kPaidFeatures = <String>{
   'wall64',
   'group',
   'group9',
-  // 【HyDesk】新附加包：隐私屏（独立大按钮）、自动录屏/截图超 4 路。
+  // 【HyDesk】新附加包：隐私屏（独立大按钮）、自动录屏/截图超 4 路、
+  // 远控会话里的聊天文字按钮。
   // 与屏幕墙档位同一套体系：服务端没明确下发 true 就当没买；
   // 价格只在商城/套餐里体现，客户端永远不显示金额。
   'privacy',
   'record',
+  'chat',
 };
 
 bool licenseFeature(String key) {
