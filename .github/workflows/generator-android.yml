@@ -608,8 +608,8 @@ jobs:
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart
           curl -sSL -o patch_wall_mobile.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_mobile.py
-          grep -q "_kMaxLive = Platform.isAndroid" screen_wall_page.dart \
-            || { echo 'wall page is not android-aware (upload failed?)'; exit 1; }
+          grep -q "_wallSid" screen_wall_page.dart \
+            || { echo 'wall page is not multi-session aware (upload failed?)'; exit 1; }
           # 墙页依赖模型层的墙画布扩展（CanvasModel.layoutSize/globalOrigin、
           # InputModel.wallNoGrab 等）与工具栏的 kWallToolbarStates，
           # 和 Windows 侧同一份补丁
