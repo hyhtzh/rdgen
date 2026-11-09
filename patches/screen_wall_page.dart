@@ -958,7 +958,12 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
               },
             ),
             const Spacer(),
-            if (_isChildWindow) ...[
+            // 手机端：没有系统标题栏也没有窗口按钮，左上角的小灰箭头太不
+            // 显眼，用户报「屏幕墙没有退出按钮」。右侧给一个明确的红色
+            // 退出按钮（2026-11-09）。
+            if (Platform.isAndroid || Platform.isIOS)
+              _mobileExitButton()
+            else if (_isChildWindow) ...[
               _winButton(
                 _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
                 _toggleFullscreen,
@@ -979,6 +984,39 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
             ],
             const SizedBox(width: 4),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 手机端标题栏右侧的「退出屏幕墙」按钮：比左上角小箭头显眼得多。
+  /// 退出走 _closeWindow：主窗口压栈形态下正常 pop，会话随路由销毁优雅关闭。
+  Widget _mobileExitButton() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 2),
+      child: InkWell(
+        onTap: _closeWindow,
+        borderRadius: BorderRadius.circular(5),
+        child: Container(
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE23B3B),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              Icon(Icons.close, size: 13, color: Colors.white),
+              SizedBox(width: 3),
+              Text('退出屏幕墙',
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600)),
+            ],
+          ),
         ),
       ),
     );
