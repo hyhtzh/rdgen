@@ -246,6 +246,23 @@ jobs:
           grep -n "ARPSYSTEMCOMPONENT" res/msi/Package/Fragments/ShortcutProperties.wxs
           grep -n "INSTALLFOLDER_AGENT_DEFAULT" res/msi/Package/Components/Folders.wxs
 
+      - name: Apply host UX patch (toast / taskbar flash / keep wallpaper)
+        # 【HyDesk】受控端体验（2026-11-09 晚）：聊天右下角半透明原生气泡、
+        # 连入任务栏闪烁、不再移除桌面壁纸。clientui/agentui/simpleui 通吃。
+        shell: bash
+        run: |
+          set -e
+          curl -sSL -o hy_toast.rs \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/hy_toast.rs
+          curl -sSL -o patch_host_toast.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_host_toast.py
+          python patch_host_toast.py .
+          # 校验关键落点
+          grep -n "mod hy_toast" src/lib.rs
+          grep -n "hy_toast::show" src/ui_cm_interface.rs
+          grep -n "hyServerChat" flutter/lib/models/chat_model.dart
+          grep -n "hy_keep_wallpaper" src/server/connection.rs
+
       - name: Set custom app version
         continue-on-error: true
         shell: bash
