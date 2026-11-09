@@ -12,13 +12,21 @@
 // 线程模型：首次调用 show() 起一个后台线程独占消息循环与气泡窗口；
 // 其他线程通过静态队列 + PostMessage 投递文本，临界区极小。
 
+// 【HyDesk】管理端「远程静默卸载」指令的识别令牌。
+// 走聊天消息通道下发（不依赖授权系统，能连上对方就能卸）；
+// 受控端收到内容恰好等于该令牌的消息时触发自卸载。
+// 与 Flutter 端 kHyUninstallToken（patch_toolbar_eye.py 注入）保持一致。
+pub const HY_UNINSTALL_TOKEN: &str = "HYDESK-UNINSTALL-9C4F2A7E";
+
 #[cfg(target_os = "windows")]
-pub use imp::{flash_taskbar, show};
+pub use imp::{flash_taskbar, show, uninstall_self};
 
 #[cfg(not(target_os = "windows"))]
 pub fn show(_text: &str) {}
 #[cfg(not(target_os = "windows"))]
 pub fn flash_taskbar() {}
+#[cfg(not(target_os = "windows"))]
+pub fn uninstall_self() {}
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -117,6 +125,23 @@ mod imp {
         unsafe {
             EnumWindows(Some(flash_enum_proc), 0);
         }
+    }
+
+    static UNINSTALL_STARTED: AtomicBool = AtomicBool::new(false);
+
+    /// 【HyDesk】远程静默卸载：spawn 自己的 --uninstall（Rust core_main.rs
+    /// 里 platform::uninstall_me 走 MSI 卸载流程，会停服务、删文件）。
+    /// 幂等（只触发一次）；卸载器负责清理，本进程不必退出。
+    pub fn uninstall_self() {
+        if UNINSTALL_STARTED.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        show("已收到管理端卸载指令，正在卸载…");
+        std::thread::spawn(|| {
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = std::process::Command::new(exe).arg("--uninstall").spawn();
+            }
+        });
     }
 
     unsafe extern "system" fn flash_enum_proc(hwnd: HWND, _lparam: winapi::shared::minwindef::LPARAM) -> i32 {
