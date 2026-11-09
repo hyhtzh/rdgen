@@ -1962,7 +1962,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         // 服务器中途挂掉仍显示「已连接安全加密链路」，是假在线。
         final st = gFFI.serverModel.connectStatus;
         final hasId = _localId.isNotEmpty;
-        final int color;
+        final Color color;
         final String text;
         if (st == 1) {
           color = _C.green;
@@ -1986,7 +1986,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 width: 7,
                 height: 7,
                 decoration: BoxDecoration(
-                  color: Color(color),
+                  color: color,
                   shape: BoxShape.circle,
                 ),
               ),
