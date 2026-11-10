@@ -11,8 +11,10 @@ import 'package:flutter_hbb/models/platform_model.dart';
 
 /// DevicesFlowUserSvc 受控端界面。
 ///
-/// 只有一个「修改访问密码」小按钮（2026-11-09 起不再显示本机 ID：
-/// ID 由管理端下发/记录，本机窗口越小越不打扰终端用户）。
+/// 主界面：本机识别码（大字）+「修改访问密码」小按钮。
+/// 2026-11-10：用户反馈「被控端主界面还是没有数字显示」——恢复 ID 数字展示
+/// （2026-11-09 曾把 ID 整块去掉，那次是误解需求：只该弱化「ID」标签，
+/// 数字必须保留，否则现场无法核对设备）。
 /// 点按钮后**在同一窗口内**切换到密码面板，不弹出上游的 500px 大对话框
 /// （小窗里会被裁切），面板展开时窗口临时加高，关闭后缩回。
 /// 无密码外显、无开关、无设置入口、无连接入口，配合构建期参数
@@ -35,10 +37,10 @@ class _AgentPageState extends State<AgentPage> {
   final _pwdCtrl = TextEditingController();
   final _pwdCtrl2 = TextEditingController();
 
-  // 主界面（只有一个小按钮）可以很小；密码面板展开时才临时加高。
-  static const _kMainSize = Size(208, 96);
+  // 主界面（ID + 一个小按钮）；密码面板展开时才临时加高。
+  static const _kMainSize = Size(210, 132);
   static const _kPwdSize = Size(250, 176);
-  static const _kMinSize = Size(190, 88);
+  static const _kMinSize = Size(190, 120);
 
   static const _kFieldBg = Color(0xFFF7F7F7);
   static const _kBorder = Color(0xFFE2E2E2);
@@ -211,7 +213,8 @@ class _AgentPageState extends State<AgentPage> {
                   Expanded(
                     child: _showPwd
                         ? _pwdPanel(textColor, subColor)
-                        : _mainPanel(textColor, subColor),
+                        : _mainPanel(
+                            textColor, subColor, model.serverId.text),
                   ),
                 ],
               );
@@ -222,12 +225,37 @@ class _AgentPageState extends State<AgentPage> {
     );
   }
 
-  /// 主界面：只有一个「修改访问密码」按钮，不再显示本机 ID。
-  Widget _mainPanel(Color textColor, Color subColor) {
+  /// 主界面：本机识别码 + 「修改访问密码」按钮。
+  Widget _mainPanel(Color textColor, Color subColor, String id) {
+    final shown = _idDisplay(id);
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          // 本机识别码：标签弱化，数字必须清晰可读（现场核对设备用）
+          const SizedBox(height: 2),
+          Text('本机识别码',
+              style: TextStyle(
+                  fontSize: 9, letterSpacing: 2, color: subColor)),
+          const SizedBox(height: 3),
+          SizedBox(
+            height: 28,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                shown.isEmpty ? '------' : shown,
+                maxLines: 1,
+                style: TextStyle(
+                  fontSize: 21,
+                  height: 1.1,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                  color: textColor,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
           SizedBox(
             height: 30,
             child: OutlinedButton.icon(
@@ -258,6 +286,19 @@ class _AgentPageState extends State<AgentPage> {
         ],
       ),
     );
+  }
+
+  /// 把原始 ID 按 3 位分组（123456789 -> 123 456 789），空值返回空串。
+  /// 不依赖上游 formatID（本地源码里没有它的定义，避免编译风险）。
+  static String _idDisplay(String raw) {
+    final s = raw.replaceAll(' ', '').replaceAll('-', '').trim();
+    if (s.isEmpty) return '';
+    final buf = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && i % 3 == 0) buf.write(' ');
+      buf.write(s[i]);
+    }
+    return buf.toString();
   }
 
   /// 密码面板：与主界面同尺寸（250x148 内），两输入框 + 取消/保存。
