@@ -1003,10 +1003,10 @@ BOOL IsWindowsVersionOrGreater(
 
 // ================= hy: 隐私屏遮挡层 =================
 // 终端反馈：说明文字太多（尤其「如何解锁」不该给被控用户看）。
-// 2026-11-09 晚改版：遮挡层只显示一个时钟（大号时间 + 秒 + 日期），
-// 界面干净不引起围观；本地解锁（Ctrl+P）仍然有效，但不再提示。
-// 修复方式见 TrashParentWndProc 的 WM_TIMER：钩子链在部分机器上收不到
-// 物理按键，改用 GetAsyncKeyState 轮询兜底，按键必被感知。
+// 2026-11-09 晚改版：遮挡层只显示一个时钟（大号时间 + 日期），
+// 界面干净不引起围观。
+// 2026-11-10：本地解锁整体禁用（HY_ENABLE_LOCAL_UNLOCK=0），
+// 隐私屏只能由管理端远程解除；时钟改为整体居中（去掉秒，见 OnPaintPrivacy）。
 
 static void HyFillVerticalGradient(HDC hdc, const RECT& rc, COLORREF top, COLORREF bottom)
 {
@@ -1081,8 +1081,6 @@ VOID OnPaintPrivacy(HWND hwnd, HDC hdc)
 
 	wchar_t time[32] = { 0 };
 	swprintf_s(time, L"%02d:%02d", st.wHour, st.wMinute);
-	wchar_t sec[8] = { 0 };
-	swprintf_s(sec, L"%02d", st.wSecond);
 
 	static const wchar_t* kWeek[7] = {
 		L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六" };
@@ -1092,17 +1090,18 @@ VOID OnPaintPrivacy(HWND hwnd, HDC hdc)
 
 	const int cx = rc.left + w / 2;
 	const int timeH = h * 170 / 1000; // 主时钟
-	const int secH = h * 55 / 1000;   // 秒
 	const int dateH = h * 24 / 1000;  // 日期
 	const COLORREF white = RGB(255, 255, 255);
 	const COLORREF dim = RGB(128, 140, 158);
 
-	// 垂直居中；秒挂在时间右下角
-	const int blockH = timeH + h * 42 / 1000;
+	// 2026-11-10：原来把秒单独画在主时钟右下角（两个独立居中的
+	// DT_CENTER 矩形），不同 DPI/字体下相互压字，用户截图反馈「时钟错位」
+	// （秒贴在分钟数字中间）。隐私屏只需要看个大概时间，直接去掉秒，
+	// 整块水平垂直居中，彻底消除错位可能。
+	const int blockH = timeH + h * 40 / 1000;
 	int y = rc.top + (h - blockH) / 2;
-	HyDrawCentered(hdc, cx - w * 14 / 1000, y, w * 60 / 100, time, timeH, FW_SEMIBOLD, white);
-	HyDrawCentered(hdc, cx + w * 27 / 1000, y + timeH - secH - h * 8 / 1000, w * 20 / 100, sec, secH, FW_NORMAL, dim);
-	y += timeH + h * 42 / 1000;
+	HyDrawCentered(hdc, cx, y, w * 70 / 100, time, timeH, FW_SEMIBOLD, white);
+	y += timeH + h * 40 / 1000;
 	HyDrawCentered(hdc, cx, y, w * 70 / 100, date, dateH, FW_NORMAL, dim);
 }
 
