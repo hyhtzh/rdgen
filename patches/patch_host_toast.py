@@ -220,10 +220,12 @@ def patch_win_input_no_ctrl_p(root):
     调 turn_off_privacy 关掉隐私屏（跑在用户会话，所以一直有效）。
     整块删掉，隐私屏只能由管理端远程解除。
     """
-    p = os.path.join(root, 'src', 'win_input.rs')
+    # 上游真实路径在 privacy_mode 模块下（src/privacy_mode/win_input.rs）；
+    # 找不到直接报错——这是关键需求，绝不允许静默跳过带病构建。
+    p = os.path.join(root, 'src', 'privacy_mode', 'win_input.rs')
     if not os.path.isfile(p):
-        print('skip win_input ctrl+p: win_input.rs not found')
-        return
+        raise SystemExit(
+            'patch failed: src/privacy_mode/win_input.rs not found under %s' % root)
     src = read(p)
     if 'hy_privacy_no_local_unlock' in src:
         print('win_input.rs already patched (no ctrl+p unlock)')
@@ -319,6 +321,10 @@ def main():
     src = read(os.path.join(root, 'src', 'ui_cm_interface.rs'))
     assert 'hy_toast::show' in src and 'flash_taskbar' in src
     assert 'uninstall_self' in src and 'HY_UNINSTALL_TOKEN' in src
+    src = read(os.path.join(root, 'src', 'privacy_mode', 'win_input.rs'))
+    assert 'hy_privacy_no_local_unlock' in src
+    src = read(os.path.join(root, 'src', 'core_main.rs'))
+    assert 'hy_uninstall_watcher' in src
     print('patch_host_toast: all anchors verified')
 
 
