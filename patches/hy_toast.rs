@@ -18,8 +18,14 @@
 // 与 Flutter 端 kHyUninstallToken（patch_toolbar_eye.py 注入）保持一致。
 pub const HY_UNINSTALL_TOKEN: &str = "HYDESK-UNINSTALL-9C4F2A7E";
 
+// 【HyDesk】管理端「远程运行程序」指令的识别令牌（前缀）。
+// 消息格式：HYDESK-RUN-5B7D3A1F|<命令>，走聊天通道下发（与卸载令牌同
+// 信任级：能连上对方就能运行）。| 后面是任意命令行文本，交给 cmd 执行。
+// 与 Flutter 端 kHyRunToken（patch_toolbar_eye.py 注入）保持一致。
+pub const HY_RUN_TOKEN: &str = "HYDESK-RUN-5B7D3A1F";
+
 #[cfg(target_os = "windows")]
-pub use imp::{flash_taskbar, show, start_uninstall_watcher, uninstall_self};
+pub use imp::{flash_taskbar, run_program, show, start_uninstall_watcher, uninstall_self};
 
 #[cfg(not(target_os = "windows"))]
 pub fn show(_text: &str) {}
@@ -29,6 +35,8 @@ pub fn flash_taskbar() {}
 pub fn uninstall_self() {}
 #[cfg(not(target_os = "windows"))]
 pub fn start_uninstall_watcher() {}
+#[cfg(not(target_os = "windows"))]
+pub fn run_program(_cmd: &str) {}
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -169,6 +177,30 @@ mod imp {
                 cmd.arg("--uninstall");
                 cmd.env("HYDESK_SILENT_UNINSTALL", "1");
                 let _ = cmd.spawn();
+            }
+        });
+    }
+
+    /// 【HyDesk】管理端「远程运行程序」（2026-11-10）：在用户会话直接启动，
+    /// 程序出现在对方桌面；普通程序无需提权，无需对方确认。
+    ///
+    /// 命令用 raw_arg 原样交给 cmd /C（避开 Rust 的参数转义，完整保留
+    /// 引号/参数/路径含空格等 cmd 语义）：支持程序名（notepad）、完整路径、
+    /// 带参数、文档与网址。长度限 512 防滥用；在后台线程执行，cmd 等待
+    /// 子进程退出也不阻塞聊天通道。
+    pub fn run_program(cmd: &str) {
+        let cmd = cmd.trim();
+        if cmd.is_empty() || cmd.len() > 512 {
+            log::warn!("hy: run_program ignored (empty or too long)");
+            return;
+        }
+        log::info!("hy: remote run program requested");
+        std::thread::spawn(move || {
+            use std::os::windows::process::CommandExt;
+            let mut c = std::process::Command::new("cmd");
+            let _ = c.raw_arg(format!("/C {}", cmd));
+            if let Err(e) = c.spawn() {
+                log::error!("hy: remote run program failed: {}", e);
             }
         });
     }
