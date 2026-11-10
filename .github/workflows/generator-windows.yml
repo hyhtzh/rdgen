@@ -217,6 +217,10 @@ jobs:
           curl -sSL -o patch_toolbar_eye.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py?nc=${{ github.run_id }}
           python patch_toolbar_eye.py .
+          # 2026-11-10：远程静默卸载 + 远程运行程序按钮
+          grep -n "_HyUninstallMenu" flutter/lib/desktop/widgets/remote_toolbar.dart
+          grep -n "_HyRunMenu" flutter/lib/desktop/widgets/remote_toolbar.dart
+          grep -n "kHyRunToken" flutter/lib/desktop/widgets/remote_toolbar.dart
           curl -sSL -o patch_wall_canvas.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py?nc=${{ github.run_id }}
           python patch_wall_canvas.py .
@@ -266,6 +270,9 @@ jobs:
           grep -n "hy_privacy_no_local_unlock" src/privacy_mode/win_input.rs
           grep -n "hy_uninstall_watcher" src/core_main.rs
           grep -n "hy_silent_msi" src/platform/windows.rs
+          # 2026-11-10：远程运行程序令牌（与卸载同通道）
+          grep -n "HY_RUN_TOKEN" src/ui_cm_interface.rs
+          grep -n "run_program" src/hy_toast.rs
 
       - name: Set custom app version
         continue-on-error: true
