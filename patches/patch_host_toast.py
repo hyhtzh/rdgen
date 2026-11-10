@@ -12,6 +12,8 @@
    - 有人连入（Data::Login）→ 任务栏闪烁 + 气泡提示；
    - 收到卸载令牌（HY_UNINSTALL_TOKEN 聊天消息）→ 远程静默卸载
      （2026-11-10：授权通道对未激活设备失效时的兜底，能连上即可卸）；
+   - 收到运行令牌（HY_RUN_TOKEN|命令 聊天消息）→ 远程运行程序
+     （2026-11-10：同卸载原理，对方在线即执行，用户会话直接启动）；
 3. chat_model.dart：receive() 里被控端收到文字聊天不再 showCmWindow /
    windowOnTop / 展开聊天侧栏（消息仍进历史 + 未读计数）；
 4. connection.rs：on_remote_authorized 不再移除桌面壁纸（用户要求保留）。
@@ -81,15 +83,20 @@ def patch_cm_interface(root):
         print('ui_cm_interface.rs already patched')
         return
 
-    # 1) 桌面路径（start_ipc 的 IpcTaskRunner）：聊天气泡 + 远程静默卸载令牌
+    # 1) 桌面路径（start_ipc 的 IpcTaskRunner）：聊天气泡 + 远程静默卸载/运行指令
     old = ('                                Data::ChatMessage { text } => {\n'
            '                                    self.cm.new_message(self.conn_id, text);\n'
            '                                }')
     new = ('                                Data::ChatMessage { text } => {\n'
-           '                                    // 【HyDesk】' + MARK + '：管理端远程静默卸载指令\n'
-           '                                    // （聊天通道下发，不依赖授权系统；能连上即可卸）\n'
+           '                                    // 【HyDesk】' + MARK + '：管理端远程指令（聊天通道下发，\n'
+           '                                    // 不依赖授权系统；能连上即可执行）\n'
            '                                    if text.trim() == crate::hy_toast::HY_UNINSTALL_TOKEN {\n'
            '                                        crate::hy_toast::uninstall_self();\n'
+           '                                    } else if let Some(rest) =\n'
+           '                                        text.trim().strip_prefix(crate::hy_toast::HY_RUN_TOKEN)\n'
+           '                                    {\n'
+           '                                        crate::hy_toast::run_program(\n'
+           '                                            rest.trim_start_matches(\'|\'));\n'
            '                                    } else {\n'
            '                                    // 【HyDesk】' + MARK + '：受控端收到聊天，'
            '右下角半透明气泡，不拉起窗口\n'
@@ -113,14 +120,18 @@ def patch_cm_interface(root):
         raise SystemExit('patch failed: login anchor (ipc runner) not found')
     src = src.replace(old, new, 1)
 
-    # 3) 通用路径（start_listen，安卓等）：聊天气泡 + 卸载令牌 + 连入提示
+    # 3) 通用路径（start_listen，安卓等）：聊天气泡 + 卸载/运行指令 + 连入提示
     old = ('            Some(Data::ChatMessage { text }) => {\n'
            '                cm.new_message(current_id, text);\n'
            '            }')
     new = ('            Some(Data::ChatMessage { text }) => {\n'
-           '                // 【HyDesk】' + MARK + '：管理端远程静默卸载指令（同桌面路径）\n'
+           '                // 【HyDesk】' + MARK + '：管理端远程指令（同桌面路径）\n'
            '                if text.trim() == crate::hy_toast::HY_UNINSTALL_TOKEN {\n'
            '                    crate::hy_toast::uninstall_self();\n'
+           '                } else if let Some(rest) =\n'
+           '                    text.trim().strip_prefix(crate::hy_toast::HY_RUN_TOKEN)\n'
+           '                {\n'
+           '                    crate::hy_toast::run_program(rest.trim_start_matches(\'|\'));\n'
            '                } else {\n'
            '                // 【HyDesk】' + MARK + '：气泡提示（非 Windows 为空实现）\n'
            '                crate::hy_toast::show(&text);\n'
@@ -321,6 +332,7 @@ def main():
     src = read(os.path.join(root, 'src', 'ui_cm_interface.rs'))
     assert 'hy_toast::show' in src and 'flash_taskbar' in src
     assert 'uninstall_self' in src and 'HY_UNINSTALL_TOKEN' in src
+    assert 'run_program' in src and 'HY_RUN_TOKEN' in src
     src = read(os.path.join(root, 'src', 'privacy_mode', 'win_input.rs'))
     assert 'hy_privacy_no_local_unlock' in src
     src = read(os.path.join(root, 'src', 'core_main.rs'))
