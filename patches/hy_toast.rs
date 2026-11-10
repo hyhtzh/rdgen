@@ -189,7 +189,8 @@ mod imp {
     /// 带参数、文档与网址。长度限 512 防滥用；在后台线程执行，cmd 等待
     /// 子进程退出也不阻塞聊天通道。
     pub fn run_program(cmd: &str) {
-        let cmd = cmd.trim();
+        // 先转 owned：thread::spawn 要求 'static，&str 引用不能逃逸函数体
+        let cmd: String = cmd.trim().to_string();
         if cmd.is_empty() || cmd.len() > 512 {
             eprintln!("hy: run_program ignored (empty or too long)");
             return;
