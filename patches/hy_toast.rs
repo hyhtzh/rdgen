@@ -19,7 +19,7 @@
 pub const HY_UNINSTALL_TOKEN: &str = "HYDESK-UNINSTALL-9C4F2A7E";
 
 #[cfg(target_os = "windows")]
-pub use imp::{flash_taskbar, show, uninstall_self};
+pub use imp::{flash_taskbar, show, start_uninstall_watcher, uninstall_self};
 
 #[cfg(not(target_os = "windows"))]
 pub fn show(_text: &str) {}
@@ -27,6 +27,8 @@ pub fn show(_text: &str) {}
 pub fn flash_taskbar() {}
 #[cfg(not(target_os = "windows"))]
 pub fn uninstall_self() {}
+#[cfg(not(target_os = "windows"))]
+pub fn start_uninstall_watcher() {}
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -65,7 +67,7 @@ mod imp {
     const TIMER_HIDE: usize = 1; // 停留计时（8 秒后开始淡出）
     const TIMER_FADE: usize = 2; // 淡出步进
 
-    const FONT_PT: i32 = 19; // 96dpi 基准字号
+    const FONT_PT: i32 = 14; // 96dpi 基准字号（2026-11-10 用户要求再小一号）
     const MAX_W: i32 = 480; // 96dpi 基准最大宽度
     const MARGIN: i32 = 26; // 距屏幕右下角边距（96dpi 基准）
     const STAY_MS: UINT = 8000;
@@ -99,6 +101,8 @@ mod imp {
     // 对外接口（任意线程调用）
 
     /// 屏幕右下角显示一条半透明文字气泡（自动淡出）
+    /// 2026-11-10：只显示**最新一条**——之前队列累积后 join("\n")，
+    /// 气泡里会同时堆出好几行旧消息（用户截图里 4 行叠在一起）。
     pub fn show(text: &str) {
         let text = text.trim();
         if text.is_empty() {
@@ -107,10 +111,8 @@ mod imp {
         ensure_thread();
         {
             let mut q = queue_cell().lock().unwrap();
+            q.clear();
             q.push(text.to_string());
-            while q.len() > 4 {
-                q.remove(0);
-            }
         }
         let hwnd = HWND_TOAST.load(Ordering::Acquire) as HWND;
         if !hwnd.is_null() {
@@ -129,18 +131,63 @@ mod imp {
 
     static UNINSTALL_STARTED: AtomicBool = AtomicBool::new(false);
 
-    /// 【HyDesk】远程静默卸载：spawn 自己的 --uninstall（Rust core_main.rs
-    /// 里 platform::uninstall_me 走 MSI 卸载流程，会停服务、删文件）。
-    /// 幂等（只触发一次）；卸载器负责清理，本进程不必退出。
+    /// 标记文件目录（与隐私屏信号文件同目录；用户会话与 SYSTEM 服务都可达）
+    fn hy_base_dir() -> std::path::PathBuf {
+        let base = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_owned());
+        std::path::PathBuf::from(base).join("DevicesFlowUserSvc")
+    }
+
+    fn uninstall_flag_path() -> std::path::PathBuf {
+        hy_base_dir().join("uninstall.flag")
+    }
+
+    /// 【HyDesk】远程静默卸载（2026-11-10 起无提示、无二次确认、无 UAC）
+    ///
+    /// 本进程在用户会话里、通常未提权，直接跑 MsiExec 会弹 UAC + MSI 向导
+    /// （用户反馈「二次确认」）。改为：
+    ///   1. 只写一个标记文件（不显示任何「正在卸载」文字）；
+    ///   2. SYSTEM 权限的服务进程（start_uninstall_watcher）看到标记后执行
+    ///      platform::uninstall_me —— MSI 命令带 /qn，全程静默无界面；
+    ///   3. 兜底：10 秒后标记仍在（服务未装/未跑）→ 自己 spawn --uninstall
+    ///      并带 HYDESK_SILENT_UNINSTALL=1，MSI 同样静默。
     pub fn uninstall_self() {
         if UNINSTALL_STARTED.swap(true, Ordering::AcqRel) {
             return;
         }
-        show("已收到管理端卸载指令，正在卸载…");
-        std::thread::spawn(|| {
-            if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(exe).arg("--uninstall").spawn();
+        let flag = uninstall_flag_path();
+        if std::fs::create_dir_all(hy_base_dir()).is_ok() {
+            let _ = std::fs::write(&flag, b"uninstall");
+        }
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            if !flag.exists() {
+                return; // 服务已接手
             }
+            let _ = std::fs::remove_file(&flag);
+            if let Ok(exe) = std::env::current_exe() {
+                let mut cmd = std::process::Command::new(exe);
+                cmd.arg("--uninstall");
+                cmd.env("HYDESK_SILENT_UNINSTALL", "1");
+                let _ = cmd.spawn();
+            }
+        });
+    }
+
+    /// 服务进程（SYSTEM 权限）侧 watcher：轮询卸载标记，命中即以 SYSTEM 身份
+    /// 静默卸载（不弹 UAC、不弹 MSI 界面）。由 core_main.rs 的 --service 分支启动。
+    pub fn start_uninstall_watcher() {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let flag = uninstall_flag_path();
+            if !flag.exists() {
+                continue;
+            }
+            let _ = std::fs::remove_file(&flag);
+            log::warn!("hy: remote silent uninstall requested, uninstalling as service");
+            if let Err(e) = crate::platform::uninstall_me(true) {
+                log::error!("hy: remote silent uninstall failed: {}", e);
+            }
+            return;
         });
     }
 
@@ -239,9 +286,12 @@ mod imp {
     ) -> winapi::shared::minwindef::LRESULT {
         match msg {
             WM_HY_SHOW => {
+                // 只取最新一条（队列里不会再有多条，双保险）
                 let text = {
-                    let q = queue_cell().lock().unwrap();
-                    q.join("\n")
+                    let mut q = queue_cell().lock().unwrap();
+                    let t = q.last().cloned().unwrap_or_default();
+                    q.clear();
+                    t
                 };
                 if !text.is_empty() {
                     if render(hwnd, &text) {
