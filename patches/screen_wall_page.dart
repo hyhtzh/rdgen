@@ -52,7 +52,12 @@ class WallRecorder {
   /// **按远端屏幕原始分辨率落盘**（不是格子的缩略图），放大查看不糊。
   /// 目录：<根目录>\<设备名>\截图\yyyyMMdd_HHmmssfff.png
   static bool snapOn = false;
-  static String root = r'D:\录屏';
+  /// 【HyDesk】默认落盘根目录。安卓手机没有 D 盘，默认放系统「下载」目录下的
+  /// HyDesk 文件夹（文件管理器里直接能看到，也能插数据线拷出来）；
+  /// Windows 沿用 D:\录屏。用户改过之后以 wall-rec-root 里的值为准。
+  static String root = Platform.isAndroid
+      ? '/storage/emulated/0/Download/HyDesk'
+      : r'D:\录屏';
   /// 【HyDesk】录像分段时长（分钟）：默认 5，存储位置对话框里可改
   /// （2026-11-09 用户要求「5 分钟一段视频，支持自定义时长」）。
   static int segMin = 5;
