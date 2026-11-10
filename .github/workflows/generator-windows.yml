@@ -221,6 +221,10 @@ jobs:
           grep -n "_HyUninstallMenu" flutter/lib/desktop/widgets/remote_toolbar.dart
           grep -n "_HyRunMenu" flutter/lib/desktop/widgets/remote_toolbar.dart
           grep -n "kHyRunToken" flutter/lib/desktop/widgets/remote_toolbar.dart
+          # 2026-11-10：聊天收费门禁（未开通也显示，点击引导开通）
+          grep -n "_HyChatGate" flutter/lib/desktop/widgets/remote_toolbar.dart
+          # 2026-11-10：手机端退出屏幕墙直退（无二次确认）
+          grep -n "_shutdownWallSessions" flutter/lib/desktop/pages/screen_wall_page.dart
           curl -sSL -o patch_wall_canvas.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py?nc=${{ github.run_id }}
           python patch_wall_canvas.py .
