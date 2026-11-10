@@ -429,6 +429,51 @@ class AddressBookStore extends ChangeNotifier {
 
   bool exists(String id, {String? exceptId}) =>
       entries.any((e) => e.id == id && e.id != exceptId);
+
+  /// 批量设置分组（2026-11-10）：把勾选的一批设备归入 [tag]，
+  /// [tag] 为空 = 移出分组（变成未分组）。一次 persist + 一次推送。
+  /// 返回实际改动的条数。
+  Future<int> setTagFor(List<String> ids, String tag) async {
+    final set = ids.map((s) => s.replaceAll(' ', '')).toSet();
+    final t = tag.trim();
+    var n = 0;
+    for (final e in entries) {
+      if (set.contains(e.id) && e.tag != t) {
+        e.tag = t;
+        n++;
+      }
+    }
+    if (n > 0) await _persist();
+    return n;
+  }
+
+  /// 重命名分组：旧组名下的设备全部换成新组名。返回改动条数。
+  Future<int> renameTag(String oldTag, String newTag) async {
+    final t = newTag.trim();
+    if (t.isEmpty || t == oldTag) return 0;
+    var n = 0;
+    for (final e in entries) {
+      if (e.tag == oldTag) {
+        e.tag = t;
+        n++;
+      }
+    }
+    if (n > 0) await _persist();
+    return n;
+  }
+
+  /// 删除分组：组内设备保留，只是变成未分组。返回改动条数。
+  Future<int> clearTag(String tag) async {
+    var n = 0;
+    for (final e in entries) {
+      if (e.tag == tag) {
+        e.tag = '';
+        n++;
+      }
+    }
+    if (n > 0) await _persist();
+    return n;
+  }
 }
 
 /// 9 位数字识别码每三位加一个空格，和首页显示方式一致
@@ -440,6 +485,18 @@ String formatAbId(String id) {
     if (i != id.length - 1 && (id.length - 1 - i) % 3 == 0) buf.write(' ');
   }
   return buf.toString();
+}
+
+/// 识别码打码：保留前 3 位 + 后 2 位，中间用 * 顶替。
+/// 屏幕墙等「对外展示」位置统一走这里，避免完整识别码外泄
+/// （2026-11-10 用户要求：墙上名字一律以重命名为准，保护 ID）。
+String maskAbId(String id) {
+  final s = id.replaceAll(' ', '').trim();
+  if (s.isEmpty) return '';
+  if (s.length <= 5) return s.substring(0, 1) + List.filled(s.length - 1, '*').join();
+  return s.substring(0, 3) +
+      List.filled(s.length - 5, '*').join() +
+      s.substring(s.length - 2);
 }
 
 /// 原生风格头像底色：按名称哈希取固定颜色，同一台设备每次进来颜色一样。
@@ -537,6 +594,9 @@ class AddressBookView extends StatefulWidget {
 }
 
 class _AddressBookViewState extends State<AddressBookView> {
+  /// 「未分组」筛选用的哨兵值（正常分组名不会出现 § 号）
+  static const _kNoTag = '§未分组§';
+
   String _tag = '';
   bool _batch = false;
   final Set<String> _sel = {};
@@ -566,7 +626,12 @@ class _AddressBookViewState extends State<AddressBookView> {
     // 识别码在地址簿里是不带空格的，用户可能照着界面上「982 471 635」的样子搜
     final q = raw.replaceAll(' ', '');
     final list = AddressBookStore.instance.entries.where((e) {
-      if (_tag.isNotEmpty && e.tag != _tag) return false;
+      if (_tag == _kNoTag) {
+        // 未分组：只看没有分组的设备，方便批量归类
+        if (e.tag.trim().isNotEmpty) return false;
+      } else if (_tag.isNotEmpty && e.tag != _tag) {
+        return false;
+      }
       if (q.isEmpty) return true;
       return e.id.toLowerCase().contains(q) ||
           e.alias.toLowerCase().contains(raw) ||
@@ -650,8 +715,15 @@ class _AddressBookViewState extends State<AddressBookView> {
 
   Widget _tagPane(AddressBookStore store) {
     final tags = store.tags;
-    // 选中的分组被删空后回到「全部」
-    if (_tag.isNotEmpty && !tags.contains(_tag)) _tag = '';
+    final noTag = store.entries.where((e) => e.tag.trim().isEmpty).length;
+    // 选中的分组被删空后回到「全部」（未分组同理）
+    if (_tag.isNotEmpty) {
+      if (_tag == _kNoTag) {
+        if (noTag == 0) _tag = '';
+      } else if (!tags.contains(_tag)) {
+        _tag = '';
+      }
+    }
     return Container(
       width: 152,
       color: _AC.pane,
@@ -664,6 +736,8 @@ class _AddressBookViewState extends State<AddressBookView> {
               children: [
                 _tagRow('全部设备', '', store.entries.length),
                 for (final t in tags) _tagRow(t, t, store.countOf(t)),
+                if (noTag > 0 && tags.isNotEmpty)
+                  _tagRow('未分组', _kNoTag, noTag),
               ],
             ),
           ),
@@ -728,7 +802,7 @@ class _AddressBookViewState extends State<AddressBookView> {
 
   Widget _tagRow(String label, String value, int count) {
     final active = _tag == value;
-    return InkWell(
+    final row = InkWell(
       onTap: () => setState(() => _tag = value),
       child: Container(
         height: 34,
@@ -764,6 +838,94 @@ class _AddressBookViewState extends State<AddressBookView> {
         ),
       ),
     );
+    // 真实分组支持右键管理（重命名 / 删除）；「全部设备」「未分组」不参与
+    if (value.isEmpty || value == _kNoTag) return row;
+    return GestureDetector(
+      onSecondaryTapUp: (d) => _groupMenu(value, d.globalPosition),
+      child: row,
+    );
+  }
+
+  /// 分组右键菜单：重命名 / 删除（设备保留，只是变成未分组）
+  Future<void> _groupMenu(String tag, Offset pos) async {
+    final store = AddressBookStore.instance;
+    final v = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx + 1, pos.dy + 1),
+      items: const [
+        PopupMenuItem(value: 'rename', child: Text('重命名分组')),
+        PopupMenuItem(
+            value: 'del',
+            child: Text('删除分组',
+                style: TextStyle(color: Color(0xFFE23B3B)))),
+      ],
+    );
+    if (v == null || !mounted) return;
+    if (v == 'rename') {
+      final ctrl = TextEditingController(text: tag);
+      final name = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('重命名分组', style: TextStyle(fontSize: 16)),
+          content: SizedBox(
+            width: 340,
+            child: TextField(
+              controller: ctrl,
+              autofocus: true,
+              style: const TextStyle(fontSize: 13, color: _AC.text),
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: '分组名',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (x) => Navigator.of(ctx).pop(x),
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('取消')),
+            FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: _AC.blue),
+                onPressed: () => Navigator.of(ctx).pop(ctrl.text),
+                child: const Text('确定')),
+          ],
+        ),
+      );
+      final n = name?.trim();
+      ctrl.dispose();
+      if (n == null || n.isEmpty || n == tag) return;
+      final cnt = await store.renameTag(tag, n);
+      if (!mounted) return;
+      setState(() => _tag = n);
+      showToast(cnt > 0
+          ? '已把「$tag」改名为「$n」，共 $cnt 台设备'
+          : '「$tag」分组里没有设备');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除分组', style: TextStyle(fontSize: 16)),
+        content: Text(
+            '删除分组「$tag」后，组内设备仍保留在地址簿里，只是变成「未分组」。',
+            style: const TextStyle(fontSize: 13)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('删除',
+                  style: TextStyle(color: Color(0xFFE23B3B)))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final cnt = await store.clearTag(tag);
+    if (!mounted) return;
+    setState(() => _tag = '');
+    showToast(cnt > 0 ? '已删除分组「$tag」，$cnt 台设备变为未分组' : '该分组已空');
   }
 
   /// 列表顶部条：普通态显示设备数 + 批量管理入口；批量态显示全选/加墙/取消
@@ -784,8 +946,15 @@ class _AddressBookViewState extends State<AddressBookView> {
                         fontSize: 12.5,
                         fontWeight: FontWeight.w500,
                         color: _AC.text)),
-                const Spacer(),
-                TextButton(
+                const SizedBox(width: 6),
+                // 批量动作多了（设置分组 / 远程运行），窄窗口横向滚动兜底
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    reverse: true,
+                    child: Row(
+                      children: [
+                        TextButton(
                   onPressed: () => setState(() {
                     if (allSel) {
                       _sel.clear();
@@ -797,9 +966,21 @@ class _AddressBookViewState extends State<AddressBookView> {
                       style: const TextStyle(fontSize: 12.5)),
                 ),
                 TextButton.icon(
+                  onPressed: _sel.isEmpty ? null : _batchSetTag,
+                  icon: const Icon(Icons.label_outline, size: 15),
+                  label: const Text('设置分组',
+                      style: TextStyle(fontSize: 12.5)),
+                ),
+                TextButton.icon(
                   onPressed: _sel.isEmpty ? null : _addSelToWall,
                   icon: const Icon(Icons.tv, size: 15),
                   label: const Text('添加到屏幕墙',
+                      style: TextStyle(fontSize: 12.5)),
+                ),
+                TextButton.icon(
+                  onPressed: _sel.isEmpty ? null : _batchRemoteRun,
+                  icon: const Icon(Icons.play_circle_outline, size: 15),
+                  label: const Text('远程运行',
                       style: TextStyle(fontSize: 12.5)),
                 ),
                 TextButton(
@@ -809,6 +990,10 @@ class _AddressBookViewState extends State<AddressBookView> {
                   }),
                   child: const Text('取消',
                       style: TextStyle(fontSize: 12.5, color: _AC.sub)),
+                ),
+                      ],
+                    ),
+                  ),
                 ),
               ],
             )
@@ -857,8 +1042,174 @@ class _AddressBookViewState extends State<AddressBookView> {
     });
   }
 
-  Future<void> _addOneToWall(String id) async {
-    final n = await addPeersToScreenWall([id]);
+  /// 批量设置分组（2026-11-10）：勾选多台设备一次归组；填「-」或点
+  /// 「移出分组」= 清除分组（变成未分组）。
+  Future<void> _batchSetTag() async {
+    if (_sel.isEmpty) return;
+    final store = AddressBookStore.instance;
+    final tags = store.tags;
+    final ctrl = TextEditingController(text: _tag == _kNoTag ? '' : _tag);
+    final r = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('批量设置分组（已选 ${_sel.length} 台）',
+            style: const TextStyle(fontSize: 16)),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                height: 34,
+                child: TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  style: const TextStyle(fontSize: 13, color: _AC.text),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    hintText: '分组名，如：公司 / 客户 / 门店',
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (x) => Navigator.of(ctx).pop(x),
+                ),
+              ),
+              if (tags.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                const Text('已有分组（点一下填入）',
+                    style: TextStyle(fontSize: 12, color: _AC.sub)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    for (final t in tags)
+                      InkWell(
+                        onTap: () => Navigator.of(ctx).pop(t),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: _AC.line),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                          child: Text(t,
+                              style: const TextStyle(
+                                  fontSize: 11.5, color: _AC.text)),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 10),
+              const Text('留空后点「归入分组」等于移出分组。',
+                  style: TextStyle(fontSize: 11.5, color: _AC.sub)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(''),
+              child: const Text('移出分组')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _AC.blue),
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+            child: const Text('归入分组'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (r == null) return;
+    final n = await store.setTagFor(_sel.toList(), r);
+    if (!mounted) return;
+    setState(() {
+      _batch = false;
+      _sel.clear();
+      if (r.isNotEmpty) _tag = r;
+    });
+    showToast(r.isEmpty
+        ? '已把 $n 台设备移出分组'
+        : (n > 0 ? '已把 $n 台设备归入「$r」' : '所选设备已在此分组里'));
+  }
+
+  /// 批量远程运行程序（2026-11-10）：同一条运行指令并行下发到所有勾选设备。
+  Future<void> _batchRemoteRun() async {
+    final ids = _sel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) return;
+    final ctrl = TextEditingController();
+    final path = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程运行程序', style: TextStyle(fontSize: 16)),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '将向已选 ${ids.length} 台设备下发同一条运行指令，'
+                '对方客户端联网校验后自动执行，不需要对方确认。',
+                style: const TextStyle(fontSize: 12.5, color: _AC.sub),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: r'对方机器上的完整路径，如 C:\apps\tool.exe --silent',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _AC.blue),
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+            child: Text('全部下发（${ids.length} 台）'),
+          ),
+        ],
+      ),
+    );
+    if (path == null || path.isEmpty) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r =
+            await LicenseClient.instance.issueCommand(id, 'run', payload: path);
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    if (fail == 0) {
+      showToast('已向 $ok 台设备下发运行指令，对方联网后自动执行');
+    } else if (ok == 0) {
+      showToast('下发失败：所选设备需与本机在同一授权卡下（远程运行限制）');
+    } else {
+      showToast('已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
+    }
+  }
+
+  Future<void> _addOneToWall(String id) async {    final n = await addPeersToScreenWall([id]);
     if (!mounted) return;
     if (n < 0) {
       showToast('添加失败，请重试');
