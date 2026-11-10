@@ -54,6 +54,10 @@ constexpr UINT WM_RUSTDESK_HIDE_WINDOWS = WM_APP + 4;
 // hy: 遮挡层窗口定时器（时钟重绘 / Ctrl+P 解锁兜底轮询）
 constexpr UINT_PTR HY_TIMER_CLOCK = 0x2001;
 constexpr UINT_PTR HY_TIMER_UNLOCK = 0x2002;
+// hy: 本地解锁总开关（默认禁用）。隐私屏的意义就是遮挡本机屏幕与输入，
+// 本地一键解锁（Ctrl+P）会让遮挡形同虚设，因此默认关闭——隐私屏只能由
+// 管理端远程解除（断开连接或远程关闭隐私模式）。需要本地解锁时改回 1。
+#define HY_ENABLE_LOCAL_UNLOCK 0
 // hy: 本地解锁只发一次信号（按住 Ctrl+P 会连续触发多个轮询周期）
 static volatile LONG g_unlock_signalled = 0;
 
@@ -163,14 +167,18 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 	switch (message)
 	{
 	case WM_CREATE:
-		// 时钟每秒重绘；Ctrl+P 解锁兜底轮询（见 WM_TIMER）
+		// 时钟每秒重绘；本地解锁兜底轮询（见 WM_TIMER，可用开关关闭）
 		SetTimer(hwnd, HY_TIMER_CLOCK, 1000, NULL);
+#if HY_ENABLE_LOCAL_UNLOCK
 		SetTimer(hwnd, HY_TIMER_UNLOCK, 80, NULL);
+#endif
 		break;
 
 	case WM_DESTROY:
 		KillTimer(hwnd, HY_TIMER_CLOCK);
+#if HY_ENABLE_LOCAL_UNLOCK
 		KillTimer(hwnd, HY_TIMER_UNLOCK);
+#endif
 		if (!g_refreshing_windows && !g_shutting_down_windows)
 		{
 			if (FALSE != IsWindowVisible(hwnd))
@@ -194,6 +202,7 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 		break;
 
 	case WM_TIMER:
+#if HY_ENABLE_LOCAL_UNLOCK
 		if (wParam == HY_TIMER_UNLOCK)
 		{
 			// 本地解锁兜底：低级键盘钩子被输入拦截钩子抢先（钩子链按安装
@@ -206,6 +215,9 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 			}
 		}
 		else if (wParam == HY_TIMER_CLOCK)
+#else
+		if (wParam == HY_TIMER_CLOCK)
+#endif
 		{
 			// 时钟每秒重绘
 			InvalidateRect(hwnd, NULL, FALSE);
@@ -781,8 +793,13 @@ DWORD WINAPI UwU(LPVOID lpParam)
 #endif
 
 	KeepDisplayAwake();
+#if HY_ENABLE_LOCAL_UNLOCK
 	// 本地解锁：Ctrl+P。钩子必须装在用户会话，服务进程那条链在 session 0。
 	g_kbd_hook = SetWindowsHookExW(WH_KEYBOARD_LL, PrivacyKbdHook, g_module, 0);
+#else
+	// hy: 本地解锁已禁用（HY_ENABLE_LOCAL_UNLOCK=0），不装键盘钩子，
+	// 不做 GetAsyncKeyState 轮询，隐私屏只能由管理端远程解除。
+#endif
 
 	while (GetMessage(&msg, nullptr, 0, 0))
 	{
@@ -1132,6 +1149,12 @@ static void HyWriteUnlockSignal()
 
 void RequestLocalUnlock()
 {
+#if !HY_ENABLE_LOCAL_UNLOCK
+	// hy: 本地解锁已禁用——隐私屏期间本机无法自行解除遮挡，
+	// 只能由管理端远程操作（关闭隐私模式或断开连接）恢复桌面。
+	(void)g_unlock_signalled;
+	return;
+#else
 	// 只发一次：遮挡窗口随后会被销毁，重复触发没有意义还可能干扰收尾
 	if (InterlockedCompareExchange(&g_unlock_signalled, 1, 0) != 0)
 	{
@@ -1141,6 +1164,7 @@ void RequestLocalUnlock()
 	// 解输入钩子、通知主控端、改隐私状态。
 	PostPrivacyThreadMessage(WM_RUSTDESK_HIDE_WINDOWS, false);
 	HyWriteUnlockSignal();
+#endif
 }
 
 LRESULT CALLBACK PrivacyKbdHook(int code, WPARAM wParam, LPARAM lParam)
