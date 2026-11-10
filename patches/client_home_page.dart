@@ -613,7 +613,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     if (mounted) setState(() => _ftOpen = true);
   }
 
-  /// 设备右键菜单：传输文件 / 远程运行 / 远程卸载
+  /// 设备右键菜单：传输文件 / 远程运行 / 远程卸载 / 添加到地址簿 / 重命名
   Future<void> _peerMenu(Peer p, Offset pos) async {
     final v = await showMenu<String>(
       context: context,
@@ -621,6 +621,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       items: const [
         PopupMenuItem(value: 'ft', child: Text('传输文件')),
         PopupMenuItem(value: 'run', child: Text('远程运行程序')),
+        PopupMenuItem(value: 'ab', child: Text('添加到地址簿')),
+        PopupMenuItem(value: 'rename', child: Text('重命名')),
         PopupMenuItem(
             value: 'uninstall',
             child: Text('卸载员工端（静默）', style: TextStyle(color: Color(0xFFE5484D)))),
@@ -635,10 +637,111 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       case 'run':
         _remoteRunPrompt(id);
         break;
+      case 'ab':
+        _addToAddressBook(p);
+        break;
+      case 'rename':
+        _renamePeer(p);
+        break;
       case 'uninstall':
         _uninstallConfirm(id, p.alias.isEmpty ? id : p.alias);
         break;
     }
+  }
+
+  /// 重命名设备（2026-11-10：全部列表通用）。名称写进地址簿别名——
+  /// 地址簿别名是显示名的最高优先级，最近 / 收藏 / 地址簿三处同步变。
+  /// 设备不在地址簿时自动补一条（本地缓存即生效，登录了再同步云端）。
+  Future<void> _renamePeer(Peer p) async {
+    final id = p.id.replaceAll(' ', '');
+    if (id.isEmpty) return;
+    final store = AddressBookStore.instance;
+    AbEntry? old;
+    for (final e in store.entries) {
+      if (_normId(e.id) == id) {
+        old = e;
+        break;
+      }
+    }
+    final current =
+        (old != null && old.alias.trim().isNotEmpty) ? old.alias : p.alias;
+    final ctrl = TextEditingController(text: current);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重命名设备', style: TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('识别码：${formatAbId(id)}',
+                  style: const TextStyle(fontSize: 12, color: _C.sub)),
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 38,
+                child: TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  style: const TextStyle(fontSize: 13.5, color: _C.text),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '给这台设备起个名字',
+                    hintStyle: const TextStyle(
+                        fontSize: 12.5, color: Color(0xFFB0B8C4)),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 10),
+                    filled: true,
+                    fillColor: const Color(0xFFF8FAFD),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: _C.line),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: _C.line),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: _C.blue, width: 1.3),
+                    ),
+                  ),
+                  onSubmitted: (v) => Navigator.of(ctx).pop(v),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text('名称会同步到最近、收藏和地址簿列表。',
+                  style: TextStyle(fontSize: 11.5, color: _C.sub)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _C.blue),
+              onPressed: () => Navigator.of(ctx).pop(ctrl.text),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    final text = name ?? '';
+    ctrl.dispose();
+    if (name == null) return;
+    final n = text.trim();
+    if (n.isEmpty) {
+      showToast('名称不能为空');
+      return;
+    }
+    if (n == current.trim()) return;
+    await store.upsert(
+      AbEntry(id: id, alias: n, tag: old?.tag ?? '', note: old?.note ?? ''),
+      oldId: old?.id,
+    );
+    if (!mounted) return;
+    showToast('已重命名，最近 / 收藏 / 地址簿已同步');
   }
 
   Future<void> _remoteRunPrompt(String id) async {
@@ -794,6 +897,64 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     if (entry == null) return;
     await AddressBookStore.instance.upsert(entry);
     showToast('已加入地址簿');
+  }
+
+  /// 批量添加地址簿：多行文本（每行「ID 名称」）+ 可选统一分组
+  Future<void> _showBatchAbDialog() async {
+    if (_tab != 2) setState(() => _tab = 2);
+    await showBatchAddressDialog(context);
+  }
+
+  /// 单台设备加入地址簿（右键菜单用）：预填 ID 与现有名称
+  Future<void> _addToAddressBook(Peer p) async {
+    final id = p.id.replaceAll(' ', '');
+    if (id.isEmpty) return;
+    if (AddressBookStore.instance.exists(id)) {
+      showToast('该设备已在地址簿里');
+      return;
+    }
+    final entry = await showAddressEntryDialog(
+      context,
+      entry: AbEntry(id: id, alias: p.alias),
+    );
+    if (entry == null) return;
+    await AddressBookStore.instance.upsert(entry);
+    showToast('已加入地址簿');
+  }
+
+  /// 批量勾选的设备加入地址簿（最近/收藏列表的批量栏）
+  Future<void> _addSelectedToAb() async {
+    if (_batchSel.isEmpty) return;
+    final store = AddressBookStore.instance;
+    final list = <AbEntry>[];
+    // 从当前列表里带出已有名称（地址簿别名优先，其次设备自身别名）
+    for (final pid in _batchSel) {
+      final id = pid.replaceAll(' ', '');
+      if (id.isEmpty) continue;
+      var alias = '';
+      Peer? p;
+      try {
+        p = _peers.peers.firstWhere((x) => x.id.replaceAll(' ', '') == id);
+      } catch (_) {}
+      if (p != null) alias = p.alias;
+      list.add(AbEntry(id: id, alias: alias));
+    }
+    if (list.isEmpty) {
+      showToast('没有有效设备');
+      return;
+    }
+    final r = await store.batchUpsert(list);
+    if (!mounted) return;
+    final parts = <String>[];
+    if (r[0] > 0) parts.add('新增 ${r[0]} 台');
+    if (r[1] > 0) parts.add('更新 ${r[1]} 台');
+    final skipped = list.length - r[0] - r[1];
+    if (skipped > 0) parts.add('跳过 $skipped 台（已在地址簿）');
+    showToast(parts.isEmpty ? '所选设备都已在地址簿里' : '已加入地址簿：${parts.join('，')}');
+    setState(() {
+      _batch = false;
+      _batchSel.clear();
+    });
   }
 
   @override
@@ -1343,6 +1504,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           const Spacer(),
           if (_tab == 2) ...[
             _plainToolIcon(Icons.add, '添加设备', _addAddressEntry),
+            _plainToolIcon(Icons.post_add, '批量添加地址簿', _showBatchAbDialog),
             _plainToolIcon(Icons.search, '搜索', () {
               setState(() => _showSearch = !_showSearch);
             }, active: _showSearch),
@@ -1500,6 +1662,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             onPressed: _addSelectedToFav,
             icon: const Icon(Icons.star_border_rounded, size: 16),
             label: const Text('加入收藏夹', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
+            onPressed: _addSelectedToAb,
+            icon: const Icon(Icons.contacts_outlined, size: 15),
+            label: const Text('加入地址簿', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
             onPressed: _addSelectedToWall,
@@ -1931,6 +2098,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _openFileTransfer(pid);
                   } else if (v == 'run') {
                     _remoteRunPrompt(pid);
+                  } else if (v == 'rename') {
+                    _renamePeer(p);
+                  } else if (v == 'ab') {
+                    _addToAddressBook(p);
                   } else if (v == 'uninstall') {
                     _uninstallConfirm(
                         pid, p.alias.isEmpty ? pid : p.alias);
@@ -1948,6 +2119,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       height: 36,
                       child: Text('连接', style: TextStyle(fontSize: 13))),
                   const PopupMenuItem(
+                      value: 'rename',
+                      height: 36,
+                      child: Text('重命名',
+                          style: TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
                       value: 'ft',
                       height: 36,
                       child: Text('传输文件',
@@ -1962,6 +2138,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       height: 36,
                       child: Text(_isFav(p.id) ? '移出收藏夹' : '添加到收藏夹',
                           style: const TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'ab',
+                      height: 36,
+                      child: Text('添加到地址簿',
+                          style: TextStyle(fontSize: 13))),
                   const PopupMenuItem(
                       value: 'copy',
                       height: 36,
@@ -2016,7 +2197,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           onExit: (_) {
             if (_hoverId == p.id) setState(() => _hoverId = null);
           },
-          child: InkWell(
+          child: GestureDetector(
+            // 网格卡片右键 = 列表行同一套菜单（重命名 / 传输文件 / 卸载…）
+            onSecondaryTapUp:
+                _batch ? null : (d) => _peerMenu(p, d.globalPosition),
+            child: InkWell(
             onTap: () {
               if (_batch) {
                 setState(() =>
@@ -2099,6 +2284,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 ],
               ),
             ),
+          ),
           ),
         );
       },
