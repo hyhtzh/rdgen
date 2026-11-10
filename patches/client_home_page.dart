@@ -311,9 +311,12 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       final list = <Map<String, dynamic>>[];
       for (final p in gFFI.favoritePeersModel.peers) {
         final id = p.id.replaceAll(' ', '');
+        // 【HyDesk】墙里显示的别名以「重命名」为准（写在地址簿别名里），
+        // peer 自带的 alias 只是上游主机名/旧名，重命名后不能再拿它当标题。
+        final abName = _abAliasOf(id);
         list.add({
           'id': id,
-          'alias': p.alias,
+          'alias': abName.isNotEmpty ? abName : p.alias,
           'hostname': p.hostname,
           'online': p.online,
           'password': p.password.isNotEmpty ? p.password : (pwOf[id] ?? ''),
@@ -777,8 +780,83 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     }
   }
 
-  Future<void> _uninstallConfirm(String id, String alias) async {
-    final go = await showDialog<bool>(
+  /// 批量远程运行程序（2026-11-10）：批量模式勾选多台设备，填一次路径，
+  /// 一条指令并行下发到所有勾选设备（服务端按设备授权逐台校验，同卡才放行）。
+  Future<void> _batchRemoteRun() async {
+    final ids = _batchSel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      showToast('先勾选要下发的设备');
+      return;
+    }
+    final ctrl = TextEditingController();
+    final path = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程运行程序', style: TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '将向已选 ${ids.length} 台设备下发同一条运行指令，'
+                '对方客户端联网校验后自动执行，不需要对方确认。',
+                style: const TextStyle(fontSize: 12.5, color: _C.sub),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: r'对方机器上的完整路径，如 C:\apps\tool.exe --silent',
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _C.blue),
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: Text('全部下发（${ids.length} 台）'),
+          ),
+        ],
+      ),
+    );
+    if (path == null || path.isEmpty) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r =
+            await LicenseClient.instance.issueCommand(id, 'run', payload: path);
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    if (fail == 0) {
+      showToast('已向 $ok 台设备下发运行指令，对方联网后自动执行');
+    } else if (ok == 0) {
+      showToast('下发失败：所选设备需与本机在同一授权卡下（远程运行限制）');
+    } else {
+      showToast('已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
+    }
+  }
+
+  Future<void> _uninstallConfirm(String id, String alias) async {    final go = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('远程卸载员工端', style: TextStyle(fontSize: 15)),
@@ -1646,8 +1724,16 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                   fontSize: 12.5,
                   fontWeight: FontWeight.w500,
                   color: _C.text)),
-          const Spacer(),
-          TextButton(
+          const SizedBox(width: 6),
+          // 按钮变多（加了「远程运行」）后窄窗口会挤爆一行，这里做横向滚动，
+          // reverse 让内容贴右，宽窗口视觉和原来的 Spacer 一致。
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              child: Row(
+                children: [
+                  TextButton(
             onPressed: () => setState(() {
               if (allSel) {
                 _batchSel.clear();
@@ -1674,6 +1760,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             label: const Text('添加到屏幕墙', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
+            onPressed: _batchRemoteRun,
+            icon: const Icon(Icons.play_circle_outline, size: 16),
+            label: const Text('远程运行', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
             onPressed: _deleteSelected,
             icon: const Icon(Icons.delete_outline,
                 size: 15, color: Color(0xFFE23B3B)),
@@ -1687,6 +1778,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             }),
             child: const Text('取消',
                 style: TextStyle(fontSize: 12.5, color: _C.sub)),
+          ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
