@@ -390,6 +390,43 @@ class AddressBookStore extends ChangeNotifier {
     await _persist();
   }
 
+  /// 批量导入（2026-11-10）：一次 _persist 一次云端推送，比逐条 upsert
+  /// 少 N-1 次网络往返。合并规则保守：
+  ///   - 不存在 → 新增；
+  ///   - 已存在 → 新别名非空才覆盖别名；旧分组/备注为空且新值非空才补上
+  ///     （已有内容一律不冲掉）。
+  /// 返回 [新增数, 更新数]。
+  Future<List<int>> batchUpsert(List<AbEntry> list) async {
+    var added = 0;
+    var updated = 0;
+    for (final e in list) {
+      if (e.id.isEmpty) continue;
+      final i = entries.indexWhere((x) => x.id == e.id);
+      if (i >= 0) {
+        final old = entries[i];
+        var changed = false;
+        if (e.alias.isNotEmpty && e.alias != old.alias) {
+          old.alias = e.alias;
+          changed = true;
+        }
+        if (e.tag.isNotEmpty && old.tag.isEmpty) {
+          old.tag = e.tag;
+          changed = true;
+        }
+        if (e.note.isNotEmpty && old.note.isEmpty) {
+          old.note = e.note;
+          changed = true;
+        }
+        if (changed) updated++;
+      } else {
+        entries.add(e);
+        added++;
+      }
+    }
+    if (added + updated > 0) await _persist();
+    return [added, updated];
+  }
+
   bool exists(String id, {String? exceptId}) =>
       entries.any((e) => e.id == id && e.id != exceptId);
 }
@@ -1494,6 +1531,128 @@ Future<void> _add(BuildContext context) async {
   if (entry == null) return;
   await AddressBookStore.instance.upsert(entry);
   showToast('已加入地址簿');
+}
+
+/// 批量添加地址簿（2026-11-10）：每行一台设备，「ID 名称」或纯 ID 都行
+/// （名称可用空格 / 逗号 / 冒号与 ID 分隔，与批量添加收藏的写法一致）。
+/// 可选填一个统一分组，导入的所有设备都会带上。已在地址簿里的：
+/// 本次填了名称则更新名称（分组/备注只在原值为空时补），否则跳过。
+/// 导入结果用 toast 汇总。
+Future<void> showBatchAddressDialog(BuildContext context) async {
+  final ctrl = TextEditingController();
+  final tagCtrl = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      title: const Text('批量添加地址簿',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      content: SizedBox(
+        width: 430,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: ctrl,
+              maxLines: 8,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText:
+                    '每行一台设备，名称可选，例如：\n123456789 前台电脑\n987654321 会议室\n555666777',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const SizedBox(
+                  width: 60,
+                  child: Text('统一分组',
+                      style: TextStyle(fontSize: 13, color: _AC.text)),
+                ),
+                Expanded(
+                  child: SizedBox(
+                    height: 34,
+                    child: TextField(
+                      controller: tagCtrl,
+                      style: const TextStyle(fontSize: 13, color: _AC.text),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: '选填，导入的设备都归入该分组',
+                        hintStyle: const TextStyle(
+                            fontSize: 12.5, color: Color(0xFFB0B0B0)),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 8),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: const BorderSide(color: _AC.line),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: const BorderSide(color: _AC.line),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+                'ID 必填；名称可选（跟在 ID 后面）。已在地址簿的设备：本次填了名称则更新，否则跳过。',
+                style: TextStyle(fontSize: 12, color: _AC.sub)),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消')),
+        FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _AC.blue),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('导入')),
+      ],
+    ),
+  );
+  // 先把两个输入框的文本取出来再 dispose（dispose 后不应再访问）
+  final text = ok == true ? ctrl.text : '';
+  final tag = ok == true ? tagCtrl.text.trim() : '';
+  ctrl.dispose();
+  tagCtrl.dispose();
+  if (ok != true) return;
+
+  final store = AddressBookStore.instance;
+  final list = <AbEntry>[];
+  final seen = <String>{};
+  for (var raw in text.split(RegExp(r'[\n;；]'))) {
+    var line = raw.trim();
+    if (line.isEmpty) continue;
+    String alias = '';
+    final m = RegExp(r'^([0-9A-Za-z]+)\s*[:：,，\s]\s*(.*)$').firstMatch(line);
+    if (m != null) {
+      line = m.group(1)!;
+      alias = m.group(2)!.trim();
+    }
+    final id = line.replaceAll(' ', '');
+    if (id.isEmpty) continue;
+    if (!seen.add(id)) continue; // 输入内部去重
+    list.add(AbEntry(id: id, alias: alias, tag: tag));
+  }
+  if (list.isEmpty) {
+    showToast('没有识别到有效的设备 ID');
+    return;
+  }
+  final r = await store.batchUpsert(list);
+  if (!context.mounted) return;
+  final parts = <String>[];
+  if (r[0] > 0) parts.add('新增 ${r[0]} 台');
+  if (r[1] > 0) parts.add('更新 ${r[1]} 台');
+  final skipped = list.length - r[0] - r[1];
+  if (skipped > 0) parts.add('跳过 $skipped 台（已在地址簿）');
+  showToast(parts.isEmpty ? '没有变化' : parts.join('，'));
 }
 
 Future<void> _edit(BuildContext context, AbEntry e) async {
