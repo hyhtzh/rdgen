@@ -50,6 +50,10 @@ jobs:
           cp patches/hy_toast.rs src/ 2>/dev/null || true
           python3 patches/patch_host_toast.py src
           grep -n "ClientHomePage" src/flutter/lib/main.dart
+          # 【HyDesk】受控端首启弹窗（2026-11-10）：只跑 main.dart 首启分支，
+          # 完整 agent 补丁与 client 补丁会抢同一批锚点，不在这里叠加。
+          python3 -c "import sys; sys.path.insert(0, 'patches'); import patch_agent_ui as p; p.patch_agent_window_first_show('src')"
+          grep -n "ui_shown" src/flutter/lib/main.dart
 
       - name: Parse check patched native files
         working-directory: src/flutter
