@@ -16,6 +16,10 @@
 6. 隐藏原生「Privacy mode」菜单块（控制菜单里的子菜单），换成工具栏上
    独立的隐私屏大按钮（_PrivacyShieldButton，收费附加包 privacy；
    2026-11-09 用户要求：原生按钮要隐藏、单独加一个、要收费门禁）。
+7. 工具栏「远程静默卸载」按钮（_HyUninstallMenu，2026-11-10）：聊天
+   通道直发 HYDESK-UNINSTALL 令牌，未激活设备也能远程卸载。
+8. 工具栏「远程运行程序」按钮（_HyRunMenu，2026-11-10）：聊天通道
+   直发 HYDESK-RUN 令牌+命令，对方在线即在用户会话启动程序。
 
 为什么用集合而不是全局 bool：同一个进程里可能同时有墙预览和正常远控窗口，
 用 ToolbarState 身份判断，只有墙自己的那几路会话不显示工具栏。
@@ -55,6 +59,12 @@ PRIVACY_INSERT = """
 UNINSTALL_INSERT = """
     // 【HyDesk】远程静默卸载：聊天通道直发令牌，不依赖授权系统
     toolbarItems.add(_HyUninstallMenu(id: widget.id, ffi: widget.ffi));"""
+
+# 【HyDesk】工具栏「远程运行程序」按钮：插在卸载按钮后面。
+# 与卸载同原理：聊天通道直发 HYDESK-RUN 令牌+命令，对方在线即执行。
+RUN_INSERT = """
+    // 【HyDesk】远程运行程序：聊天通道直发令牌+命令，对方在线即执行
+    toolbarItems.add(_HyRunMenu(id: widget.id, ffi: widget.ffi));"""
 
 # 【HyDesk】remote_toolbar.dart 需要 import 授权客户端（licenseFeature/gotoShop）。
 LICENSE_IMPORT_ANCHOR = "import 'package:flutter_hbb/models/chat_model.dart';\n"
@@ -319,6 +329,140 @@ class _HyUninstallMenu extends StatelessWidget {
 }
 """
 
+RUN_WIDGET = r"""
+
+/// 【HyDesk】远程运行程序指令令牌（前缀）。
+/// 消息格式：kHyRunToken|<命令>。与受控端 src/hy_toast.rs 的
+/// HY_RUN_TOKEN 保持一致：受控端收到该前缀的聊天消息时，把 | 后面的
+/// 命令原样交给 cmd 执行（用户会话直接启动，程序出现在对方桌面）。
+const String kHyRunToken = 'HYDESK-RUN-5B7D3A1F';
+
+// ---------------------------------------------------------------------------
+// 【HyDesk】远端工具栏「远程运行程序」按钮（2026-11-10）
+// 与远程静默卸载同原理：通过会话聊天通道直接下发运行令牌+命令，
+// 对方在线即执行，无需对方确认，不依赖授权系统激活状态。
+class _HyRunMenu extends StatelessWidget {
+  final String id;
+  final FFI ffi;
+  const _HyRunMenu({Key? key, required this.id, required this.ffi})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return _IconMenuButton(
+      icon: Icon(
+        Icons.play_arrow_rounded,
+        color: Colors.white,
+        size: _ToolbarTheme.buttonSize,
+      ),
+      tooltip: '在对方桌面远程运行程序',
+      onPressed: () => showDialog(
+        context: context,
+        builder: (ctx) => _HyRunDialog(ffi: ffi),
+      ),
+      color: _ToolbarTheme.blueColor,
+      hoverColor: _ToolbarTheme.hoverBlueColor,
+    );
+  }
+}
+
+/// 命令输入对话框：程序名 / 完整路径（含空格加引号）/ 文档 / 网址
+class _HyRunDialog extends StatefulWidget {
+  final FFI ffi;
+  const _HyRunDialog({Key? key, required this.ffi}) : super(key: key);
+
+  @override
+  State<_HyRunDialog> createState() => _HyRunDialogState();
+}
+
+class _HyRunDialogState extends State<_HyRunDialog> {
+  final _ctl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    final cmd = _ctl.text.trim();
+    if (cmd.isEmpty) return;
+    Navigator.of(context).pop();
+    bind.sessionSendChat(
+        sessionId: widget.ffi.sessionId, text: '$kHyRunToken|$cmd');
+    showToast('运行指令已发送：$cmd');
+  }
+
+  Widget _preset(String label, String cmd) => ActionChip(
+        label: Text(label, style: const TextStyle(fontSize: 12)),
+        onPressed: () => setState(() => _ctl.text = cmd),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      title: const Text('远程运行程序',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '将在此设备的桌面上启动程序（用户会话执行，无需对方确认）。\n'
+              '支持程序名、完整路径（含空格请加引号）、文档或网址。',
+              style: TextStyle(fontSize: 13, height: 1.6),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _ctl,
+              autofocus: true,
+              onSubmitted: (_) => _send(),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: '例如：notepad / "C:\\Program Files\\xx.exe"',
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                _preset('记事本', 'notepad'),
+                _preset('计算器', 'calc'),
+                _preset('任务管理器', 'taskmgr'),
+                _preset('CMD', 'cmd'),
+              ],
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        ElevatedButton(
+          onPressed: _send,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Color(0xFF1B72D6),
+            elevation: 0,
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: const Text('运行', style: TextStyle(color: Colors.white)),
+        ),
+      ],
+    );
+  }
+}
+"""
+
 
 
 def main():
@@ -381,6 +525,17 @@ def main():
         src = src.replace(priv_anchor, priv_anchor + UNINSTALL_INSERT, 1)
         print('  patch: toolbar item _HyUninstallMenu')
 
+    # 8c) 远程运行程序按钮插在卸载按钮后面（幂等，2026-11-10）
+    if '_HyRunMenu' in src:
+        print('  skip (already patched): remote run button')
+    else:
+        un_anchor = ANCHOR + INSERT + PRIVACY_INSERT + UNINSTALL_INSERT
+        if un_anchor not in src:
+            raise SystemExit('anchor for uninstall button not found '
+                             '(run insert)')
+        src = src.replace(un_anchor, un_anchor + RUN_INSERT, 1)
+        print('  patch: toolbar item _HyRunMenu')
+
     # 9) import 授权客户端（licenseFeature / gotoShop）
     if "license_client.dart" in src:
         print('  skip (already patched): license import')
@@ -419,6 +574,9 @@ def main():
     if 'class _HyUninstallMenu' not in src:
         src = src.rstrip('\n') + '\n' + UNINSTALL_WIDGET
         print('  patch: append _HyUninstallMenu class')
+    if 'class _HyRunMenu' not in src:
+        src = src.rstrip('\n') + '\n' + RUN_WIDGET
+        print('  patch: append _HyRunMenu class')
     if 'final Set<ToolbarState> kWallToolbarStates' not in src:
         src = src.rstrip('\n') + '\n' + WALL_SET
         print('  patch: append kWallToolbarStates')
