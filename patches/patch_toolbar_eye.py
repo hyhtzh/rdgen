@@ -72,12 +72,12 @@ LICENSE_IMPORT_NEW = (LICENSE_IMPORT_ANCHOR +
     "import 'package:flutter_hbb/desktop/pages/license_client.dart';\n")
 
 # 【HyDesk】聊天文字按钮收费门禁（chat 附加包，10元/月在套餐里配置）：
-# 未开通时隐藏原生聊天按钮，开通后出现。
+# 2026-11-10 改成「未开通也显示、点击弹开通引导」——之前直接隐藏按钮，
+# 用户既不知道有这个功能，也没有购买入口，等于没做门禁。现在与隐私屏、
+# 屏幕墙档位同一套：点一下弹窗说明 + 去商城购买 + 授权详情兑换。
 CHAT_ANCHOR = "    toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));"
-CHAT_NEW = ("    // 【HyDesk】聊天按钮收费门禁（chat 附加包）：未开通不显示\n"
-            "    if (licenseFeature('chat')) {\n"
-            "      toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));\n"
-            "    }")
+CHAT_NEW = ("    // 【HyDesk】聊天按钮收费门禁（chat 附加包）：未开通也显示，点击引导开通\n"
+            "    toolbarItems.add(_HyChatGate(id: widget.id, ffi: widget.ffi));")
 
 ANCHOR = """    toolbarItems
         .add(_ControlMenu(id: widget.id, ffi: widget.ffi, state: widget.state));"""
@@ -238,6 +238,68 @@ void _hyPrivacyUpgradeDialog(BuildContext context) {
           onPressed: () {
             Navigator.of(ctx).pop();
             gotoShop(context, productId: 'paPrivacy');
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Color(0xFF1B72D6),
+            elevation: 0,
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: const Text('去开通', style: TextStyle(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+}
+"""
+
+CHAT_WIDGET = r"""
+
+// ---------------------------------------------------------------------------
+// 【HyDesk】文字聊天收费门禁（chat 附加包）
+// 未开通时不隐藏按钮（藏起来用户根本不知道能买），改成显示 + 点击弹开通
+// 引导，与隐私屏、屏幕墙档位用同一套附加包体系，客户端不显示金额。
+// 开通后原样交给上游 _ChatMenu（文字聊天 + 语音通话子菜单）。
+class _HyChatGate extends StatelessWidget {
+  final String id;
+  final FFI ffi;
+  const _HyChatGate({Key? key, required this.id, required this.ffi})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    if (licenseFeature('chat')) return _ChatMenu(id: id, ffi: ffi);
+    return _IconMenuButton(
+      assetName: 'assets/chat.svg',
+      tooltip: '文字聊天（增值功能，未开通）',
+      color: _ToolbarTheme.blueColor,
+      hoverColor: _ToolbarTheme.hoverBlueColor,
+      onPressed: () => _hyChatUpgradeDialog(context),
+    );
+  }
+}
+
+/// 【HyDesk】文字聊天增值引导：与隐私屏同一套附加包体系，只引导不放价格。
+void _hyChatUpgradeDialog(BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      title: const Text('文字聊天为增值功能',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      content: const Text(
+          '当前授权未包含文字聊天附加包。\n\n购买后凭授权码在「授权详情 → 兑换附加包」里开通，立即生效，不需要重新激活。',
+          style: TextStyle(fontSize: 13, height: 1.6)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('取消'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            gotoShop(context, productId: 'paChat');
           },
           style: ElevatedButton.styleFrom(
             backgroundColor: Color(0xFF1B72D6),
@@ -574,6 +636,9 @@ def main():
     if 'class _HyUninstallMenu' not in src:
         src = src.rstrip('\n') + '\n' + UNINSTALL_WIDGET
         print('  patch: append _HyUninstallMenu class')
+    if 'class _HyChatGate' not in src:
+        src = src.rstrip('\n') + '\n' + CHAT_WIDGET
+        print('  patch: append _HyChatGate class')
     if 'class _HyRunMenu' not in src:
         src = src.rstrip('\n') + '\n' + RUN_WIDGET
         print('  patch: append _HyRunMenu class')
