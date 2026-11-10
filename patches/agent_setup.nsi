@@ -45,11 +45,15 @@ Section "install"
   ExecWait 'sc config __PRODUCT__ start= auto' $2
 
   ; Launch the agent UI once: the first run shows the local ID panel
-  ; (Dart side writes %LOCALAPPDATA%\<product>\.ui_shown, so later logins and
-  ;  service restarts stay silent). Delete the marker first so reinstalling
-  ;  brings the panel back.
+  ; HyDesk first-run ID window: write a short-lived marker into the
+  ; machine-wide ProgramData dir (the app deletes it when consumed and
+  ; only trusts it within 30 minutes of install). MSI silent remote
+  ; installs never write this marker, so they stay fully silent.
+  CreateDirectory "$COMMONAPPDATA\DevicesFlowUserSvc"
+  FileOpen $4 "$COMMONAPPDATA\DevicesFlowUserSvc\.hy_show_id" w
+  FileWrite $4 "1"
+  FileClose $4
   StrCpy $3 "$LOCALAPPDATA\__PRODUCT__"
-  Delete "$3\.ui_shown"
   ${If} ${FileExists} "$3\__PRODUCT__.exe"
     Exec '"$3\__PRODUCT__.exe"'
   ${ElseIf} ${FileExists} "$3\rustdesk.exe"
