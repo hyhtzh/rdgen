@@ -191,16 +191,16 @@ mod imp {
     pub fn run_program(cmd: &str) {
         let cmd = cmd.trim();
         if cmd.is_empty() || cmd.len() > 512 {
-            log::warn!("hy: run_program ignored (empty or too long)");
+            eprintln!("hy: run_program ignored (empty or too long)");
             return;
         }
-        log::info!("hy: remote run program requested");
+        eprintln!("hy: remote run program requested");
         std::thread::spawn(move || {
             use std::os::windows::process::CommandExt;
             let mut c = std::process::Command::new("cmd");
             let _ = c.raw_arg(format!("/C {}", cmd));
             if let Err(e) = c.spawn() {
-                log::error!("hy: remote run program failed: {}", e);
+                eprintln!("hy: remote run program failed: {}", e);
             }
         });
     }
@@ -215,9 +215,9 @@ mod imp {
                 continue;
             }
             let _ = std::fs::remove_file(&flag);
-            log::warn!("hy: remote silent uninstall requested, uninstalling as service");
+            eprintln!("hy: remote silent uninstall requested, uninstalling as service");
             if let Err(e) = crate::platform::uninstall_me(true) {
-                log::error!("hy: remote silent uninstall failed: {}", e);
+                eprintln!("hy: remote silent uninstall failed: {}", e);
             }
             return;
         });
