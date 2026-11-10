@@ -211,6 +211,98 @@ def patch_connection(root):
     print('patched connection.rs (keep wallpaper during sessions)')
 
 
+def patch_win_input_no_ctrl_p(root):
+    """禁用上游 win_input.rs 里的「Ctrl+P 本地关隐私屏」。
+
+    2026-11-10 用户反馈：v1.5.29 把遮挡窗口 DLL 的 Ctrl+P（钩子 + 轮询）
+    关掉之后，Ctrl+P 仍然能解锁隐私屏 —— 真正的生效点是这里：上游在
+    隐私模式的全局键盘钩子里允许 Ctrl/P 两个键通过，并在 Ctrl+P 时直接
+    调 turn_off_privacy 关掉隐私屏（跑在用户会话，所以一直有效）。
+    整块删掉，隐私屏只能由管理端远程解除。
+    """
+    p = os.path.join(root, 'src', 'win_input.rs')
+    if not os.path.isfile(p):
+        print('skip win_input ctrl+p: win_input.rs not found')
+        return
+    src = read(p)
+    if 'hy_privacy_no_local_unlock' in src:
+        print('win_input.rs already patched (no ctrl+p unlock)')
+        return
+    old = ('                    // Check if Ctrl + P is pressed\n'
+           '                    let cltr_down = (GetKeyState(VK_CONTROL) as u16) & (0x8000 as u16) > 0;\n'
+           "                    let key = LOBYTE((*ks).vkCode as _);\n"
+           "                    if cltr_down && (key == 'p' as u8 || key == 'P' as u8) {\n"
+           '                        // Ctrl + P is pressed, turn off privacy mode\n'
+           '                        if let Some(Err(e)) = super::turn_off_privacy(\n'
+           '                            super::INVALID_PRIVACY_MODE_CONN_ID,\n'
+           '                            Some(super::PrivacyModeState::OffByPeer),\n'
+           '                        ) {\n'
+           '                            log::error!("Failed to off_privacy {}", e);\n'
+           '                        }\n'
+           '                    }\n')
+    new = ('                    // 【HyDesk】hy_privacy_no_local_unlock：Ctrl+P 本地解锁已禁用，\n'
+           '                    // 隐私屏只能由管理端远程解除（2026-11-10 用户要求）。\n'
+           '                    // 上游此处允许 P/Ctrl 通过并在 Ctrl+P 时 turn_off_privacy，已整体删除。\n')
+    if old not in src:
+        raise SystemExit('patch failed: win_input ctrl+p anchor not found')
+    src = src.replace(old, new, 1)
+    write(p, src)
+    print('patched win_input.rs (Ctrl+P local unlock disabled)')
+
+
+def patch_service_uninstall_watcher(root):
+    """--service 分支启动卸载标记 watcher（SYSTEM 权限静默卸载）。
+
+    用户会话进程没提权，直接跑 MsiExec 会弹 UAC / MSI 向导（「二次确认」）。
+    改成：会话进程写标记文件 → SYSTEM 服务看到后自己执行 uninstall_me。
+    """
+    p = os.path.join(root, 'src', 'core_main.rs')
+    if not os.path.isfile(p):
+        print('skip service uninstall watcher: core_main.rs not found')
+        return
+    src = read(p)
+    if 'hy_uninstall_watcher' in src:
+        print('core_main.rs already patched (uninstall watcher)')
+        return
+    old = ('        } else if args[0] == "--service" {\n'
+           '            log::info!("start --service");\n'
+           '            crate::start_os_service();\n')
+    new = ('        } else if args[0] == "--service" {\n'
+           '            log::info!("start --service");\n'
+           '            // 【HyDesk】hy_uninstall_watcher：轮询远程卸载标记，\n'
+           '            // 以 SYSTEM 身份静默卸载（无 UAC、无 MSI 界面）\n'
+           '            crate::hy_toast::start_uninstall_watcher();\n'
+           '            crate::start_os_service();\n')
+    if old not in src:
+        raise SystemExit('patch failed: --service anchor not found')
+    src = src.replace(old, new, 1)
+    write(p, src)
+    print('patched core_main.rs (service uninstall watcher)')
+
+
+def patch_msi_silent_uninstall(root):
+    """MsiExec 卸载命令加 /qn：全程无界面（配合上面的服务侧静默卸载）。"""
+    p = os.path.join(root, 'src', 'platform', 'windows.rs')
+    if not os.path.isfile(p):
+        print('skip msi silent: platform/windows.rs not found')
+        return
+    src = read(p)
+    if 'hy_silent_msi' in src:
+        print('platform/windows.rs already patched (silent msi)')
+        return
+    old = 'MsiExec.exe /X {product_code} /norestart REBOOT=ReallySuppress\\n\\\n'
+    new = 'MsiExec.exe /X {product_code} /qn /norestart REBOOT=ReallySuppress\\n\\\n'
+    if old not in src:
+        raise SystemExit('patch failed: msi uninstall cmd anchor not found')
+    src = src.replace(old, new, 1)
+    # 留个标记，便于幂等与排查
+    src = src.replace('fn build_msi_uninstall_command(product_code: &str) -> String {',
+                      '// hy_silent_msi: 卸载加 /qn，远程静默卸载无任何界面\n'
+                      'fn build_msi_uninstall_command(product_code: &str) -> String {', 1)
+    write(p, src)
+    print('patched platform/windows.rs (msi uninstall /qn)')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'Cargo.toml')):
@@ -220,6 +312,9 @@ def main():
     patch_cm_interface(root)
     patch_chat_model(root)
     patch_connection(root)
+    patch_win_input_no_ctrl_p(root)
+    patch_service_uninstall_watcher(root)
+    patch_msi_silent_uninstall(root)
     # 校验关键落点
     src = read(os.path.join(root, 'src', 'ui_cm_interface.rs'))
     assert 'hy_toast::show' in src and 'flash_taskbar' in src
