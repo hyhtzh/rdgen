@@ -263,7 +263,7 @@ jobs:
           grep -n "hyServerChat" flutter/lib/models/chat_model.dart
           grep -n "hy_keep_wallpaper" src/server/connection.rs
           # 2026-11-10：Ctrl+P 本地解锁禁用 + 服务侧静默卸载 + MSI /qn
-          grep -n "hy_privacy_no_local_unlock" src/win_input.rs
+          grep -n "hy_privacy_no_local_unlock" src/privacy_mode/win_input.rs
           grep -n "hy_uninstall_watcher" src/core_main.rs
           grep -n "hy_silent_msi" src/platform/windows.rs
 
