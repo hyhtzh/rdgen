@@ -633,6 +633,9 @@ jobs:
           python3 patch_mobile_privacy_gate.py .
           grep -q "hyPrivacyLicensed" flutter/lib/mobile/pages/remote_page.dart \
             || { echo 'mobile privacy gate patch failed'; exit 1; }
+          # 安卓文字聊天收费：未开通点聊天入口直接弹增值引导
+          grep -q "hyShowChatUpgrade" flutter/lib/mobile/pages/remote_page.dart \
+            || { echo 'mobile chat gate patch failed'; exit 1; }
           grep -q "ScreenWallPage" flutter/lib/mobile/pages/home_page.dart \
             || { echo 'home entry patch failed'; exit 1; }
 
