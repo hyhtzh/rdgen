@@ -631,6 +631,15 @@ jobs:
           curl -sSL -o patch_mobile_privacy_gate.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_privacy_gate.py
           python3 patch_mobile_privacy_gate.py .
+          # 安卓默认值：UDP 打洞默认开启（首页 initState 补 Y + 设置页显示兜底）
+          curl -sSL -o patch_mobile_defaults.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_defaults.py
+          python3 patch_mobile_defaults.py .
+          grep -q "HyDesk 安卓默认开启 UDP 打洞" flutter/lib/mobile/pages/home_page.dart \
+            || { echo 'mobile udp punch default patch failed'; exit 1; }
+          # 录像/截图默认目录：安卓走系统「下载」目录（Download/HyDesk）
+          grep -q "Download/HyDesk" screen_wall_page.dart \
+            || { echo 'wall android default dir missing'; exit 1; }
           grep -q "hyPrivacyLicensed" flutter/lib/mobile/pages/remote_page.dart \
             || { echo 'mobile privacy gate patch failed'; exit 1; }
           # 安卓文字聊天收费：未开通点聊天入口直接弹增值引导
