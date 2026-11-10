@@ -53,11 +53,14 @@ jobs:
           # 【HyDesk】受控端首启弹窗（2026-11-10）：只跑 main.dart 首启分支，
           # 完整 agent 补丁与 client 补丁会抢同一批锚点，不在这里叠加。
           python3 -c "import sys; sys.path.insert(0, 'patches'); import patch_agent_ui as p; p.patch_agent_window_first_show('src')"
-          grep -n "ui_shown" src/flutter/lib/main.dart
+          grep -n "hy_show_id" src/flutter/lib/main.dart
           # 【HyDesk】安卓收费门禁（隐私屏 + 文字聊天）：语法先行校验，
           # 省掉一次 20 分钟的安卓构建试错。
           python3 patches/patch_mobile_privacy_gate.py src
           grep -n "hyShowChatUpgrade" src/flutter/lib/mobile/pages/remote_page.dart
+          # 【HyDesk】安卓默认值（UDP 打洞默认开）：同样先做语法校验
+          python3 patches/patch_mobile_defaults.py src
+          grep -n "HyDesk 安卓默认开启 UDP 打洞" src/flutter/lib/mobile/pages/home_page.dart
 
       - name: Parse check patched native files
         working-directory: src/flutter
@@ -65,7 +68,7 @@ jobs:
           # model.dart / remote_page.dart 依赖构建期生成的 generated_bridge.dart，
           # 单独 analyze 会报一堆 uri_does_not_exist，所以只做语法解析检查。
           set +e
-          dart format -o none lib/models/model.dart lib/models/chat_model.dart lib/desktop/pages/remote_page.dart lib/mobile/pages/remote_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/widgets/remote_toolbar.dart
+          dart format -o none lib/models/model.dart lib/models/chat_model.dart lib/desktop/pages/remote_page.dart lib/mobile/pages/remote_page.dart lib/desktop/pages/screen_wall_page.dart lib/desktop/widgets/remote_toolbar.dart lib/mobile/pages/home_page.dart lib/mobile/pages/settings_page.dart
           echo "parse done"
 
       - name: Pub get
