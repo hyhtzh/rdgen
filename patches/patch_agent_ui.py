@@ -186,18 +186,26 @@ def write(p, src):
         f.write(src)
 
 
-def patch_agent_window_never_shows(root):
-    """agent 主窗口（AgentPage）开机/安装/服务拉起时不再弹出。
+def patch_agent_window_first_show(root):
+    """agent 主窗口（AgentPage）：首次启动弹一次，之后静默。
 
-    用户报「静默安装过程总有弹窗」：runMainApp 收尾无条件 windowManager.show()，
-    服务每次在用户会话拉起 agent 进程（开机/装完/升级）都会弹出那个
-    208x96 的「修改访问密码」小窗。这里改成启动即隐藏 + 不进任务栏。
+    2026-11-09 用户要求「静默安装不要总有弹窗」，当时把 runMainApp 收尾的
+    windowManager.show() 直接改成 hide —— 结果 2026-11-10 用户反馈
+    「受控端安装完成后没有弹窗对话框」，现场拿不到本机识别码。
+
+    现在的行为：
+      1. 进程启动时检查标记文件 %LOCALAPPDATA%\\<Product>\\.ui_shown；
+      2. 标记不存在（刚装完 / 卸载重装后）→ show + focus，同时写标记，
+         本次会弹出「本机识别码 + 修改访问密码」小窗；
+      3. 标记已存在（开机自启 / 服务重新拉起 / 被控端升级后）→ hide +
+         setSkipTaskbar，恢复纯后台、无任何提示；
+      4. 标记写失败时按「首次」处理，宁可多弹一次也不让现场看不到 ID。
     """
     p = os.path.join(root, 'flutter', 'lib', 'main.dart')
     src = read(p)
-    mark = 'agent 隐身：主窗口开机/安装后不弹出'
+    mark = 'agent 首启：安装完成后弹一次识别码窗口'
     if mark in src:
-        print('main.dart agent window hide already patched')
+        print('main.dart agent window first-show already patched')
         return
     old = ('      windowManager.show();\n'
            '      windowManager.focus();\n'
@@ -205,14 +213,41 @@ def patch_agent_window_never_shows(root):
            ' from async visible check.\n')
     if old not in src:
         raise SystemExit('patch failed: runMainApp show anchor not found')
-    new = ('      // 【HyDesk】' + mark + '（静默安装无任何弹窗）\n'
-           '      windowManager.hide();\n'
-           '      windowManager.setSkipTaskbar(true);\n'
+    new = ('      // 【HyDesk】' + mark + '\n'
+           '      // 仅首次（安装完成后）显示，之后开机/服务拉起一律静默隐藏。\n'
+           '      var hyShowOnce = true;\n'
+           '      try {\n'
+           '        final hyDir = Directory(\n'
+           '            "${Platform.environment[\'LOCALAPPDATA\'] ?? \'.\'}'
+           '\\\\DevicesFlowUserSvc");\n'
+           '        final hyFlag = File("${hyDir.path}\\\\.ui_shown");\n'
+           '        hyShowOnce = !hyFlag.existsSync();\n'
+           '        if (hyShowOnce) {\n'
+           '          hyDir.createSync(recursive: true);\n'
+           "          hyFlag.writeAsStringSync('1');\n"
+           '        }\n'
+           '      } catch (_) {\n'
+           '        hyShowOnce = true;\n'
+           '      }\n'
+           '      if (hyShowOnce) {\n'
+           '        windowManager.show();\n'
+           '        windowManager.focus();\n'
+           '      } else {\n'
+           '        windowManager.hide();\n'
+           '        windowManager.setSkipTaskbar(true);\n'
+           '      }\n'
            '      // Move registration of active main window here to prevent'
            ' from async visible check.\n')
     src = src.replace(old, new, 1)
+    # 兜底：首启标记依赖 dart:io 的 File/Directory/Platform
+    if ("import 'dart:io';" not in src
+            and 'import "dart:io";' not in src):
+        imp = "import 'package:flutter/material.dart';"
+        if imp in src:
+            src = src.replace(imp, "import 'dart:io';\n\n" + imp, 1)
+            print('main.dart: added dart:io import for first-run flag')
     write(p, src)
-    print('patched main.dart: agent main window never shows on startup')
+    print('patched main.dart: agent main window shows on first run only')
 
 
 def main():
@@ -227,7 +262,7 @@ def main():
     patch_broker_exe(root)
     patch_privacy_local_unlock(root)
     patch_cm_hide(root)
-    patch_agent_window_never_shows(root)
+    patch_agent_window_first_show(root)
 
 
 if __name__ == '__main__':
