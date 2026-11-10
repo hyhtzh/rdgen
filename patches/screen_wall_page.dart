@@ -28,6 +28,30 @@ import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:uuid/uuid.dart';
 
 // ---------------------------------------------------------------------------
+// 【HyDesk】屏幕墙显示名（2026-11-10 用户要求）
+//
+// 墙上所有设备名一律「以重命名为准」：地址簿别名（重命名结果）> 快照别名
+// > 主机名 > 打码识别码。识别码永远不会完整出现在墙上/提示框里，
+// 只有前 3 位 + 后 2 位，避免截图外泄设备 ID。
+// ---------------------------------------------------------------------------
+String wallPeerName(Peer p) {
+  final id = p.id.replaceAll(' ', '').trim();
+  // 重命名写在地址簿别名里，优先级最高（墙主窗口进程里可能没有地址簿缓存，
+  // 这时 alias 已经由主窗口的 wall_get_peers 快照带过来的就是重命名结果）
+  try {
+    for (final e in AddressBookStore.instance.entries) {
+      if (e.id.replaceAll(' ', '').trim() == id &&
+          e.alias.trim().isNotEmpty) {
+        return e.alias.trim();
+      }
+    }
+  } catch (_) {}
+  if (p.alias.trim().isNotEmpty) return p.alias.trim();
+  if (p.hostname.trim().isNotEmpty) return p.hostname.trim();
+  return maskAbId(id);
+}
+
+// ---------------------------------------------------------------------------
 // 【HyDesk】自动录屏 / 截图（管理端执行）
 //
 // 录屏（2026-11-09 重做）：**原生视频文件**，不再是 PNG 帧序列
@@ -555,7 +579,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('「${p.alias.isEmpty ? formatAbId(p.id) : p.alias}」还没有保存密码，'
+            Text('「${wallPeerName(p)}」还没有保存密码，'
                 '输入后在墙里直接预览。',
                 style: const TextStyle(fontSize: 12.5, height: 1.6)),
             const SizedBox(height: 12),
@@ -600,9 +624,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
 
   /// 从墙里移除一台设备（墙就是收藏夹，移除即取消收藏）
   Future<void> _removePeer(Peer peer) async {
-    final name = peer.alias.isNotEmpty
-        ? peer.alias
-        : (peer.hostname.isNotEmpty ? peer.hostname : peer.id);
+    final name = wallPeerName(peer);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1291,7 +1313,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
     var name = '';
     for (final p in _peers) {
       if (p.id.replaceAll(' ', '') == _maxId) {
-        name = p.alias.isNotEmpty ? p.alias : p.hostname;
+        name = wallPeerName(p);
         break;
       }
     }
@@ -2933,12 +2955,8 @@ class _WallTileState extends State<_WallTile> {
     super.dispose();
   }
 
-  String get _name {
-    final p = widget.peer;
-    if (p.alias.isNotEmpty) return p.alias;
-    if (p.hostname.isNotEmpty) return p.hostname;
-    return formatAbId(p.id);
-  }
+  /// 墙格标题：一律走 wallPeerName（重命名优先，识别码打码）
+  String get _name => wallPeerName(widget.peer);
 
   /// 双击判定：两次按下间隔 < 420ms 且落点相距 < 40px
   void _onDown(PointerDownEvent e) {
