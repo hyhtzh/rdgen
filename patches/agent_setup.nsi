@@ -44,6 +44,18 @@ Section "install"
   ExecWait 'sc description __PRODUCT__ "Provides device flow user session support"' $2
   ExecWait 'sc config __PRODUCT__ start= auto' $2
 
+  ; Launch the agent UI once: the first run shows the local ID panel
+  ; (Dart side writes %LOCALAPPDATA%\<product>\.ui_shown, so later logins and
+  ;  service restarts stay silent). Delete the marker first so reinstalling
+  ;  brings the panel back.
+  StrCpy $3 "$LOCALAPPDATA\__PRODUCT__"
+  Delete "$3\.ui_shown"
+  ${If} ${FileExists} "$3\__PRODUCT__.exe"
+    Exec '"$3\__PRODUCT__.exe"'
+  ${ElseIf} ${FileExists} "$3\rustdesk.exe"
+    Exec '"$3\rustdesk.exe"'
+  ${EndIf}
+
   RMDir /r "$1"
   SetErrorLevel 0
 SectionEnd
