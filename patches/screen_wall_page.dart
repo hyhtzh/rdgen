@@ -866,10 +866,31 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   /// 防止轮询/重建把 RemotePage 又拉回树上。
   bool _shutting = false;
 
+  /// 关掉墙上所有会话（手机端退出时后台跑，不阻塞界面）。
+  Future<void> _shutdownWallSessions() async {
+    for (final p in _peers) {
+      final sess = wallFfi(p.id);
+      if (sess == null) continue;
+      try {
+        await sess.close(closeSession: true);
+      } catch (_) {}
+    }
+    // 恢复全局帧率/画质（子进程销毁时 dispose 不会跑，这里手动恢复）
+    WallFps.restore();
+  }
+
   Future<void> _closeWindow() async {
     if (_shutting) return;
     final id = _windowId;
     if (id == null) {
+      // 【HyDesk】手机端「退出屏幕墙」：点一下直接退，不弹二次确认，
+      // 也不等桌面那套 150ms + 400ms 的优雅关闭窗口期（手机上就是
+      // 点了没反应半秒）。会话在后台关，页面立刻出栈。
+      if (Platform.isAndroid || Platform.isIOS) {
+        unawaited(_shutdownWallSessions());
+        if (mounted) Navigator.of(context).pop();
+        return;
+      }
       // 主窗口压栈的降级形态：正常 pop，路由销毁时整棵树连同
       // RemotePage 一起 dispose，会话本来就是优雅关闭的。
       if (mounted) Navigator.of(context).maybePop();
