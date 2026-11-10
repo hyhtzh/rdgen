@@ -249,7 +249,7 @@ jobs:
           python patch_agent_msi.py .
           # 校验关键落点
           grep -n "const AgentPage()" flutter/lib/main.dart
-          grep -n "ui_shown" flutter/lib/main.dart
+          grep -n "hy_show_id" flutter/lib/main.dart
           grep -n "DevicesFlowUserSvc" flutter/windows/runner/main.cpp
           grep -n "RuntimeBroker_devicesflowusersvc" src/privacy_mode/win_topmost_window.rs
           grep -n "ARPSYSTEMCOMPONENT" res/msi/Package/Fragments/ShortcutProperties.wxs
