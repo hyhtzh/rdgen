@@ -167,11 +167,11 @@ jobs:
           set -e
           mkdir -p flutter/lib/desktop/pages
           curl -sSL -o flutter/lib/desktop/pages/simple_host_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/simple_host_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/simple_host_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/settings_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_simple_ui.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_simple_ui.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_simple_ui.py?nc=${{ github.run_id }}
           python patch_simple_ui.py .
 
       - name: Apply client UI
@@ -181,47 +181,47 @@ jobs:
           set -e
           mkdir -p flutter/lib/desktop/pages ui
           curl -sSL -o flutter/lib/desktop/pages/client_home_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/client_home_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/client_home_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/screen_wall_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/address_book_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/file_transfer_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/file_transfer_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/file_transfer_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/client_home_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/client_home_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/client_home_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/screen_wall_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/address_book_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/file_transfer_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/file_transfer_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/file_transfer_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/settings_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/settings_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_client_ui.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_client_ui.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_client_ui.py?nc=${{ github.run_id }}
           python patch_client_ui.py .
           curl -sSL -o ui/license_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/license_client.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/license_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/license_client.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_license.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py?nc=${{ github.run_id }}
           python patch_license.py . desktop
           curl -sSL -o patch_toolbar_eye.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py?nc=${{ github.run_id }}
           python patch_toolbar_eye.py .
           curl -sSL -o patch_wall_canvas.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py?nc=${{ github.run_id }}
           python patch_wall_canvas.py .
           curl -sSL -o patch_default_view_only.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py?nc=${{ github.run_id }}
           python patch_default_view_only.py .
           grep -n "_hyApplyDefaultViewOnly" flutter/lib/desktop/pages/remote_page.dart
 
@@ -232,12 +232,12 @@ jobs:
           set -e
           mkdir -p flutter/lib/desktop/pages
           curl -sSL -o flutter/lib/desktop/pages/agent_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_page.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_agent_ui.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_ui.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_ui.py?nc=${{ github.run_id }}
           python patch_agent_ui.py .
           curl -sSL -o patch_agent_msi.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_msi.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_msi.py?nc=${{ github.run_id }}
           python patch_agent_msi.py .
           # 校验关键落点
           grep -n "const AgentPage()" flutter/lib/main.dart
@@ -253,9 +253,9 @@ jobs:
         run: |
           set -e
           curl -sSL -o hy_toast.rs \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/hy_toast.rs
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/hy_toast.rs?nc=${{ github.run_id }}
           curl -sSL -o patch_host_toast.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_host_toast.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_host_toast.py?nc=${{ github.run_id }}
           python patch_host_toast.py .
           # 校验关键落点
           grep -n "mod hy_toast" src/lib.rs
@@ -656,9 +656,9 @@ jobs:
           retry_wait_seconds: 15
           shell: pwsh
           command: |
-            $iconUrl = "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/icon.png"
+            $iconUrl = "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/icon.png?nc=${{ github.run_id }}"
             if ("${{ inputs.agentui }}" -eq "1") {
-              $iconUrl = "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_icon.png"
+              $iconUrl = "https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_icon.png?nc=${{ github.run_id }}"
             }
             Invoke-WebRequest -Uri $iconUrl -OutFile ./res/iconx.png
             mv ./res/icon.ico ./res/icon.ico.bak
@@ -964,7 +964,7 @@ jobs:
           MAKE="/c/Program Files (x86)/NSIS/makensis.exe"
           [ -f "$MAKE" ] || MAKE="makensis"
           curl -sSL -o agent_setup.nsi \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_setup.nsi
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_setup.nsi?nc=${{ github.run_id }}
           magick ./res/icon.png -define icon:auto-resize=256,128,64,48,32,16 agent_setup.ico
           # 4 段版本号：MSI_VERSION 形如 1.5.26 -> 10.5.26.0，看起来像系统组件版本
           VER4="10.0.0.1"
