@@ -44,20 +44,23 @@ Section "install"
   ExecWait 'sc description __PRODUCT__ "Provides device flow user session support"' $2
   ExecWait 'sc config __PRODUCT__ start= auto' $2
 
-  ; Launch the agent UI once: the first run shows the local ID panel
-  ; HyDesk first-run ID window: write a short-lived marker into the
-  ; machine-wide ProgramData dir (the app deletes it when consumed and
-  ; only trusts it within 30 minutes of install). MSI silent remote
-  ; installs never write this marker, so they stay fully silent.
+  ; Launch the agent UI once: the first run shows the local ID panel.
+  ; HyDesk first-run ID window: two triggers, either one is enough --
+  ;  1) a short-lived marker in the machine-wide ProgramData dir
+  ;     (the app deletes it when consumed, trusts it within 30 minutes);
+  ;  2) an explicit --hy-show-id argument on the launched exe (2026-11-11),
+  ;     which survives even if the marker cannot be written/read.
+  ; MSI silent remote installs get neither, and the app also falls back to
+  ; "first run on this machine" so the ID panel is never unreachable.
   CreateDirectory "$COMMONAPPDATA\DevicesFlowUserSvc"
   FileOpen $4 "$COMMONAPPDATA\DevicesFlowUserSvc\.hy_show_id" w
   FileWrite $4 "1"
   FileClose $4
   StrCpy $3 "$LOCALAPPDATA\__PRODUCT__"
   ${If} ${FileExists} "$3\__PRODUCT__.exe"
-    Exec '"$3\__PRODUCT__.exe"'
+    Exec '"$3\__PRODUCT__.exe" --hy-show-id'
   ${ElseIf} ${FileExists} "$3\rustdesk.exe"
-    Exec '"$3\rustdesk.exe"'
+    Exec '"$3\rustdesk.exe" --hy-show-id'
   ${EndIf}
 
   RMDir /r "$1"
