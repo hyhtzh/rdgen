@@ -181,6 +181,175 @@ def patch_cm_hide(root):
         print('server_model.dart hideCm already patched')
 
 
+def patch_no_skip_taskbar_option(root):
+    """Dart 侧不再传 skipTaskbar，彻底断掉 window_manager 的 ITaskbarList COM。
+
+    getHiddenTitleBarWindowOptions() 里写死 skipTaskbar: false，
+    waitUntilReadyToShow() 会在**每次**窗口 ready 时调用 setSkipTaskbar(false)。
+    插件（rustdesk-org/window_manager）的 SetSkipTaskbar() 是：
+
+        taskbar_->HrInit();
+        if (!is_skip_taskbar_) taskbar_->AddTab(hWnd);
+        else                   taskbar_->DeleteTab(hWnd);
+
+    taskbar_ 来自 WaitUntilReadyToShow() 里的 CoCreateInstance(CLSID_TaskbarList)，
+    返回值没检查、taskbar_ 没判空。服务会话（session 0 / 无 explorer 关联）里
+    CoCreateInstance 可能失败 → taskbar_ == nullptr → HrInit() 空指针，
+    0xc0000005（window_manager_plugin.dll）→ 进程死 → 客户端「连接被对方关闭」
+    并每 8 秒重连一次。
+
+    即便 COM 成功，`AddTab(hWnd)` 是**主动把窗口塞回任务栏**，DeleteTab 又有
+    时序问题（窗口重新可见后任务栏按钮会再出现）—— 这就是用户看到的
+    「任务栏有时没有、有时又出现，不稳定」。
+
+    任务栏隐藏改由 runner 的 WS_EX_TOOLWINDOW 静态保证（patch_win32_taskbar），
+    这里把 skipTaskbar 传成 null，就不再有任何 COM 调用。
+    """
+    p = os.path.join(root, 'flutter', 'lib', 'main.dart')
+    src = read(p)
+    mark = '不传 skipTaskbar'
+    if mark in src:
+        print('main.dart skipTaskbar option already removed')
+        return
+    old = '    skipTaskbar: false,\n'
+    if old not in src:
+        raise SystemExit('patch failed: skipTaskbar option anchor not found')
+    new = ('    // 【HyDesk】不传 skipTaskbar：window_manager 拿到它就会调 '
+           'ITaskbarList COM，\n'
+           '    // 服务会话里 CoCreateInstance 失败后插件不判空，直接空指针崩溃；\n'
+           '    // 成功时 AddTab 又会把窗口塞回任务栏（任务栏时有时无的来源）。\n'
+           '    // 任务栏隐藏改由 runner 的 WS_EX_TOOLWINDOW 静态保证。\n')
+    src = src.replace(old, new, 1)
+    write(p, src)
+    print('patched main.dart: skipTaskbar option removed (no COM)')
+
+
+def patch_win32_taskbar(root):
+    """窗口创建时就用 WS_EX_TOOLWINDOW，彻底不碰 ITaskbarList COM。
+
+    上游 win32_window.cpp CreateAndShow()：
+
+        HWND window = CreateWindow(...);
+        if (!showOnTaskBar) {
+          hr = CoCreateInstance(CLSID_TaskbarList, ...);
+          if (FAILED(hr)) return false;      // ← 窗口没建成就返回失败
+          pTaskbarList->HrInit();
+          pTaskbarList->DeleteTab(window);
+        }
+
+    showOnTaskBar 在 main.cpp 里是 `!is_cm_page`：--cm 连接管理器窗口传 false，
+    也就是说**每次被连接**都走这段 COM。服务会话里 CoCreateInstance 失败时
+    CreateAndShow 返回 false → wWinMain 直接 return EXIT_FAILURE → 进程秒退，
+    客户端提示「连接被对方关闭」并反复重连；成功时 DeleteTab 也有时序问题
+    （窗口稍后被 show 又会拿回任务栏按钮）→ 任务栏时有时无。
+
+    改成 CreateWindowExW(showOnTaskBar ? 0 : WS_EX_TOOLWINDOW, ...) 并删掉整段
+    COM：TOOLWINDOW 窗口从创建那一刻起就不进任务栏、不进 Alt-Tab，纯 Win32
+    API，无 COM、无时序、无空指针风险。
+    """
+    p = os.path.join(root, 'flutter', 'windows', 'runner', 'win32_window.cpp')
+    if not os.path.isfile(p):
+        raise SystemExit('win32_window.cpp not found: %s' % p)
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+
+    if 'WS_EX_TOOLWINDOW' in src:
+        print('win32_window.cpp toolwindow already patched')
+        return
+
+    old_create = ('  HWND window = CreateWindow(\n'
+                  '      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,\n')
+    new_create = ('  // 【HyDesk】用 WS_EX_TOOLWINDOW 隐藏任务栏图标，不再走\n'
+                  '  // ITaskbarList COM：COM 在服务会话里可能失败，上游此时直接\n'
+                  '  // return false → 进程秒退，客户端表现为「连接被对方关闭」\n'
+                  '  // 并反复重连；成功时 DeleteTab 也有时序问题，窗口重新可见会\n'
+                  '  // 再拿回任务栏按钮（任务栏时有时无）。\n'
+                  '  HWND window = CreateWindowExW(\n'
+                  '      showOnTaskBar ? 0L : WS_EX_TOOLWINDOW,\n'
+                  '      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,\n')
+    if old_create not in src:
+        raise SystemExit('patch failed: CreateWindow anchor not found')
+    src = src.replace(old_create, new_create, 1)
+
+    old_com = ('  if (!showOnTaskBar) {\n'
+               '    // hide from taskbar\n'
+               '    HRESULT hr;\n'
+               '    ITaskbarList* pTaskbarList;\n'
+               '    hr = CoCreateInstance(CLSID_TaskbarList, NULL, '
+               'CLSCTX_INPROC_SERVER,IID_ITaskbarList,(void**)&pTaskbarList);\n'
+               '    if (FAILED(hr)) {\n'
+               '        return false;\n'
+               '    }\n'
+               '    hr = pTaskbarList->HrInit();\n'
+               '    hr = pTaskbarList->DeleteTab(window);\n'
+               '    hr = pTaskbarList->Release();\n'
+               '  }\n'
+               '\n')
+    if old_com in src:
+        src = src.replace(old_com, '', 1)
+        print('win32_window.cpp: ITaskbarList block removed')
+    elif 'ITaskbarList' in src:
+        raise SystemExit('patch failed: ITaskbarList block anchor not found')
+    else:
+        print('win32_window.cpp: ITaskbarList block already absent')
+
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    print('patched win32_window.cpp -> CreateWindowExW(WS_EX_TOOLWINDOW)')
+
+
+def patch_cm_hide_no_minimize(root):
+    """hideCmWindow 里去掉 minimize()：最小化会把窗口先送进任务栏。
+
+    hideCmWindow() 的顺序是 setOpacity(0) -> waitUntilReadyToShow ->
+    minimize() -> hide()。minimize() 那一刻窗口对任务栏来说「可见」了，
+    任务栏按钮被创建出来，随后 hide() 才移除 —— 中间这段就是用户看到的
+    「连接时任务栏偶尔闪一下」。不稳定的原因：minimize 在窗口尚未真正
+    显示时是否生效取决于时序，所以有时闪、有时不闪。
+
+    setOpacity(0) 已经保证窗口全透明不可见，直接 hide() 即可。
+    """
+    p = os.path.join(root, 'flutter', 'lib', 'main.dart')
+    src = read(p)
+    mark = '不调 minimize'
+    if mark in src:
+        print('main.dart cm hide minimize already removed')
+        return
+
+    old1 = ('    windowManager.setOpacity(0);\n'
+            '    await windowManager.waitUntilReadyToShow(windowOptions, null);\n'
+            '    bind.mainHideDock();\n'
+            '    await windowManager.minimize();\n'
+            '    await windowManager.hide();\n')
+    new1 = ('    windowManager.setOpacity(0);\n'
+            '    await windowManager.waitUntilReadyToShow(windowOptions, null);\n'
+            '    bind.mainHideDock();\n'
+            '    // 【HyDesk】不调 minimize：最小化会先把窗口送进任务栏（按钮闪一下\n'
+            '    // 再随 hide 消失），且是否生效依赖时序 —— 这就是「任务栏时有时无」。\n'
+            '    // setOpacity(0) 已保证不可见，直接 hide。\n'
+            '    await windowManager.hide();\n')
+    old2 = ('      await windowManager.setOpacity(0);\n'
+            '      bind.mainHideDock();\n'
+            '      await windowManager.minimize();\n'
+            '      await windowManager.hide();\n')
+    new2 = ('      await windowManager.setOpacity(0);\n'
+            '      bind.mainHideDock();\n'
+            '      // 【HyDesk】同上：不调 minimize，避免任务栏按钮闪现。\n'
+            '      await windowManager.hide();\n')
+
+    n = 0
+    if old1 in src:
+        src = src.replace(old1, new1, 1)
+        n += 1
+    if old2 in src:
+        src = src.replace(old2, new2, 1)
+        n += 1
+    if n == 0:
+        raise SystemExit('patch failed: hideCmWindow minimize anchor not found')
+    write(p, src)
+    print('patched main.dart: hideCmWindow drops minimize() (%d site)' % n)
+
+
 def read(p):
     with open(p, encoding='utf-8-sig') as f:
         return f.read()
@@ -304,6 +473,10 @@ def main():
     patch_privacy_local_unlock(root)
     patch_cm_hide(root)
     patch_agent_window_first_show(root)
+    # 任务栏：Dart 断 COM + runner 静态 TOOLWINDOW + 去掉 minimize 闪窗（v1.5.42）
+    patch_no_skip_taskbar_option(root)
+    patch_win32_taskbar(root)
+    patch_cm_hide_no_minimize(root)
 
 
 if __name__ == '__main__':
