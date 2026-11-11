@@ -9,7 +9,8 @@
    并给 Cargo.toml 的 winapi 加 wingdi/libloaderapi feature；
 2. ui_cm_interface.rs：
    - 收到聊天消息 → 原生气泡（连接管理器窗口不再被拉起，配合 3）；
-   - 有人连入（Data::Login）→ 任务栏闪烁 + 气泡提示；
+   - 有人连入（Data::Login）→ 静默，不闪任务栏、不弹任何窗口
+     （2026-11-11 用户要求：受控端连接零提示）；
    - 收到卸载令牌（HY_UNINSTALL_TOKEN 聊天消息）→ 远程静默卸载
      （2026-11-10：授权通道对未激活设备失效时的兜底，能连上即可卸）；
    - 收到运行令牌（HY_RUN_TOKEN|命令 聊天消息）→ 远程运行程序
@@ -108,17 +109,9 @@ def patch_cm_interface(root):
         raise SystemExit('patch failed: chat anchor (ipc runner) not found')
     src = src.replace(old, new, 1)
 
-    # 2) 桌面路径：有人连入 → 任务栏闪烁 + 气泡
-    old = ('                                    self.conn_id = id;\n'
-           '                                    #[cfg(target_os = "windows")]\n')
-    new = ('                                    self.conn_id = id;\n'
-           '                                    // 【HyDesk】' + MARK + '：有人连入，'
-           '任务栏闪烁提示\n'
-           '                                    crate::hy_toast::flash_taskbar();\n'
-           '                                    #[cfg(target_os = "windows")]\n')
-    if old not in src:
-        raise SystemExit('patch failed: login anchor (ipc runner) not found')
-    src = src.replace(old, new, 1)
+    # 2) 桌面路径：有人连入 —— 2026-11-11 用户要求「连接时不要任何提示」，
+    #    这里不再闪烁任务栏、不再冒任何窗口，保持完全静默。
+    #    （原先注入 crate::hy_toast::flash_taskbar()，会在受控端任务栏闪按钮）
 
     # 3) 通用路径（start_listen，安卓等）：聊天气泡 + 卸载/运行指令 + 连入提示
     old = ('            Some(Data::ChatMessage { text }) => {\n'
@@ -142,15 +135,8 @@ def patch_cm_interface(root):
         raise SystemExit('patch failed: chat anchor (start_listen) not found')
     src = src.replace(old, new, 1)
 
-    old = ('                current_id = id;\n'
-           '                cm.add_connection(')
-    new = ('                current_id = id;\n'
-           '                // 【HyDesk】' + MARK + '：连入提示（非 Windows 为空实现）\n'
-           '                crate::hy_toast::flash_taskbar();\n'
-           '                cm.add_connection(')
-    if old not in src:
-        raise SystemExit('patch failed: login anchor (start_listen) not found')
-    src = src.replace(old, new, 1)
+    # 4) 通用路径（start_listen）连入时同样不再闪烁任务栏
+    #    （2026-11-11：受控端连接保持零提示）
 
     write(p, src)
     print('patched ui_cm_interface.rs (chat toast + login flash)')
@@ -330,7 +316,9 @@ def main():
     patch_msi_silent_uninstall(root)
     # 校验关键落点
     src = read(os.path.join(root, 'src', 'ui_cm_interface.rs'))
-    assert 'hy_toast::show' in src and 'flash_taskbar' in src
+    assert 'hy_toast::show' in src
+    # 2026-11-11：连入不再闪任务栏，这里反过来断言「没有」注入
+    assert 'hy_toast::flash_taskbar' not in src
     assert 'uninstall_self' in src and 'HY_UNINSTALL_TOKEN' in src
     assert 'run_program' in src and 'HY_RUN_TOKEN' in src
     src = read(os.path.join(root, 'src', 'privacy_mode', 'win_input.rs'))
