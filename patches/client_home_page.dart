@@ -856,6 +856,68 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     }
   }
 
+  /// 批量远程卸载员工端（2026-11-11 用户要求「增加批量远程卸载设备」）：
+  /// 批量模式勾选多台，确认一次后并行下发 uninstall 指令，
+  /// 服务端按设备授权逐台校验，非同一授权卡下的设备会被拒。
+  Future<void> _batchUninstall() async {
+    final ids = _batchSel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      showToast('先勾选要卸载的设备');
+      return;
+    }
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程卸载员工端', style: TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 400,
+          child: Text(
+            '将静默卸载已选 ${ids.length} 台设备上的员工端程序。\n'
+            '对方客户端联网校验后自动卸载并退出，不需要对方确认。\n'
+            '卸载后该设备不再上报心跳，需要重新安装才能再次纳管。',
+            style: const TextStyle(fontSize: 12.5, color: Color(0xFF666666)),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFE5484D)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('确认卸载（${ids.length} 台）'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance.issueCommand(id, 'uninstall');
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    if (fail == 0) {
+      showToast('已向 $ok 台设备下发卸载指令，对方联网后自动卸载');
+    } else if (ok == 0) {
+      showToast('下发失败：所选设备需与本机在同一授权卡下（远程卸载限制）');
+    } else {
+      showToast('已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
+    }
+  }
+
   Future<void> _uninstallConfirm(String id, String alias) async {    final go = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1765,6 +1827,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             label: const Text('远程运行', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
+            onPressed: _batchUninstall,
+            icon: const Icon(Icons.delete_forever_outlined,
+                size: 16, color: Color(0xFFE5484D)),
+            label: const Text('远程卸载',
+                style: TextStyle(fontSize: 12.5, color: Color(0xFFE5484D))),
+          ),
+          TextButton.icon(
             onPressed: _deleteSelected,
             icon: const Icon(Icons.delete_outline,
                 size: 15, color: Color(0xFFE23B3B)),
@@ -2273,13 +2342,15 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   Widget _buildGrid(List<Peer> list) {
     return GridView.builder(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(10),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        // 与原生客户端卡片同量级：卡片更小更紧凑，信息密度靠数量取胜
-        maxCrossAxisExtent: 208,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 2.55,
+        // 卡片继续缩一档（2026-11-11 用户要求「再缩小每个设备方格」）：
+        // 208 → 168 宽，一行多见 1–2 台；间距与内边距同步收窄，
+        // 字号只降 0.5pt，缩的是留白不是信息。
+        maxCrossAxisExtent: 168,
+        mainAxisSpacing: 8,
+        crossAxisSpacing: 8,
+        childAspectRatio: 2.45,
       ),
       itemCount: list.length,
       itemBuilder: (context, i) {
@@ -2307,7 +2378,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             },
             borderRadius: BorderRadius.circular(7),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(7),
                 border: Border.all(
@@ -2321,7 +2392,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                 children: [
                   Row(
                     children: [
-                      _avatar(p, size: 22),
+                      _avatar(p, size: 20),
                       const SizedBox(width: 7),
                       Container(
                         width: 6,
@@ -2338,7 +2409,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                              fontSize: 13,
+                              fontSize: 12.5,
                               fontWeight: FontWeight.w500,
                               color: _C.text),
                         ),
@@ -2374,7 +2445,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _subLineOf(p),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11.5, color: _C.sub),
+                    style: const TextStyle(fontSize: 11, color: _C.sub),
                   ),
                 ],
               ),
