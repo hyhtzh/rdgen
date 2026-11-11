@@ -350,6 +350,124 @@ def patch_cm_hide_no_minimize(root):
     print('patched main.dart: hideCmWindow drops minimize() (%d site)' % n)
 
 
+def patch_cursor_move_guard(root):
+    """受控端光标保护：连接首个 (0,0) 事件丢弃 + 同坐标去重。
+
+    现象一「远程连接后受控端鼠标跳到桌面左上角」：
+    客户端刚连上时可能先发一个坐标 (0,0) 的绝对移动事件（坐标尚未初始化），
+    受控端 handle_mouse_simulation_ 的 MOUSE_TYPE_MOVE 分支无条件执行
+    `en.mouse_move_to(evt.x, evt.y)` → SetCursorPos(0,0) → 光标跳到左上角。
+
+    现象二「Win7/Win10 上鼠标闪烁」：
+    每个 MOVE 事件都调一次 SetCursorPos，客户端高频重发同一坐标时，受控端
+    光标被反复重新定位/重绘，视觉上就是闪烁（Win7 无 DWM 光标合成优化更明显）。
+
+    处理：每个连接的第一个绝对移动若是 (0,0) 丢弃；同一坐标 500ms 内不重复下发。
+    """
+    p = os.path.join(root, 'src', 'server', 'input_service.rs')
+    if not os.path.isfile(p):
+        raise SystemExit('input_service.rs not found: %s' % p)
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+
+    if 'hy_should_move_mouse' in src:
+        print('input_service.rs cursor guard already patched')
+        return
+
+    anchor = ('            #[cfg(not(target_os = "linux"))]\n'
+              '            let (mx, my) = (evt.x, evt.y);\n'
+              '            en.mouse_move_to(mx, my);\n')
+    if anchor not in src:
+        raise SystemExit('patch failed: mouse_move_to anchor not found')
+    new = ('            #[cfg(not(target_os = "linux"))]\n'
+           '            let (mx, my) = (evt.x, evt.y);\n'
+           '            // 【HyDesk】防「连上就跳桌面左上角」+ 防 Win7/Win10 光标闪烁，\n'
+           '            // 见 hy_should_move_mouse 注释。\n'
+           '            if hy_should_move_mouse(conn, mx, my) {\n'
+           '                en.mouse_move_to(mx, my);\n'
+           '            }\n')
+    src = src.replace(anchor, new, 1)
+
+    helper = ('/// 【HyDesk】受控端光标移动保护。\n'
+              '///\n'
+              '/// 1) 每个连接的第一个绝对移动事件若为 (0,0)，多半是客户端刚连上、\n'
+              '///    坐标还没初始化，直接 SetCursorPos(0,0) 会让受控端鼠标跳到\n'
+              '///    桌面左上角 —— 丢弃。\n'
+              '/// 2) 同一坐标 500ms 内不重复下发：每个 MOVE 都 SetCursorPos 会让\n'
+              '///    Win7/Win10 的光标反复重绘（表现为鼠标闪烁）。\n'
+              '#[allow(dead_code)]\n'
+              'fn hy_should_move_mouse(conn: i32, x: i32, y: i32) -> bool {\n'
+              '    static LAST: std::sync::Mutex<Option<(i32, (i32, i32), Instant)>> =\n'
+              '        std::sync::Mutex::new(None);\n'
+              '    let now = Instant::now();\n'
+              '    let mut last = LAST.lock().unwrap();\n'
+              '    let new_session = match *last {\n'
+              '        Some((lc, _, _)) => lc != conn,\n'
+              '        None => true,\n'
+              '    };\n'
+              '    if new_session && x == 0 && y == 0 {\n'
+              '        *last = Some((conn, (x, y), now));\n'
+              '        return false;\n'
+              '    }\n'
+              '    if let Some((lc, (lx, ly), t)) = *last {\n'
+              '        if lc == conn\n'
+              '            && lx == x\n'
+              '            && ly == y\n'
+              '            && t.elapsed() < Duration::from_millis(500)\n'
+              '        {\n'
+              '            return false;\n'
+              '        }\n'
+              '    }\n'
+              '    *last = Some((conn, (x, y), now));\n'
+              '    true\n'
+              '}\n'
+              '\n'
+              'pub fn handle_mouse_simulation_(evt: &MouseEvent, conn: i32) {\n')
+    helper_anchor = 'pub fn handle_mouse_simulation_(evt: &MouseEvent, conn: i32) {\n'
+    if helper_anchor not in src:
+        raise SystemExit('patch failed: handle_mouse_simulation_ anchor not found')
+    src = src.replace(helper_anchor, helper, 1)
+
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    print('patched input_service.rs: cursor move guard (drop leading 0,0 + dedup)')
+
+
+def patch_gdi_capture_no_cursor(root):
+    """GDI 抓屏去掉 CAPTUREBLT —— 上游注释自己写了「also make cursor blinking」。
+
+    Win7 没有 DXGI Desktop Duplication，受控端只能走 libs/scrap/src/dxgi/gdi.rs 的
+    BitBlt 路径；Win10 在不支持 DDA 的机器/会话里也会回退到这条路径。
+    BitBlt 带 CAPTUREBLT 会把光标一并画进捕获的图像，画面里于是多出一个随帧率
+    刷新的光标，与真实光标叠加 —— 用户看到的就是「鼠标闪烁 / 拖影」。
+
+    去掉 CAPTUREBLT 后 BitBlt 不再捕获光标（也不再捕获分层窗口，属于可接受的
+    代价：这类窗口在 DXGI 路径下本来显示正常）。
+    """
+    p = os.path.join(root, 'libs', 'scrap', 'src', 'dxgi', 'gdi.rs')
+    if not os.path.isfile(p):
+        raise SystemExit('gdi.rs not found: %s' % p)
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+
+    if '【HyDesk】不用 CAPTUREBLT' in src:
+        print('gdi.rs CAPTUREBLT already removed')
+        return
+
+    old = ('                SRCCOPY | CAPTUREBLT, // CAPTUREBLT enable layered window '
+           'but also make cursor blinking\n')
+    if old not in src:
+        raise SystemExit('patch failed: BitBlt CAPTUREBLT anchor not found')
+    new = ('                // 【HyDesk】不用 CAPTUREBLT：它会把光标一起抓进画面，\n'
+           '                // 与真实光标叠加后表现为「鼠标闪烁 / 拖影」（上游注释也写明\n'
+           '                // "also make cursor blinking"）。Win7 没有 DDA，必现。\n'
+           '                SRCCOPY,\n')
+    src = src.replace(old, new, 1)
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    print('patched gdi.rs: BitBlt drops CAPTUREBLT (no cursor in capture)')
+
+
 def read(p):
     with open(p, encoding='utf-8-sig') as f:
         return f.read()
@@ -477,6 +595,9 @@ def main():
     patch_no_skip_taskbar_option(root)
     patch_win32_taskbar(root)
     patch_cm_hide_no_minimize(root)
+    # 光标：连上跳左上角 + Win7/Win10 闪烁（v1.5.42）
+    patch_cursor_move_guard(root)
+    patch_gdi_capture_no_cursor(root)
 
 
 if __name__ == '__main__':
