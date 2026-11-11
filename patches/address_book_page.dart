@@ -1238,12 +1238,14 @@ class _AddressBookViewState extends State<AddressBookView> {
 
   Widget _gridView(List<AbEntry> list) {
     return GridView.builder(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 268,
-        mainAxisExtent: 80,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
+        // 与首页设备方格同步缩小（2026-11-11）：268→210 宽、高 80→70，
+        // 一行能多铺 1 台；内部字号只降 0.5pt，缩的是留白不是信息。
+        maxCrossAxisExtent: 210,
+        mainAxisExtent: 70,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
       ),
       itemCount: list.length,
       itemBuilder: (context, i) => _card(list[i]),
@@ -1275,7 +1277,7 @@ class _AddressBookViewState extends State<AddressBookView> {
             border: Border.all(
                 color: checked ? _AC.blue : const Color(0xFFEDEFF2)),
           ),
-          padding: const EdgeInsets.fromLTRB(9, 5, 2, 6),
+          padding: const EdgeInsets.fromLTRB(8, 4, 2, 5),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1307,7 +1309,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 12,
                           fontWeight: FontWeight.w500,
                           color: _AC.text),
                     ),
@@ -1323,7 +1325,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                       ),
                       child: Text(e.tag,
                           style:
-                              const TextStyle(fontSize: 10, color: _AC.blue)),
+                              const TextStyle(fontSize: 9.5, color: _AC.blue)),
                     ),
                   _entryMenu(e),
                 ],
@@ -1332,22 +1334,22 @@ class _AddressBookViewState extends State<AddressBookView> {
               Row(
                 children: [
                   Container(
-                    width: 30,
-                    height: 30,
+                    width: 26,
+                    height: 26,
                     decoration: BoxDecoration(
                       color: abAvatarColor(seed),
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(5),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       letter.toUpperCase(),
                       style: const TextStyle(
-                          fontSize: 13.5,
+                          fontSize: 12,
                           fontWeight: FontWeight.w500,
                           color: Colors.white),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 7),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1360,7 +1362,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 11.5, color: _AC.sub),
+                                fontSize: 11, color: _AC.sub),
                           ),
                         if (e.note.isNotEmpty)
                           Text(
@@ -1368,7 +1370,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 10.5, color: Color(0xFF9AA3AF)),
+                                fontSize: 10, color: Color(0xFF9AA3AF)),
                           ),
                       ],
                     ),
