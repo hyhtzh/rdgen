@@ -139,7 +139,7 @@ def patch_cm_interface(root):
     #    （2026-11-11：受控端连接保持零提示）
 
     write(p, src)
-    print('patched ui_cm_interface.rs (chat toast + login flash)')
+    print('patched ui_cm_interface.rs (chat toast; login stays silent)')
 
 
 def patch_chat_model(root):
