@@ -191,23 +191,30 @@ def write(p, src):
 
 
 def patch_agent_window_first_show(root):
-    """agent 主窗口：仅安装器触发时弹一次，其余一律隐藏且永不进任务栏。
+    """agent 主窗口：安装/首次运行弹一次 ID 面板，其余一律隐藏且永不进任务栏。
 
     2026-11-10 19:15 用户报「受控端被连接后任务栏有提示」：
     上一版首启判断读 %LOCALAPPDATA%\\.ui_shown，但服务在用户会话拉起
     agent 进程时环境可能继承 SYSTEM/异账户的 LOCALAPPDATA，标记文件
     找不到 → 误判首次 → 窗口在任务栏冒出来（被连接/开机都可能出现）。
 
-    现在的行为：
-      1. 无条件 setSkipTaskbar(true)——窗口无论如何都不进任务栏；
-      2. 弹窗只认安装器写入的 %ProgramData%\\<Product>\\.hy_show_id
-         （全机器共享、不挑账户），且要求文件 30 分钟内有效（防残留），
-         读到即删；MSI 静默远程安装不写标记 → 永远不弹；
-      3. 服务拉起 / 开机自启 / 被连接 → 标记不存在 → 纯后台隐藏。
+    2026-11-11 用户报「第一次安装还是无法显示软件界面」：只认安装器写的
+    %ProgramData%\\.hy_show_id，一旦安装器那一步没跑到（用 MSI 直接装、
+    安装器被安全软件拦、旧版安装包），就永远看不到 ID 面板。现在三个入口
+    任意命中即弹：
+
+      1. --hy-show-id 命令行参数（agent_setup.nsi 装完带参数拉起，最可靠）；
+      2. %ProgramData%\\<Product>\\.hy_show_id 标记（30 分钟内有效，读到即删）；
+      3. 本机首次运行（%ProgramData%\\<Product>\\.hy_ui_seen 不存在）——
+         兜底覆盖「MSI 静默装 / 旧安装包 / 手工双击 exe」三种场景，弹过
+         就落 .hy_ui_seen，之后开机自启、服务拉起、被连接都纯后台隐藏。
+
+    弹窗时居中 + 临时置顶 20 秒（避免被浏览器/安装器窗口盖住看不到），
+    并且无条件 setSkipTaskbar(true)，窗口永远不占任务栏。
     """
     p = os.path.join(root, 'flutter', 'lib', 'main.dart')
     src = read(p)
-    mark = 'agent 首启：仅安装器标记触发'
+    mark = 'agent 首启：安装器标记/首次运行触发'
     if mark in src:
         print('main.dart agent window installer-marker already patched')
         return
@@ -218,38 +225,59 @@ def patch_agent_window_first_show(root):
     if old not in src:
         raise SystemExit('patch failed: runMainApp show anchor not found')
     new = ('      // 【HyDesk】' + mark + '\n'
-           '      // 标记是安装器写入的 ProgramData\\.hy_show_id（30 分钟内有效），\n'
-           '      // 服务拉起/开机/被连接一律静默，且窗口永不进任务栏。\n'
+           '      // 触发条件：--hy-show-id 参数 / 安装器 ProgramData 标记（30 分钟）/ 本机首次运行。\n'
+           '      // 其余情况（服务拉起、开机、被连接）一律静默，窗口永不进任务栏。\n'
            '      windowManager.setSkipTaskbar(true);\n'
            '      var hyShowOnce = false;\n'
+           '      String hyBase = \'C:\\\\ProgramData\';\n'
            '      try {\n'
-           '        final hyBase = Platform.environment[\'ProgramData\']\n'
-           '            ?? Platform.environment[\'LOCALAPPDATA\']\n'
-           '            ?? \'.\';\n'
-           '        final hyFlag =\n'
-           '            File(\'$hyBase\\\\DevicesFlowUserSvc\\\\.hy_show_id\');\n'
-           '        if (hyFlag.existsSync()) {\n'
+           '        hyBase = Platform.environment[\'ProgramData\'] ??\n'
+           '            Platform.environment[\'LOCALAPPDATA\'] ??\n'
+           '            \'C:\\\\ProgramData\';\n'
+           '        final hyDir = Directory(\'$hyBase\\\\DevicesFlowUserSvc\');\n'
+           '        final hyFlag = File(\'${hyDir.path}\\\\.hy_show_id\');\n'
+           '        final hySeen = File(\'${hyDir.path}\\\\.hy_ui_seen\');\n'
+           '        // 1) 命令行显式要求（安装器）\n'
+           '        if (kBootArgs.contains(\'--hy-show-id\')) {\n'
+           '          hyShowOnce = true;\n'
+           '        }\n'
+           '        // 2) 安装器写的限时标记\n'
+           '        if (!hyShowOnce && hyFlag.existsSync()) {\n'
            '          hyShowOnce = DateTime.now()\n'
            '                  .difference(hyFlag.lastModifiedSync())\n'
            '                  .inMinutes <\n'
            '              30;\n'
-           '          if (hyShowOnce) {\n'
-           '            try {\n'
-           '              hyFlag.deleteSync();\n'
-           '            } catch (_) {}\n'
-           '          }\n'
+           '        }\n'
+           '        // 3) 本机首次运行兜底\n'
+           '        if (!hyShowOnce && !hySeen.existsSync()) {\n'
+           '          hyShowOnce = true;\n'
+           '        }\n'
+           '        if (hyShowOnce) {\n'
+           '          try {\n'
+           '            hyDir.createSync(recursive: true);\n'
+           '            if (hyFlag.existsSync()) hyFlag.deleteSync();\n'
+           '            hySeen.writeAsStringSync(\'1\');\n'
+           '          } catch (_) {}\n'
            '        }\n'
            '      } catch (_) {}\n'
            '      if (hyShowOnce) {\n'
            '        windowManager.show();\n'
            '        windowManager.focus();\n'
+           '        // 居中 + 临时置顶，防止被浏览器/安装器窗口盖住而「看不到界面」\n'
+           '        windowManager.setAlignment(Alignment.center);\n'
+           '        windowManager.setAlwaysOnTop(true);\n'
+           '        Future.delayed(const Duration(seconds: 20), () {\n'
+           '          try {\n'
+           '            windowManager.setAlwaysOnTop(false);\n'
+           '          } catch (_) {}\n'
+           '        });\n'
            '      } else {\n'
            '        windowManager.hide();\n'
            '      }\n'
            '      // Move registration of active main window here to prevent'
            ' from async visible check.\n')
     src = src.replace(old, new, 1)
-    # 兜底：标记文件依赖 dart:io 的 File/Platform
+    # 兜底：标记文件依赖 dart:io 的 File/Platform/Directory
     if ("import 'dart:io';" not in src
             and 'import "dart:io";' not in src):
         imp = "import 'package:flutter/material.dart';"
@@ -257,7 +285,7 @@ def patch_agent_window_first_show(root):
             src = src.replace(imp, "import 'dart:io';\n\n" + imp, 1)
             print('main.dart: added dart:io import for install marker')
     write(p, src)
-    print('patched main.dart: agent window shows only via installer marker')
+    print('patched main.dart: agent window shows on install/first run only')
 
 
 def main():
