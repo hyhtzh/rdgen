@@ -696,6 +696,9 @@ class _FilePaneState extends State<_FilePane> {
           // 路径条：点击弹输入框跳转（参考图里的目录下拉）
           Expanded(child: _pathBar(s)),
           const SizedBox(width: 8),
+          _hBtn(Icons.computer_outlined, '此电脑（盘符总览）', () async {
+            await controller.openDirectory('/');
+          }),
           _hBtn(Icons.home_outlined, '主目录', () async {
             await controller.openDirectory(controller.homePath);
           }),
@@ -740,7 +743,11 @@ class _FilePaneState extends State<_FilePane> {
   Widget _pathBar(_FtSession s) {
     return Obx(() {
       final path = controller.directory.value.path;
-      final label = path.isEmpty ? '根目录' : path;
+      // 「/」= 此电脑（Windows 盘符总览）；空串是加载前的初始态
+      final isWin = controller.options.value.isWindows;
+      final label = path.isEmpty
+          ? (isWin ? '此电脑' : '根目录')
+          : (path == '/' && isWin ? '此电脑' : path);
       return InkWell(
         onTap: () => _jumpDialog(s, path),
         borderRadius: BorderRadius.circular(4),
@@ -835,9 +842,15 @@ class _FilePaneState extends State<_FilePane> {
     if (path.isEmpty) return null;
     var p = path;
     if (isWin) {
-      // 盘符根（C:\ 或 C:）没有上级
+      // 「/」在 Windows 侧不是根目录，而是此电脑（盘符总览）：Rust 端
+      // libs/base/src/fs.rs 的 read_dir 只在 path == "/" 时用 GetLogicalDrives
+      // 回盘符列表，空字符串会直接报错。所以这里 此电脑 用 "/" 表示。
+      if (p == '/' || p == '\\') return null;
+      // 盘符根（C:\ 或 C:）的上一级 = 此电脑。
+      // 2026-11-11 用户报「地址栏无法返回我的电脑」：原来这里 return null，
+      // 到 C:\ 就顶死，永远进不到盘符总览。
       final r = RegExp(r'^[a-zA-Z]:\\?$');
-      if (r.hasMatch(p)) return null;
+      if (r.hasMatch(p)) return '/';
       final i = p.lastIndexOf('\\');
       if (i <= 2) return p.substring(0, 3);
       return p.substring(0, i);
@@ -847,6 +860,10 @@ class _FilePaneState extends State<_FilePane> {
     if (i <= 0) return i == 0 ? '/' : null;
     return p.substring(0, i);
   }
+
+  /// 盘符项的实际路径：Rust 端回的是 name="C:"，path 为空，
+  /// 直接 openDirectory(e.path) 会拿空串去读目录，必然失败。
+  String _driveTarget(Entry e) => '${e.name}\\';
 
   // 拖放区：OS 拖入（仅本机→对方方向）+ 面板间拖拽 + 点击浏览
   Widget _buildDropArea(_FtSession s) {
@@ -907,7 +924,7 @@ class _FilePaneState extends State<_FilePane> {
   /// 盘符瓷砖：大图标 + 卷标，单击进入。
   Widget _driveTile(_FtSession s, Entry e) {
     return InkWell(
-      onTap: () => controller.openDirectory(e.path),
+      onTap: () => controller.openDirectory(_driveTarget(e)),
       borderRadius: BorderRadius.circular(8),
       child: Container(
         width: 96,
@@ -932,11 +949,17 @@ class _FilePaneState extends State<_FilePane> {
     );
   }
 
-  Widget _entryRow(_FtSession s, Entry e, List<Entry> selected) {
-    final sel = selected.contains(e);
+  Widget _entryRow(_FtSession s, Entry e, RxList<Entry> selected) {
     final isRemote = !widget.isLocal;
     final isExe = e.isFile && e.name.toLowerCase().endsWith('.exe');
-    return Draggable<Entry>(
+    // 每行自带一个 Obx：选中集合一变，只重建这一行。
+    // 外层 _buildList 的 Obx 做不到 —— itemBuilder 是在布局阶段执行的，
+    // 拿不到响应式依赖，选中变化不会触发重建。
+    // 这正是 2026-11-11「文件无法选中」的直接原因：点击其实已经写进
+    // selectedItems，只是行高亮永远刷不出来，看上去像点不动。
+    return Obx(() {
+      final sel = selected.contains(e);
+      return Draggable<Entry>(
       data: e,
       feedback: Material(
         color: Colors.transparent,
@@ -960,15 +983,18 @@ class _FilePaneState extends State<_FilePane> {
       ),
       child: InkWell(
         onTap: () {
-          if (e.isDrive || e.isDirectory) {
-            controller.openDirectory(e.path);
-          } else {
-            controller.selectedItems.items.contains(e)
-                ? controller.selectedItems.remove(e)
-                : controller.selectedItems.add(e);
-            // selectedItems 是 RxList，UI 会自动刷新
+          // 盘符不参与选中（SelectedItems 本身也会拦），单击直接进入；
+          // 文件与文件夹单击 = 选中/取消选中，文件夹双击才进入。
+          if (e.isDrive) {
+            controller.openDirectory(_driveTarget(e));
+            return;
           }
+          final si = controller.selectedItems;
+          si.items.contains(e) ? si.remove(e) : si.add(e);
         },
+        onDoubleTap: e.isDirectory
+            ? () => controller.openDirectory(e.path)
+            : null,
         onSecondaryTap: e.isFile && isRemote && isExe
             ? () => _remoteRun(e)
             : null,
@@ -1020,6 +1046,7 @@ class _FilePaneState extends State<_FilePane> {
         ),
       ),
     );
+    });
   }
 
   IconData _entryIcon(Entry e) {
