@@ -382,6 +382,18 @@ class AddressBookStore extends ChangeNotifier {
     } else {
       entries.add(entry);
     }
+    // 别名同时写进本机 peer 选项：远程会话标签页 / 窗口标题读的是
+    // mainGetPeerOption('alias')，只存地址簿的话标签仍显示「ID@主机名」。
+    final alias = entry.alias.trim();
+    if (alias.isNotEmpty) {
+      try {
+        bind.mainSetPeerOptionSync(
+          id: entry.id.replaceAll(' ', ''),
+          key: 'alias',
+          value: alias,
+        );
+      } catch (_) {}
+    }
     await _persist();
   }
 
@@ -408,6 +420,13 @@ class AddressBookStore extends ChangeNotifier {
         if (e.alias.isNotEmpty && e.alias != old.alias) {
           old.alias = e.alias;
           changed = true;
+          try {
+            bind.mainSetPeerOptionSync(
+              id: e.id.replaceAll(' ', ''),
+              key: 'alias',
+              value: e.alias.trim(),
+            );
+          } catch (_) {}
         }
         if (e.tag.isNotEmpty && old.tag.isEmpty) {
           old.tag = e.tag;
@@ -1240,10 +1259,10 @@ class _AddressBookViewState extends State<AddressBookView> {
     return GridView.builder(
       padding: const EdgeInsets.all(10),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        // 与首页设备方格同步缩小（2026-11-11）：268→210 宽、高 80→70，
-        // 一行能多铺 1 台；内部字号只降 0.5pt，缩的是留白不是信息。
-        maxCrossAxisExtent: 210,
-        mainAxisExtent: 70,
+        // 三连缩（2026-11-13）：268 → 210 → 188 宽、80 → 70 → 62 高。
+        // 一行能铺更多台；缩的是留白，信息和字号只做微调。
+        maxCrossAxisExtent: 188,
+        mainAxisExtent: 62,
         crossAxisSpacing: 8,
         mainAxisSpacing: 8,
       ),
@@ -1277,7 +1296,7 @@ class _AddressBookViewState extends State<AddressBookView> {
             border: Border.all(
                 color: checked ? _AC.blue : const Color(0xFFEDEFF2)),
           ),
-          padding: const EdgeInsets.fromLTRB(8, 4, 2, 5),
+          padding: const EdgeInsets.fromLTRB(7, 3, 2, 4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1309,7 +1328,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 12,
+                          fontSize: 11.5,
                           fontWeight: FontWeight.w500,
                           color: _AC.text),
                     ),
@@ -1330,12 +1349,12 @@ class _AddressBookViewState extends State<AddressBookView> {
                   _entryMenu(e),
                 ],
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 3),
               Row(
                 children: [
                   Container(
-                    width: 26,
-                    height: 26,
+                    width: 24,
+                    height: 24,
                     decoration: BoxDecoration(
                       color: abAvatarColor(seed),
                       borderRadius: BorderRadius.circular(5),
@@ -1344,12 +1363,12 @@ class _AddressBookViewState extends State<AddressBookView> {
                     child: Text(
                       letter.toUpperCase(),
                       style: const TextStyle(
-                          fontSize: 12,
+                          fontSize: 11,
                           fontWeight: FontWeight.w500,
                           color: Colors.white),
                     ),
                   ),
-                  const SizedBox(width: 7),
+                  const SizedBox(width: 6),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1362,7 +1381,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 11, color: _AC.sub),
+                                fontSize: 10.5, color: _AC.sub),
                           ),
                         if (e.note.isNotEmpty)
                           Text(
@@ -1370,7 +1389,7 @@ class _AddressBookViewState extends State<AddressBookView> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 10, color: Color(0xFF9AA3AF)),
+                                fontSize: 9.5, color: Color(0xFF9AA3AF)),
                           ),
                       ],
                     ),
