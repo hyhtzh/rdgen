@@ -278,6 +278,25 @@ def patch_main_dart(root):
     write(path, src)
 
 
+def patch_common_tab_label(root):
+    """远程会话标签：重命名过的设备只显示设备名，不拼「@主机名」。
+
+    上游 getDesktopTabLabel：label = alias 为空 ? peerId : alias，
+    然后只要 hostname 不在 label 里就再拼 "@hostname"。用户把设备改名后，
+    标签仍显示「名字@win-xxx」，和列表里的设备名对不上。
+    """
+    path = os.path.join(root, 'flutter', 'lib', 'common.dart')
+    src = read(path)
+    old = ("String getDesktopTabLabel(String peerId, String alias) {\n"
+           "  String label = alias.isEmpty ? peerId : alias;")
+    new = ("String getDesktopTabLabel(String peerId, String alias) {\n"
+           "  // 已重命名的设备：标签与设备名严格一致，不再拼 @主机名\n"
+           "  if (alias.trim().isNotEmpty) return alias.trim();\n"
+           "  String label = alias.isEmpty ? peerId : alias;")
+    src = replace_once(src, old, new, 'common.dart: tab label uses device name')
+    write(path, src)
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     main_dart = os.path.join(root, 'flutter', 'lib', 'main.dart')
@@ -302,6 +321,7 @@ def main():
     patch_consts(root)
     patch_multi_window_manager(root)
     patch_main_dart(root)
+    patch_common_tab_label(root)
 
 
 if __name__ == '__main__':
