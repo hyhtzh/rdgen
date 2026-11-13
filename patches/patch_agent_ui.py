@@ -578,6 +578,33 @@ def patch_agent_window_first_show(root):
     print('patched main.dart: agent window shows on install/first run only')
 
 
+def patch_video_qos_fps(root):
+    """受控端 QoS：连接建立瞬间起始帧率 15 -> 25（v1.5.46）。
+
+    上游 video_qos.rs INIT_FPS=15，刚连上看视频流起步只有 15 帧，网络好
+    也要靠 TestDelay 若干轮加倍才追上去，首屏观感明显卡顿。起步 25 帧
+    让连接初期即流畅；拥塞自适应逻辑不动，网络差照样按原规则降帧，
+    下限 MIN_AUTO_FPS=5 不变。
+    """
+    p = os.path.join(root, 'src', 'server', 'video_qos.rs')
+    if not os.path.isfile(p):
+        raise SystemExit('video_qos.rs not found: %s' % p)
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+
+    if 'INIT_FPS: u32 = 25' in src:
+        print('video_qos.rs INIT_FPS already 25')
+        return
+
+    old = 'pub const INIT_FPS: u32 = 15;'
+    if old not in src:
+        raise SystemExit('patch failed: INIT_FPS anchor not found')
+    src = src.replace(old, 'pub const INIT_FPS: u32 = 25;', 1)
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    print('patched video_qos.rs: INIT_FPS 15 -> 25')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'flutter', 'lib', 'main.dart')):
@@ -598,6 +625,8 @@ def main():
     # 光标：连上跳左上角 + Win7/Win10 闪烁（v1.5.42）
     patch_cursor_move_guard(root)
     patch_gdi_capture_no_cursor(root)
+    # 画质/延迟：受控端起始帧率 15 -> 25（v1.5.46）
+    patch_video_qos_fps(root)
 
 
 if __name__ == '__main__':
