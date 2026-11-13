@@ -297,6 +297,25 @@ def patch_common_tab_label(root):
     write(path, src)
 
 
+def patch_video_quality_default(root):
+    """远程画质默认值：custom 档未配置时 50 -> 70（v1.5.46）。
+
+    上游 client.rs get_option_message：image_quality == "custom" 且
+    custom_image_quality 为空时按 50 发（quality<<8 即码率档）。50 明显
+    偏低、画面发糊。默认提到 70：直连/自建服务器不受公共服务器 100 上限
+    约束。用户在设置里手动选过画质则完全不受影响（只在未配置时生效）。
+    """
+    path = os.path.join(root, 'src', 'client.rs')
+    src = read(path)
+    old = ("            let quality = if config.custom_image_quality.is_empty() {\n"
+           "                50\n")
+    new = ("            let quality = if config.custom_image_quality.is_empty() {\n"
+           "                70\n")
+    src = replace_once(src, old, new,
+                       'client.rs: default custom quality 50 -> 70')
+    write(path, src)
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     main_dart = os.path.join(root, 'flutter', 'lib', 'main.dart')
@@ -322,6 +341,8 @@ def main():
     patch_multi_window_manager(root)
     patch_main_dart(root)
     patch_common_tab_label(root)
+    # 画质：默认码率档 50 -> 70（v1.5.46）
+    patch_video_quality_default(root)
 
 
 if __name__ == '__main__':
