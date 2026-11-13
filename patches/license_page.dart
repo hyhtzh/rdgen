@@ -189,15 +189,14 @@ class _ActivateCardState extends State<_ActivateCard> {
     super.dispose();
   }
 
-  /// 输入即格式化：大写、去掉非字母数字、每 4 位插一个横线
+  /// 输入即规范化：只做大写 + 去空格，**保留原有横线位置**。
+  ///
+  /// 以前是「去掉所有非字母数字、每 4 位重插横线」，而卡号有两种形态：
+  /// 普通卡 XXXXXXXXXXXXXXXX、试用卡 R-WYdEVca2 / XR-5nvDlDRG。
+  /// 重排后 R-WYdEVca2 变成 RWYD-EVCA-2，上游按子串查卡就永远查不到
+  /// （用户反馈「R- 开头的激活码无法激活」就是这个原因）。
   void _format(String raw) {
-    final clean = raw.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
-    final buf = StringBuffer();
-    for (var i = 0; i < clean.length && i < 16; i++) {
-      if (i > 0 && i % 4 == 0) buf.write('-');
-      buf.write(clean[i]);
-    }
-    final s = buf.toString();
+    final s = raw.toUpperCase().replaceAll(RegExp(r'\s'), '');
     if (s != _controller.text) {
       _controller.value = TextEditingValue(
         text: s,
@@ -209,7 +208,7 @@ class _ActivateCardState extends State<_ActivateCard> {
   Future<void> _submit() async {
     if (_busy) return;
     final code = _controller.text.trim();
-    if (code.replaceAll('-', '').length < 8) {
+    if (code.replaceAll(RegExp(r'[^A-Z0-9]'), '').length < 6) {
       setState(() => _error = '请填写完整的授权码');
       return;
     }
