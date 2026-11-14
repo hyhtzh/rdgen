@@ -417,25 +417,7 @@ class _ActivateCardState extends State<_ActivateCard> {
                           fontWeight: FontWeight.w500)),
             ),
           ),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 42,
-            child: OutlinedButton.icon(
-              onPressed: _busy ? null : _buy,
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: _LC.blue),
-                shape:
-                    RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              icon: const Icon(Icons.shopping_cart_outlined,
-                  size: 17, color: _LC.blue),
-              label: const Text('购买授权',
-                  style: TextStyle(
-                      fontSize: 14.5,
-                      color: _LC.blue,
-                      fontWeight: FontWeight.w500)),
-            ),
-          ),
+          // 购买按钮已按需求隐藏（2026-11-14）：授权码由渠道线下交付
           const SizedBox(height: 4),
           // 激活前也要能退出：不能强制用户激活了才能关软件
           SizedBox(
@@ -481,7 +463,7 @@ class _ActivateCardState extends State<_ActivateCard> {
             ],
           ),
           const SizedBox(height: 6),
-          const Text('没有授权码？点击「购买授权」在线购买，或联系客服。',
+          const Text('没有授权码？请联系客服获取。',
               style: TextStyle(fontSize: 11.5, color: Color(0xFF9AA3B2))),
         ],
       ),
