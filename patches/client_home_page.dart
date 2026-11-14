@@ -189,12 +189,21 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   /// 所以「加入收藏夹」= 这台设备会出现在屏幕墙上，用户不用先开墙再加。
   List<String> _favIds = [];
 
+  // ---------------- 免账号设备自动发现（定制版，2026-11-14） ----------------
+  /// 授权服务器拉回的设备清单（识别码 + 在线状态）。与最近/收藏列表合并展示：
+  /// 没连过的受控端也能直接出现在首页，不需要先手动添加或连一次。
+  List<Map<String, dynamic>> _autoDevices = [];
+  Timer? _autoTimer;
+  /// 首次发现时间（ms）：24 小时内的设备带「新」角标。
+  Map<String, int> _firstSeen = {};
+
   @override
   void initState() {
     super.initState();
     bind.mainLoadFavPeers();
     bind.mainLoadRecentPeers();
     _loadFavIds();
+    _loadFirstSeen();
     AddressBookStore.instance.load();
     // 地址簿改名/同步完成后刷新列表名称（最近/收藏与地址簿名称同步）
     AddressBookStore.instance.addListener(_onAbChanged);
@@ -222,9 +231,108 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     // 远程指令通道（远程运行程序 / 静默卸载员工端）：
     // 60s 周期校验授权时顺带取走服务端下发的指令
     LicenseClient.instance.startCommandPoll();
+    // 设备自动发现（定制版）：激活后 60s 拉一次授权下的设备清单，
+    // 没连过的受控端也直接出现在首页（默认 60s，激活完成下一轮生效）
+    _syncAutoDevices();
+    _autoTimer = Timer.periodic(
+        const Duration(seconds: 60), (_) => _syncAutoDevices());
     _idFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
+  }
+
+  // ---------------- 设备自动发现 ----------------
+
+  static const _kFirstSeen = 'hy-ab-first-seen';
+
+  void _loadFirstSeen() {
+    try {
+      final raw = bind.mainGetLocalOption(key: _kFirstSeen) ?? '';
+      if (raw.isNotEmpty) {
+        final m = jsonDecode(raw);
+        if (m is Map) {
+          _firstSeen = m.map((k, v) => MapEntry(k.toString(), v as int));
+        }
+      }
+    } catch (_) {}
+    // 清理 30 天前的记录，防止无限增长
+    final cut = DateTime.now()
+            .subtract(const Duration(days: 30))
+            .millisecondsSinceEpoch;
+    _firstSeen.removeWhere((_, v) => v < cut);
+  }
+
+  Future<void> _saveFirstSeen() async {
+    try {
+      await bind.mainSetLocalOption(
+          key: _kFirstSeen, value: jsonEncode(_firstSeen));
+    } catch (_) {}
+  }
+
+  bool _isNewId(String id) {
+    final t = _firstSeen[id.replaceAll(' ', '')] ?? 0;
+    if (t == 0) return false;
+    return DateTime.now().millisecondsSinceEpoch - t <
+        const Duration(days: 1).inMilliseconds;
+  }
+
+  Future<void> _syncAutoDevices() async {
+    final lc = LicenseClient.instance;
+    if (!lc.autoDeviceSyncEnabled || !lc.hasToken) return;
+    final d = await lc.fetchDevices();
+    if (d == null || d['ok'] != true) return;
+    final devs = <Map<String, dynamic>>[];
+    for (final e in (d['devices'] as List? ?? [])) {
+      if (e is Map) devs.add(Map<String, dynamic>.from(e));
+    }
+    var fsChanged = false;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final e in devs) {
+      final id = (e['peer_id'] ?? '').toString().replaceAll(' ', '');
+      if (id.isEmpty) continue;
+      if (!_firstSeen.containsKey(id)) {
+        _firstSeen[id] = now;
+        fsChanged = true;
+      }
+    }
+    if (fsChanged) _saveFirstSeen();
+    if (!mounted) return;
+    setState(() => _autoDevices = devs);
+  }
+
+  /// 合并展示列表：本机 peers（最近/收藏）+ 授权下发现但没连过的设备。
+  List<Peer> _mergedPeers() {
+    final src = _peers.peers.toList();
+    if (_autoDevices.isEmpty) return src;
+    final known = <String>{};
+    for (final p in src) {
+      known.add(p.id.replaceAll(' ', ''));
+    }
+    for (final e in _autoDevices) {
+      final id = (e['peer_id'] ?? '').toString().replaceAll(' ', '');
+      if (id.isEmpty || known.contains(id)) continue;
+      known.add(id);
+      // 地址簿里改过名就用名字，否则显示识别码
+      var alias = '';
+      var note = '';
+      for (final ab in AddressBookStore.instance.entries) {
+        if (ab.id.replaceAll(' ', '') == id) {
+          alias = ab.alias.trim();
+          note = ab.note.trim();
+          break;
+        }
+      }
+      final p = Peer.fromJson(<String, dynamic>{
+        'id': id,
+        'alias': alias,
+        'hostname': note,
+        'username': '',
+        'platform': '',
+      });
+      p.online = e['online'] == true;
+      src.add(p);
+    }
+    return src;
   }
 
   // ---------------- 跨窗口消息 ----------------
@@ -334,6 +442,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     AddressBookStore.instance.removeListener(_onAbChanged);
     _idTimer?.cancel();
     _netProbe?.cancel();
+    _autoTimer?.cancel();
     PeerOnlineProbe.instance.stop();
     _idController.dispose();
     _idFocusNode.dispose();
@@ -1237,99 +1346,15 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   }
 
   Widget _buildLocalInfo() {
-    return AnimatedBuilder(
-      animation: gFFI.serverModel,
-      builder: (context, _) {
-        final pwd = _localPwd;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.person_outline, size: 16, color: _C.sub),
-                const SizedBox(width: 7),
-                // ID 两个字做视觉强调（2026-11-09 用户要求：只优化「ID」标签，
-                // 数字保持常规样式）
-                const Text('ID',
-                    style: TextStyle(
-                        fontSize: 15,
-                        height: 1.2,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 3,
-                        color: _C.text,
-                        // 中文走雅黑；不写 fontFamily 时 Flutter 会先用 Roboto 再回退，
-                        // 回退字形会带上 Roboto 的度量，小字更糊。
-                        fontFamilyFallback: _cnFonts)),
-                const SizedBox(width: 8),
-                const Text('本机识别码',
-                    style: TextStyle(
-                        fontSize: 11,
-                        height: 1.2,
-                        color: _C.sub,
-                        fontFamilyFallback: _cnFonts)),
-                const Spacer(),
-                _squareIconButton(Icons.copy_rounded, () => _copy(_localId),
-                    tooltip: '复制识别码'),
-              ],
-            ),
-            const SizedBox(height: 2),
-            Text(
-              _groupedId.isEmpty ? '...' : _groupedId,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                // 数字恢复原设计样式（29/w700，2026-11-09 用户要求：
-                // 优化的是「ID」标签，不是数字）
-                fontSize: 29,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 2.0,
-                color: _C.text,
-                fontFamilyFallback: _cnFonts,
-              ),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                const Icon(Icons.lock_outline, size: 16, color: _C.sub),
-                const SizedBox(width: 7),
-                const Text('验证码',
-                    style: TextStyle(
-                        fontSize: 14,
-                        height: 1.35,
-                        color: _C.sub,
-                        fontFamilyFallback: _cnFonts)),
-                const Spacer(),
-                SizedBox(
-                  width: 30,
-                  height: 30,
-                  child: IconButton(
-                    padding: EdgeInsets.zero,
-                    splashRadius: 15,
-                    tooltip: '刷新验证码',
-                    icon: const Icon(Icons.refresh, size: 17, color: _C.sub),
-                    onPressed: _refreshPwd,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 2),
-            Text(
-              pwd.isEmpty ? '-' : pwd,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 1.4,
-                color: _C.text,
-                fontFamilyFallback: _cnFonts,
-              ),
-            ),
-            const SizedBox(height: 14),
-            _buildLicenseCard(),
-          ],
-        );
-      },
+    // 2026-11-14 定制版：管理端不再显示本机识别码 / 验证码（受控端才有
+    // 身份概念，管理端展示这两个只会让现场误把管理端当受控端连），
+    // 左栏只保留授权状态卡。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 6),
+        _buildLicenseCard(),
+      ],
     );
   }
 
@@ -1773,7 +1798,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   /// 批量模式底部动作条：全选 / 添加到屏幕墙 / 取消
   Widget _batchBar() {
-    final list = _filtered(_peers.peers);
+    final list = _filtered(_mergedPeers());
     final allSel = list.isNotEmpty && list.every((p) => _batchSel.contains(p.id));
     return Container(
       height: 42,
@@ -2137,7 +2162,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return AnimatedBuilder(
       animation: _peers,
       builder: (context, _) {
-        final list = _filtered(_peers.peers);
+        final list = _filtered(_mergedPeers());
         if (list.isEmpty) {
           return Center(
             child: Column(
@@ -2219,6 +2244,23 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                         ),
                       ),
                       const SizedBox(width: 7),
+                      // 自动发现的新设备：24 小时内带「新」角标（定制版）
+                      if (_isNewId(p.id)) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE5F6EA),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text('新',
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  height: 1.1,
+                                  color: Color(0xFF1F8A4C))),
+                        ),
+                        const SizedBox(width: 5),
+                      ],
                       Flexible(
                         child: Text(
                           _displayNameOrId(p),
@@ -2403,6 +2445,23 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                         ),
                       ),
                       const SizedBox(width: 5),
+                      // 自动发现的新设备：24 小时内带「新」角标（定制版）
+                      if (_isNewId(p.id)) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE5F6EA),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text('新',
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  height: 1.1,
+                                  color: Color(0xFF1F8A4C))),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
                       Expanded(
                         child: Text(
                           _displayNameOrId(p),
@@ -2756,14 +2815,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
           child: const Text('关闭',
               style: TextStyle(fontSize: 13.5, color: _C.sub)),
         ),
-        TextButton(
-          onPressed: () => _upgrade(context),
-          child: const Text('续费升级',
-              style: TextStyle(
-                  fontSize: 13.5,
-                  color: Color(0xFF1B72D6),
-                  fontWeight: FontWeight.w500)),
-        ),
+        // 2026-11-14 定制版：管理端隐藏续费入口（续费走销售侧，客户端不打扰）
         TextButton(
           onPressed: () => _unbind(context),
           child: const Text('解绑设备',
