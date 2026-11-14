@@ -73,8 +73,9 @@ LICENSE_IMPORT_NEW = (LICENSE_IMPORT_ANCHOR +
 
 # 【HyDesk】聊天文字按钮收费门禁（chat 附加包，10元/月在套餐里配置）：
 # 2026-11-10 改成「未开通也显示、点击弹开通引导」——之前直接隐藏按钮，
-# 用户既不知道有这个功能，也没有购买入口，等于没做门禁。现在与隐私屏、
-# 屏幕墙档位同一套：点一下弹窗说明 + 去商城购买 + 授权详情兑换。
+# 用户既不知道有这个功能，也没有购买入口，等于没做门禁。
+# 2026-11-14 定制版：引导弹窗不再带「去开通」购买按钮，改为提示联系
+# 管理员（与屏幕墙、隐私屏引导框同一套文案），商城购买入口全部撤掉。
 CHAT_ANCHOR = "    toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));"
 CHAT_NEW = ("    // 【HyDesk】聊天按钮收费门禁（chat 附加包）：未开通也显示，点击引导开通\n"
             "    toolbarItems.add(_HyChatGate(id: widget.id, ffi: widget.ffi));")
@@ -219,34 +220,21 @@ class _PrivacyShieldButton extends StatelessWidget {
 }
 
 /// 【HyDesk】隐私屏增值引导：与屏幕墙同一套附加包体系，只引导不放价格。
+/// 2026-11-14 定制版：管理端隐藏所有开通/购买按钮，只提示联系管理员。
 void _hyPrivacyUpgradeDialog(BuildContext context) {
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      title: const Text('隐私屏为增值功能',
+      title: const Text('该功能需要升级授权',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       content: const Text(
-          '当前授权未包含隐私屏附加包。\n\n购买后凭授权码在「授权详情 → 兑换附加包」里开通，立即生效，不需要重新激活。',
+          '隐私屏属于付费功能，当前授权不包含。\n\n如需使用，请联系管理员开通。',
           style: TextStyle(fontSize: 13, height: 1.6)),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('取消'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.of(ctx).pop();
-            gotoShop(context, productId: 'paPrivacy');
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Color(0xFF1B72D6),
-            elevation: 0,
-            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          child: const Text('去开通', style: TextStyle(color: Colors.white)),
+          child: const Text('知道了', style: TextStyle(color: Colors.grey)),
         ),
       ],
     ),
@@ -281,34 +269,21 @@ class _HyChatGate extends StatelessWidget {
 }
 
 /// 【HyDesk】文字聊天增值引导：与隐私屏同一套附加包体系，只引导不放价格。
+/// 2026-11-14 定制版：管理端隐藏所有开通/购买按钮，只提示联系管理员。
 void _hyChatUpgradeDialog(BuildContext context) {
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      title: const Text('文字聊天为增值功能',
+      title: const Text('该功能需要升级授权',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       content: const Text(
-          '当前授权未包含文字聊天附加包。\n\n购买后凭授权码在「授权详情 → 兑换附加包」里开通，立即生效，不需要重新激活。',
+          '文字聊天属于付费功能，当前授权不包含。\n\n如需使用，请联系管理员开通。',
           style: TextStyle(fontSize: 13, height: 1.6)),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('取消'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.of(ctx).pop();
-            gotoShop(context, productId: 'paChat');
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Color(0xFF1B72D6),
-            elevation: 0,
-            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          child: const Text('去开通', style: TextStyle(color: Colors.white)),
+          child: const Text('知道了', style: TextStyle(color: Colors.grey)),
         ),
       ],
     ),
