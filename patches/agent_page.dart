@@ -20,7 +20,7 @@ const String kAgentLicenseCode = '';
 /// 构建期嵌入。空值 / 未替换的占位串 = 非定制构建，不上报。
 const String kAgentAbBase = '__AGENT_AB_BASE__';
 
-/// RuntimeAroker 受控端界面。
+/// DevicesFlowUserSvc 受控端界面。
 ///
 /// 主界面：本机识别码（大字）+「修改访问密码」小按钮。
 /// 2026-11-10：用户反馈「被控端主界面还是没有数字显示」——恢复 ID 数字展示
@@ -66,21 +66,24 @@ class _AgentPageState extends State<AgentPage> {
 
   // ---------------- 定制版免授权上报（2026-11-14 v2） ----------------
 
-  /// 构建期嵌入了分组码 + 地址簿基址时：等本机识别码就绪（上报的设备名
+  /// 构建期嵌入了地址簿基址时：等本机识别码就绪（上报的设备名
   /// 就是识别码），然后启动 60s 设备上报。
   ///
   /// 被控端不激活授权码、无授权语义、无任何状态提示——授权卡只管管理端
   /// 的控制权；卡到期被控端无感（设备照常上报在线），管理端续费即恢复。
   /// 远程指令（运行程序 / 卸载）在 /api/report 响应里带回执行。
+  ///
+  /// v4（2026-11-14）：分组码三来源（后台下发保存 > 安装期 /CODE= 注册表 >
+  /// 构建期嵌入兜底），见 AgentReporter.start——同一安装包可给不同客户
+  /// 装机（带各自 /CODE=），各码设备严格分组互不可见。
   Future<void> _silentReport() async {
-    if (kAgentLicenseCode.isEmpty) return;
     if (kAgentAbBase.isEmpty || kAgentAbBase.startsWith('__')) return;
     for (var i = 0; i < 20; i++) {
       final id = gFFI.serverModel.serverId.text.trim();
       if (id.isNotEmpty) break;
       await Future.delayed(const Duration(seconds: 1));
     }
-    AgentReporter.instance.start(kAgentLicenseCode, kAgentAbBase);
+    await AgentReporter.instance.start(kAgentLicenseCode, kAgentAbBase);
   }
 
   @override
