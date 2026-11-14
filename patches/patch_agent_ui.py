@@ -612,14 +612,14 @@ def patch_agent_embed(root, code, abbase):
     workflow 调用：python patch_agent_ui.py . <licensecode> <abbase>
     - code：设备归属分组码（即授权卡卡号）。被控端不激活授权码，
       只随 /api/report 上报；空 = 非定制构建，不上报。
-    - abbase：地址簿基址（如 https://a.rusr-jm.cn）。被控端不激活拿不到
+    - abbase：地址簿基址（如 https://hd.fcpx0.cn/ab）。被控端不激活拿不到
       config 下发，必须构建期嵌入；为空时默认定制版 A 地址簿。
     """
     if not code:
         print('agent embed: (none, generic build)')
         return
     if not abbase:
-        abbase = 'https://a.rusr-jm.cn'
+        abbase = 'https://hd.fcpx0.cn/ab'
     p = os.path.join(root, 'flutter', 'lib', 'desktop', 'pages',
                      'agent_page.dart')
     if not os.path.isfile(p):
