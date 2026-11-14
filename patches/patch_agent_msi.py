@@ -31,6 +31,8 @@ SERVICE_RECOVERY_CPP = r"""// [HyDesk] Service auto-recovery via ChangeServiceCo
 // 3x restart after 60s, failure counter reset daily. Fully silent,
 // no sc.exe child process (sc.exe is a console app and would flash
 // a black window during the silent install).
+#include <strutil.h>  // [HyDesk] ReleaseStr lives here (not in wcautil.h)
+
 bool MySetServiceRecoveryW(LPCWSTR serviceName)
 {
     SC_HANDLE hSCManager = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
