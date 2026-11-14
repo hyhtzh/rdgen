@@ -17,7 +17,7 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
-const _kBrandUrl = 'https://ww.hydesk.cn';
+// 2026-11-14 用户要求：官网不外显，_kBrandUrl 一并移除（关于页不再展示官方网站）
 
 /// 配色，与首页保持一致
 class _SC {
@@ -325,9 +325,7 @@ class _SettingsRouteState extends State<SettingsRoute> {
         _row('本机识别码',
             Text(id.isEmpty ? '-' : id,
                 style: const TextStyle(fontSize: 13, color: _SC.sub))),
-        _row('官方网站',
-            Text(_kBrandUrl,
-                style: const TextStyle(fontSize: 13, color: _SC.blue))),
+        // 2026-11-14 用户要求：官网与「关于」里的官方网站一律不显示
       ]),
       const Padding(
         padding: EdgeInsets.only(top: 4),
