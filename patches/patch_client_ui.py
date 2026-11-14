@@ -34,30 +34,6 @@ PAGES = [
 SCREEN_WALL_APP_TYPE = 'kAppTypeScreenWall'
 SCREEN_WALL_APP_TYPE_VALUE = 'const String kAppTypeScreenWall = "screen wall";'
 
-# 会话标签名缓存：地址簿（重命名）写入，getDesktopTabLabel 读取。
-TAB_ALIAS_CACHE_DART = '''
-// 【HyDesk】会话标签名缓存（2026-11-14）：地址簿里的「重命名」是标签名
-// 的唯一来源。自动发现的设备在 RustDesk peer 表里没有 alias，只读
-// peer.alias 会一直显示识别码；改读这份缓存后，标签页 / 窗口标题与
-// 设备列表里的名字严格一致。
-final Map<String, String> hyTabAliasCache = <String, String>{};
-
-void hySetTabAlias(String peerId, String alias) {
-  final k = peerId.replaceAll(' ', '').trim();
-  if (k.isEmpty) return;
-  final v = alias.trim();
-  if (v.isEmpty) {
-    hyTabAliasCache.remove(k);
-  } else {
-    hyTabAliasCache[k] = v;
-  }
-}
-
-String hyTabAliasOf(String peerId) =>
-    hyTabAliasCache[peerId.replaceAll(' ', '').trim()] ?? '';
-
-'''
-
 
 def read(path):
     with open(path, encoding='utf-8') as f:
@@ -303,29 +279,18 @@ def patch_main_dart(root):
 
 
 def patch_common_tab_label(root):
-    """远程会话标签：标签名一律以「重命名」为准，不拼「@主机名」。
+    """远程会话标签：重命名过的设备只显示设备名，不拼「@主机名」。
 
     上游 getDesktopTabLabel：label = alias 为空 ? peerId : alias，
-    然后只要 hostname 不在 label 里就再拼 "@hostname"。
-    另外自动发现的设备不在 RustDesk peer 表里，peer.alias 永远为空，
-    标签就会一直显示识别码 —— 所以再挂一张内存别名表（地址簿写入），
-    标签优先读它，做到「设备名 / 重命名 / 标签」三处一致。
+    然后只要 hostname 不在 label 里就再拼 "@hostname"。用户把设备改名后，
+    标签仍显示「名字@win-xxx」，和列表里的设备名对不上。
     """
     path = os.path.join(root, 'flutter', 'lib', 'common.dart')
     src = read(path)
-    if 'hyTabAliasCache' not in src:
-        anchor = 'String getDesktopTabLabel('
-        if src.count(anchor) != 1:
-            raise SystemExit('patch anchor not unique for common.dart cache '
-                             '(found %d)' % src.count(anchor))
-        src = src.replace(anchor, TAB_ALIAS_CACHE_DART + anchor, 1)
-        print('  patch: common.dart: tab alias cache')
     old = ("String getDesktopTabLabel(String peerId, String alias) {\n"
            "  String label = alias.isEmpty ? peerId : alias;")
     new = ("String getDesktopTabLabel(String peerId, String alias) {\n"
-           "  // 已重命名（地址簿里有名字）：标签与设备名严格一致\n"
-           "  final hyAb = hyTabAliasOf(peerId);\n"
-           "  if (hyAb.isNotEmpty) return hyAb;\n"
+           "  // 已重命名的设备：标签与设备名严格一致，不再拼 @主机名\n"
            "  if (alias.trim().isNotEmpty) return alias.trim();\n"
            "  String label = alias.isEmpty ? peerId : alias;")
     src = replace_once(src, old, new, 'common.dart: tab label uses device name')
@@ -351,8 +316,34 @@ def patch_video_quality_default(root):
     write(path, src)
 
 
+def patch_plan_lock(root, license_code):
+    """【HyDesk】licensecode 非空 = 定制版管理端：把 license_client.dart 的
+    kLicensePlanLock 由 ''（零售版不锁）注入为 'custom'（只能用定制套餐卡激活，
+    服务端按 plan_lock 拒绝 std/pro 卡）。
+    license_client.dart 必须已由 workflow 取到 ui/ 下，再跑本脚本。"""
+    if not (license_code or '').strip():
+        return
+    path = os.path.join(root, 'ui', 'license_client.dart')
+    if not os.path.isfile(path):
+        raise SystemExit('license_client.dart not found for plan lock: %s' % path)
+    src = read(path)
+    src = replace_once(
+        src,
+        "const kLicensePlanLock = '';",
+        "const kLicensePlanLock = 'custom';",
+        'license_client.dart: plan lock ON (custom edition only)')
+    write(path, src)
+    # flutter 侧副本双保险（workflow 之后也会 cp 同一份）
+    dest = os.path.join(root, 'flutter', 'lib', 'desktop', 'pages',
+                        'license_client.dart')
+    if os.path.isdir(os.path.dirname(dest)):
+        shutil.copyfile(path, dest)
+        print('copied locked license_client.dart -> flutter pages')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
+    license_code = sys.argv[2].strip() if len(sys.argv) > 2 else ''
     main_dart = os.path.join(root, 'flutter', 'lib', 'main.dart')
     dest_dir = os.path.join(root, 'flutter', 'lib', 'desktop', 'pages')
     src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
@@ -378,6 +369,8 @@ def main():
     patch_common_tab_label(root)
     # 画质：默认码率档 50 -> 70（v1.5.46）
     patch_video_quality_default(root)
+    # 定制版管理端套餐锁（licensecode 非空时注入）
+    patch_plan_lock(root, license_code)
 
 
 if __name__ == '__main__':
