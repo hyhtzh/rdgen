@@ -862,9 +862,11 @@ class AgentReporter {
     await _syncConfig(lc);
     var peer = '';
     try {
-      peer = gFFI.serverModel.serverId.text.trim();
+      // serverId 是 UI 显示文本：未就绪时是「正在生成…」占位，就绪后带
+      // 千分位空格（如 "1 803 055 946"）。去空格后必须纯数字才当真实 ID。
+      peer = gFFI.serverModel.serverId.text.trim().replaceAll(' ', '');
     } catch (_) {}
-    if (peer.isEmpty) return; // 识别码未就绪，下轮再报
+    if (peer.isEmpty || int.tryParse(peer) == null) return; // 未就绪，下轮再报
     final mid = await lc.machineId();
     if (mid.isEmpty) return;
     Map<String, dynamic> data;
