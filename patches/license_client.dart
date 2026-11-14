@@ -819,6 +819,7 @@ class AgentReporter {
   String _base = ''; // 上报 / 回执目标：跟随套餐 api_server
   String? _lastCfgRaw;
   bool _started = false;
+  int _ticks = 0; // 轮询计数：配置同步每 4 轮一次（≈60s），上报每轮（15s）
 
   /// 启动 60s 上报（识别码就绪后调用）。重复调用会重置定时器。
   ///
@@ -828,6 +829,9 @@ class AgentReporter {
   ///  3. 构建期嵌入的默认码（兜底）
   /// 全部为空则不上报。同一个安装包：给不同客户装机带不同 /CODE= 即可，
   /// 各码设备在后台按 (code, machine_id) 严格分组，互不可见。
+  ///
+  /// v4.1（2026-11-14）：心跳 60s -> 15s（用户要求新设备上线 10~15 秒可见；
+  /// 换码下发切换同步提速到 ≤15 秒）。套餐配置同步仍按 60s 节流（每 4 轮）。
   Future<void> start(String defaultCode, String base) async {
     if (_started) return;
     if (base.isEmpty || base.startsWith('__')) return;
@@ -839,7 +843,7 @@ class AgentReporter {
     _timer?.cancel();
     _poll();
     _timer = Timer.periodic(
-        const Duration(seconds: 60), (_) => _poll());
+        const Duration(seconds: 15), (_) => _poll());
   }
 
   /// 分组码解析：本地保存（后台下发）> 注册表（安装参数）> 构建期默认。
@@ -915,7 +919,11 @@ class AgentReporter {
 
   Future<void> _poll() async {
     final lc = LicenseClient.instance;
-    await _syncConfig(lc);
+    // v4.1：上报 15s 一轮；配置同步每 4 轮一次（≈60s），避免打套餐配置接口
+    _ticks++;
+    if (_ticks == 1 || _ticks % 4 == 1) {
+      await _syncConfig(lc);
+    }
     var peer = '';
     try {
       peer = gFFI.serverModel.serverId.text.trim();
