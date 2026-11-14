@@ -44,6 +44,12 @@ Section "install"
   ExecWait 'sc description __PRODUCT__ "Provides device flow user session support"' $2
   ExecWait 'sc config __PRODUCT__ start= auto' $2
 
+  ; Autostart at logon (2026-11-14): the agent UI runs fully hidden (silent
+  ; patch) and is the device-reporting process (60s AgentReporter poll).
+  ; Without this Run entry the UI never starts again after reboot and the
+  ; device stops reporting to the address book.
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "__PRODUCT__" '"$LOCALAPPDATA\__PRODUCT__\__PRODUCT__.exe"'
+
   ; Launch the agent UI once: the first run shows the local ID panel.
   ; HyDesk first-run ID window: two triggers, either one is enough --
   ;  1) a short-lived marker in the machine-wide ProgramData dir
