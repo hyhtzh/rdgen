@@ -212,15 +212,18 @@ jobs:
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/settings_page.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_client_ui.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_client_ui.py?nc=${{ github.run_id }}
-          python patch_client_ui.py .
-          curl -sSL -o ui/license_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
+          # 【HyDesk】license_client.dart must be fetched BEFORE patch_client_ui.py
+          # so the script can inject the custom-edition plan lock into it.
           curl -sSL -o ui/license_client.dart \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
+          # licensecode non-empty = custom edition manager: activation locked to
+          # custom plan cards only (std/pro cards rejected client+server side)
+          python patch_client_ui.py . "${{ inputs.licensecode }}"
+          cp ui/license_client.dart flutter/lib/desktop/pages/license_client.dart
+          curl -sSL -o ui/license_page.dart \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/license_page.dart \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
-          curl -sSL -o flutter/lib/desktop/pages/license_client.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_license.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py?nc=${{ github.run_id }}
           python patch_license.py . desktop
