@@ -311,6 +311,7 @@ class AddressBookStore extends ChangeNotifier {
 
   /// 增删改后调用：先写本地缓存（立即生效），再后台推送云端
   Future<void> _persist() async {
+    _publishTabAliases();
     await _set(
         _kKey, jsonEncode(entries.map((e) => e.toJson()).toList()));
     notifyListeners();
@@ -330,6 +331,17 @@ class AddressBookStore extends ChangeNotifier {
   Future<void> retrySync() async {
     syncError = '';
     await _persist();
+  }
+
+  /// 把地址簿别名灌进会话标签缓存（common.dart: hyTabAliasCache）。
+  /// 2026-11-14：远程会话标签页 / 窗口标题一律显示「重命名」后的设备名，
+  /// 自动发现的设备在 RustDesk peer 表里没有 alias，只靠 peer.alias 会一直
+  /// 显示识别码 —— 所以标签名以地址簿为准。
+  void _publishTabAliases() {
+    for (final e in entries) {
+      if (e.alias.trim().isEmpty) continue;
+      hySetTabAlias(e.id, e.alias);
+    }
   }
 
   // ---------------- 本地缓存 ----------------
@@ -354,6 +366,7 @@ class AddressBookStore extends ChangeNotifier {
       debugPrint('address book cache load failed: $e');
     }
     loaded = true;
+    _publishTabAliases();
     notifyListeners();
     if (signedIn) {
       syncing = true;
