@@ -222,11 +222,9 @@ class _ActivateCardState extends State<_ActivateCard> {
       if (r.isAddon) {
         setState(() => _busy = false);
         _controller.clear();
-        final exp = r.addonExpire.length >= 10
-            ? '（至 ${r.addonExpire.substring(0, 10)}）'
-            : '';
+        // 2026-11-14：开通提示不再显示到期日期
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('附加包已开通：${r.addonName}$exp'),
+            content: Text('附加包已开通：${r.addonName}'),
             duration: const Duration(seconds: 4)));
         widget.onActivated(r);
         return;
@@ -494,11 +492,10 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
     default:
       planType = c.savedPlan.isEmpty ? '—' : c.savedPlan;
   }
-  final days = c.daysLeft;
   final used = c.savedDevicesUsed;
   final max = c.savedDevicesMax;
   final code = c.savedCode;
-  final expDay = c.savedExpire.isEmpty ? '' : c.savedExpire.split(' ').first;
+  // 2026-11-14 定制版：到期时间 / 剩余天数不对外展示
 
   Widget kv(String k, String v, {Color color = _LC.text, bool bold = false}) {
     return Padding(
@@ -565,29 +562,9 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('输入购买后拿到的附加包授权码，开通后立即生效。\n'
+            const Text('输入附加包授权码，开通后立即生效。\n'
                 '权限绑定当前授权码，换设备后重新激活同一授权码仍然有效。',
                 style: TextStyle(fontSize: 12.5, height: 1.6)),
-            const SizedBox(height: 8),
-            // 没有码的用户也要有出口，点了就能去商城下单
-            InkWell(
-              onTap: () => Navigator.of(d).pop('buy'),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Text('还没有授权码？',
-                        style: TextStyle(fontSize: 12.5, color: _LC.sub)),
-                    Text('去商城购买 →',
-                        style: TextStyle(
-                            fontSize: 12.5,
-                            color: Color(0xFF1B72D6),
-                            fontWeight: FontWeight.w500)),
-                  ],
-                ),
-              ),
-            ),
             const SizedBox(height: 10),
             TextField(
               controller: ctrl,
@@ -615,17 +592,12 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
         ],
       ),
     );
-    if (act == 'buy') {
-      if (!context.mounted) return;
-      await gotoShop(context, productId: productId);
-      return;
-    }
     if (act != 'ok') return;
     final v = ctrl.text.trim();
     if (v.isEmpty) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('请先填写附加包授权码；还没有码可点弹窗里的「去商城购买」'),
+          content: Text('请先填写附加包授权码'),
           duration: Duration(seconds: 3)));
       return;
     }
@@ -633,14 +605,10 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
       final r = await c.activate(v);
       if (!context.mounted) return;
       refresh();
-      final eff = r.addonEffectiveExpire.isNotEmpty
-          ? r.addonEffectiveExpire
-          : r.addonExpire;
-      final effDay = eff.isEmpty ? '' : eff.split(' ').first;
+      // 2026-11-14：开通提示也不再带到期日期
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(r.isAddon
-              ? '已开通：${r.addonName}（已绑定当前授权码'
-                  '${effDay.isEmpty ? "" : "，${r.addonExpiresWithLicense ? "随主授权至" : "至"} $effDay"}）'
+              ? '已开通：${r.addonName}（已绑定当前授权码）'
               : '授权已更新'),
           duration: const Duration(seconds: 4)));
     } on LicenseException catch (e) {
@@ -665,8 +633,6 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
           children: [
             kv('版本类型', planType, bold: true),
             kv('授权类型', cardName, color: const Color(0xFF2FA45C), bold: true),
-            kv('到期时间', expDay.isEmpty ? '—' : expDay),
-            kv('剩余天数', days >= 0 ? '$days 天' : '—'),
             kv('设备占用', used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 5),
@@ -693,11 +659,10 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                                     fontSize: 13, color: Color(0xFF8A94A6)))
                           else
                             ...addons.map((a) {
-                              final exp = (a['expire_at'] ?? '').toString();
                               final label =
                                   (a['name'] ?? a['key'] ?? '').toString();
+                              // 2026-11-14：附加包不显示到期日期
                               final meta = [
-                                if (exp.isNotEmpty) exp.split(' ').first,
                                 '${a["devices"] ?? 0}/${a["max_devices"] ?? 3} 台',
                                 if (a['limited_by_license'] == true) '随主授权',
                               ].join(' · ');
@@ -742,14 +707,7 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
           onPressed: () => Navigator.of(ctx).pop(),
           child: const Text('关闭', style: TextStyle(fontSize: 13.5, color: _LC.sub)),
         ),
-        TextButton(
-          onPressed: buy,
-          child: const Text('购买授权',
-              style: TextStyle(
-                  fontSize: 13.5,
-                  color: _LC.blue,
-                  fontWeight: FontWeight.w500)),
-        ),
+        // 2026-11-14 定制版：购买入口一律隐藏（授权码由渠道线下交付）
         TextButton(
           onPressed: unbind,
           child: const Text('解绑设备',
