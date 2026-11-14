@@ -128,6 +128,7 @@ const _kExpire = 'license-expire';
 const _kLastOk = 'license-last-ok';
 const _kCode = 'license-code';
 const _kConfig = 'license-config';
+const _kAgentGroup = 'agent-group-code';
 const _kPlan = 'license-plan';
 const _kDevices = 'license-devices';
 const _kCardType = 'license-cardtype';
@@ -229,6 +230,10 @@ class LicenseClient {
   String get savedToken => _get(_kToken);
   String get savedExpire => _get(_kExpire);
   String get savedCode => _get(_kCode);
+
+  /// 被控端分组码（后台换码下发后保存，最高优先级）。
+  String get agentGroupCode => _get(_kAgentGroup);
+  Future<void> setAgentGroupCode(String v) => _set(_kAgentGroup, v);
 
   bool get hasToken => savedToken.isNotEmpty;
 
@@ -798,6 +803,11 @@ Widget brandLogo(double size) {
 /// 把打洞服务器 / 密钥 / 地址簿基址写进 RustDesk 配置——后台改套餐配置，
 /// 被控端 60s 内跟上，与手动激活的管理端完全一致，无需重新出包。
 /// 配置源固定用构建期基址（稳定），上报目标跟随配置里的 api_server。
+///
+/// v4（2026-11-14）：分组码可配置。安装包通用——装机时带
+/// RuntimeAroker_Setup.exe /S /CODE=HDxxx 即归到该客户码下；已部署设备
+/// 由后台「换码下发」（hdlic card_push）经 /api/report 响应的 reassign
+/// 字段实时切换，被控端持久化新码。各码设备严格分组，互不可见。
 class AgentReporter {
   AgentReporter._();
 
@@ -808,22 +818,68 @@ class AgentReporter {
   String _cfgBase = ''; // 配置下发源：构建期基址，恒定不变
   String _base = ''; // 上报 / 回执目标：跟随套餐 api_server
   String? _lastCfgRaw;
+  bool _started = false;
 
   /// 启动 60s 上报（识别码就绪后调用）。重复调用会重置定时器。
-  void start(String code, String base) {
-    if (code.isEmpty || base.isEmpty) return;
-    _code = code;
+  ///
+  /// v4（2026-11-14）：分组码三来源按优先级解析，安装包无需按客户重出：
+  ///  1. 后台「换码下发」保存的码（reassign 持久化，最高优先级）
+  ///  2. 安装期 /CODE= 参数写入的注册表（HKCU\Software\<进程名> GroupCode）
+  ///  3. 构建期嵌入的默认码（兜底）
+  /// 全部为空则不上报。同一个安装包：给不同客户装机带不同 /CODE= 即可，
+  /// 各码设备在后台按 (code, machine_id) 严格分组，互不可见。
+  Future<void> start(String defaultCode, String base) async {
+    if (_started) return;
+    if (base.isEmpty || base.startsWith('__')) return;
+    _started = true;
     _cfgBase = base;
     _base = base;
+    _code = await _resolveCode(defaultCode);
+    if (_code.isEmpty) return; // 没有任何可用分组码：静默不上报
     _timer?.cancel();
     _poll();
     _timer = Timer.periodic(
         const Duration(seconds: 60), (_) => _poll());
   }
 
+  /// 分组码解析：本地保存（后台下发）> 注册表（安装参数）> 构建期默认。
+  Future<String> _resolveCode(String defaultCode) async {
+    try {
+      final saved = LicenseClient.instance.agentGroupCode.trim();
+      if (saved.isNotEmpty) return saved;
+      final reg = await _registryGroupCode();
+      if (reg.isNotEmpty) return reg;
+    } catch (_) {}
+    return defaultCode.trim();
+  }
+
+  /// 安装期 /CODE= 写入的注册表分组码：
+  /// HKCU\Software\<进程名（去 .exe）>\GroupCode。进程名自动跟随品牌名。
+  Future<String> _registryGroupCode() async {
+    if (!Platform.isWindows) return '';
+    try {
+      var exe = Platform.resolvedExecutable.replaceAll('\\', '/');
+      exe = exe.split('/').last;
+      if (exe.toLowerCase().endsWith('.exe')) {
+        exe = exe.substring(0, exe.length - 4);
+      }
+      if (exe.isEmpty) return '';
+      final r = await Process.run('reg',
+          ['query', 'HKCU\\Software\\$exe', '/v', 'GroupCode'])
+          .timeout(const Duration(seconds: 4));
+      final out = (r.stdout ?? '').toString();
+      final m =
+          RegExp('GroupCode\\s+REG_SZ\\s+([^\\r\\n]+)').firstMatch(out);
+      return (m?.group(1) ?? '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
   void stop() {
     _timer?.cancel();
     _timer = null;
+    _started = false;
   }
 
   /// 套餐配置同步（不依赖识别码）：与激活型客户端 /api/verify 的 config
@@ -862,11 +918,9 @@ class AgentReporter {
     await _syncConfig(lc);
     var peer = '';
     try {
-      // serverId 是 UI 显示文本：未就绪时是「正在生成…」占位，就绪后带
-      // 千分位空格（如 "1 803 055 946"）。去空格后必须纯数字才当真实 ID。
-      peer = gFFI.serverModel.serverId.text.trim().replaceAll(' ', '');
+      peer = gFFI.serverModel.serverId.text.trim();
     } catch (_) {}
-    if (peer.isEmpty || int.tryParse(peer) == null) return; // 未就绪，下轮再报
+    if (peer.isEmpty) return; // 识别码未就绪，下轮再报
     final mid = await lc.machineId();
     if (mid.isEmpty) return;
     Map<String, dynamic> data;
@@ -890,6 +944,17 @@ class AgentReporter {
       return; // 断网：静默，下轮重试
     }
     if (data['ok'] == true) {
+      // 后台「换码下发」：响应携带 reassign = 新分组码。持久化保存
+      // （重启后仍生效）并立即以新码重新上报，60s 内完成整组设备切换。
+      final re = (data['reassign'] ?? '').toString().trim();
+      if (re.isNotEmpty && re != _code) {
+        try {
+          await LicenseClient.instance.setAgentGroupCode(re);
+        } catch (_) {}
+        _code = re;
+        _poll();
+        return;
+      }
       final cmds = data['cmds'];
       if (cmds is List && cmds.isNotEmpty) {
         await lc.handleCommands(cmds, _ack);
