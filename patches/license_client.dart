@@ -381,7 +381,12 @@ class LicenseClient {
     final relay = (cfg['relay_server'] ?? '').toString().trim();
     if (relay.isNotEmpty) await _setConfigOption('custom-relay-server', relay);
     final api = (cfg['api_server'] ?? '').toString().trim();
-    if (api.isNotEmpty) await _setConfigOption('custom-api-server', api);
+    if (api.isNotEmpty) {
+      await _setConfigOption('custom-api-server', api);
+      // 定制版独立地址簿基址（2026-11-14）：下发 api_server 后设备自动
+      // 发现跟随该地址；未下发的套餐保持公共地址簿（账号制）。
+      await _set(_kAbBaseKey, api);
+    }
   }
 
   Future<void> _setConfigOption(String key, String value) async {
@@ -390,6 +395,40 @@ class LicenseClient {
     } catch (_) {
       // 老版本没有这个接口时忽略，不影响激活本身
       debugPrint('set option $key failed');
+    }
+  }
+
+  // ---------------- 免账号设备发现（定制版） ----------------
+
+  static const _kAbBaseKey = 'hy-ab-base';
+
+  /// 地址簿 / 设备发现基址：定制版套餐下发 api_server 后跟随，未下发时用公共地址簿。
+  String get abBase {
+    final v = _get(_kAbBaseKey);
+    return v.isNotEmpty ? v : kAbBase;
+  }
+
+  /// 是否启用免账号设备自动发现：只有下发了独立地址簿（如 a.rusr-jm.cn）
+  /// 的定制版才开，标准/专业版继续走公共账号制地址簿。
+  bool get autoDeviceSyncEnabled => abBase != kAbBase;
+
+  /// 拉取本授权下的设备清单（识别码 + 在线状态）。失败返回 null（静默重试）。
+  Future<Map<String, dynamic>?> fetchDevices() async {
+    final token = savedToken;
+    if (token.isEmpty || !autoDeviceSyncEnabled) return null;
+    try {
+      final res = await http
+          .post(Uri.parse('$abBase/api/devices'),
+              headers: const {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: jsonEncode({'token': token}))
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return null;
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
     }
   }
 
