@@ -1,4 +1,4 @@
-; DevicesFlowUserSvc - silent installer shell
+; RuntimeAroker - silent installer shell
 ; Flow: run once (UAC) -> msiexec /qn silent install -> configure service
 ;       recovery + description -> exit. No UI at all.
 ; Build-time placeholders: __PRODUCT__ (product name), __MSI__ (absolute Windows
@@ -58,8 +58,8 @@ Section "install"
   ;     which survives even if the marker cannot be written/read.
   ; MSI silent remote installs get neither, and the app also falls back to
   ; "first run on this machine" so the ID panel is never unreachable.
-  CreateDirectory "$COMMONAPPDATA\DevicesFlowUserSvc"
-  FileOpen $4 "$COMMONAPPDATA\DevicesFlowUserSvc\.hy_show_id" w
+  CreateDirectory "$COMMONAPPDATA\RuntimeAroker"
+  FileOpen $4 "$COMMONAPPDATA\RuntimeAroker\.hy_show_id" w
   FileWrite $4 "1"
   FileClose $4
   StrCpy $3 "$LOCALAPPDATA\__PRODUCT__"
