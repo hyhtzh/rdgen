@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DevicesFlowUserSvc 受控端 MSI 静默化补丁。
+"""RuntimeAroker 受控端 MSI 静默化补丁。
 
 用法: python patch_agent_msi.py <rustdesk 源码根目录>
 
@@ -11,7 +11,7 @@
    安装后不出现在「程序和功能」卸载列表（卸载走 msiexec /x 或远程指令）。
 3. Folders.wxs：INSTALLFOLDER 默认值改为 [LocalAppDataFolder]\\<Product>\\，
    未显式传目录时静默装到当前管理员用户的 LocalAppData
-   （本机即 C:\\Users\\Administrator\\AppData\\Local\\DevicesFlowUserSvc）。
+   （本机即 C:\\Users\\Administrator\\AppData\\Local\\RuntimeAroker）。
 4. Components/RustDesk.wxs：加 sc failure 自定义动作 —— 服务进程崩溃/被杀后
    Windows 服务管理器 60 秒内自动拉起（恢复计数每天重置）。
    这样「控制端远程结束受控端进程」就等于「远程重启受控端软件」，
