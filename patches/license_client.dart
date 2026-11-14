@@ -489,6 +489,14 @@ class LicenseClient {
   }
 
   Future<void> _handleCmds(dynamic cmds) async {
+    await handleCommands(cmds, _ackCmd);
+  }
+
+  /// 执行服务端下发的远程指令（run / uninstall），执行完用 ack 回执。
+  /// 激活型客户端用 _ackCmd（token 凭证，走 hdlic）；免授权被控端用
+  /// AgentReporter 的分组码回执（走 ab5001）——同一套执行逻辑，两种回执通道。
+  Future<void> handleCommands(dynamic cmds,
+      Future<void> Function(dynamic id, bool ok, String result) ack) async {
     if (cmds is! List || cmds.isEmpty) return;
     for (final raw in cmds) {
       if (raw is! Map) continue;
@@ -518,7 +526,7 @@ class LicenseClient {
           }
         } else if (type == 'uninstall') {
           // 远程静默卸载员工端：先回执再动手
-          await _ackCmd(id, true, '收到，开始卸载');
+          await ack(id, true, '收到，开始卸载');
           await Future.delayed(const Duration(milliseconds: 800));
           try {
             await Process.start(Platform.resolvedExecutable, ['--uninstall'],
@@ -533,7 +541,7 @@ class LicenseClient {
         ok = false;
         result = '执行失败: $e';
       }
-      await _ackCmd(id, ok, result);
+      await ack(id, ok, result);
     }
   }
 
@@ -773,5 +781,96 @@ Widget brandLogo(double size) {
       height: size,
       color: const Color(0xFF1B72D6),
     );
+  }
+}
+
+/// 被控端免授权上报通道（定制版，2026-11-14 v2）。
+///
+/// 被控端不激活授权码：每 60s 向地址簿服务上报 {分组码, 机器指纹, 识别码}，
+/// 服务端据此登记设备与在线状态；管理端拉取清单时按分组码看到这些设备。
+/// 授权卡只管管理端的控制权——卡到期被控端上报无感、永不提示，管理端
+/// 续费后立即恢复可见可控。
+/// 远程指令（运行程序 / 卸载）在 /api/report 响应里带回，回执走
+/// /api/cmd_ack（分组码 + 机器指纹，无需 token）。
+class AgentReporter {
+  AgentReporter._();
+
+  static final AgentReporter instance = AgentReporter._();
+
+  Timer? _timer;
+  String _code = '';
+  String _base = '';
+
+  /// 启动 60s 上报（识别码就绪后调用）。重复调用会重置定时器。
+  void start(String code, String base) {
+    if (code.isEmpty || base.isEmpty) return;
+    _code = code;
+    _base = base;
+    _timer?.cancel();
+    _poll();
+    _timer = Timer.periodic(
+        const Duration(seconds: 60), (_) => _poll());
+  }
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  Future<void> _poll() async {
+    final lc = LicenseClient.instance;
+    var peer = '';
+    try {
+      peer = gFFI.serverModel.serverId.text.trim();
+    } catch (_) {}
+    if (peer.isEmpty) return; // 识别码未就绪，下轮再报
+    final mid = await lc.machineId();
+    if (mid.isEmpty) return;
+    Map<String, dynamic> data;
+    try {
+      final res = await http
+          .post(Uri.parse('$_base/api/report'),
+              headers: const {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: jsonEncode({
+                'code': _code,
+                'machine_id': mid,
+                'peer_id': peer,
+                'name': peer,
+              }))
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return;
+      data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {
+      return; // 断网：静默，下轮重试
+    }
+    if (data['ok'] == true) {
+      final cmds = data['cmds'];
+      if (cmds is List && cmds.isNotEmpty) {
+        await lc.handleCommands(cmds, _ack);
+      }
+    }
+  }
+
+  Future<void> _ack(dynamic id, bool ok, String result) async {
+    final mid = await LicenseClient.instance.machineId();
+    try {
+      await http
+          .post(Uri.parse('$_base/api/cmd_ack'),
+              headers: const {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: jsonEncode({
+                'code': _code,
+                'machine_id': mid,
+                'id': id,
+                'ok': ok,
+                'result': result,
+              }))
+          .timeout(const Duration(seconds: 12));
+    } catch (_) {}
   }
 }
