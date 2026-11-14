@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """DevicesFlowUserSvc 受控端 UI 补丁。
 
-用法: python patch_agent_ui.py <rustdesk 源码根目录>
+用法: python patch_agent_ui.py <rustdesk 源码根目录> [分组码] [地址簿基址]
 
 做三件事：
 1. main.dart 补 import 并把首页 `? const DesktopTabPage()` 换成 `? const AgentPage()`
@@ -605,15 +605,21 @@ def patch_video_qos_fps(root):
     print('patched video_qos.rs: INIT_FPS 15 -> 25')
 
 
-def patch_agent_license_code(root, code):
-    """定制版（2026-11-14）：把构建参数传入的授权码写进 agent_page.dart。
+def patch_agent_embed(root, code, abbase):
+    """定制版（2026-11-14 v2）：把构建参数传入的分组码与地址簿基址写进
+    agent_page.dart。
 
-    workflow 调用：python patch_agent_ui.py . <licensecode>
-    code 为空 = 非定制构建，占位常量保持空串，受控端维持无激活行为。
+    workflow 调用：python patch_agent_ui.py . <licensecode> <abbase>
+    - code：设备归属分组码（即授权卡卡号）。被控端不激活授权码，
+      只随 /api/report 上报；空 = 非定制构建，不上报。
+    - abbase：地址簿基址（如 https://a.rusr-jm.cn）。被控端不激活拿不到
+      config 下发，必须构建期嵌入；为空时默认定制版 A 地址簿。
     """
     if not code:
-        print('agent license code: (none, generic build)')
+        print('agent embed: (none, generic build)')
         return
+    if not abbase:
+        abbase = 'https://a.rusr-jm.cn'
     p = os.path.join(root, 'flutter', 'lib', 'desktop', 'pages',
                      'agent_page.dart')
     if not os.path.isfile(p):
@@ -622,19 +628,24 @@ def patch_agent_license_code(root, code):
         src = f.read()
     old = "const String kAgentLicenseCode = '';"
     if old not in src:
-        if "kAgentLicenseCode = '%s'" % code in src:
-            print('agent license code already embedded')
-            return
-        raise SystemExit('patch failed: kAgentLicenseCode anchor not found')
-    src = src.replace(old, "const String kAgentLicenseCode = '%s';" % code, 1)
+        if "kAgentLicenseCode = '%s'" % code not in src:
+            raise SystemExit('patch failed: kAgentLicenseCode anchor not found')
+    else:
+        src = src.replace(old, "const String kAgentLicenseCode = '%s';" % code, 1)
+    old_ab = "const String kAgentAbBase = '__AGENT_AB_BASE__';"
+    if old_ab in src:
+        src = src.replace(old_ab, "const String kAgentAbBase = '%s';" % abbase, 1)
+    elif "kAgentAbBase = '%s'" % abbase not in src:
+        raise SystemExit('patch failed: kAgentAbBase anchor not found')
     with open(p, 'w', encoding='utf-8', newline='\n') as f:
         f.write(src)
-    print('patched agent_page.dart: license code embedded (len %d)' % len(code))
+    print('patched agent_page.dart: group code + ab base embedded (%s)' % abbase)
 
 
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     license_code = sys.argv[2].strip() if len(sys.argv) > 2 else ''
+    ab_base = sys.argv[3].strip() if len(sys.argv) > 3 else ''
     if not os.path.isfile(os.path.join(root, 'flutter', 'lib', 'main.dart')):
         page = os.path.join(root, 'flutter', 'lib', 'desktop', 'pages',
                             'agent_page.dart')
@@ -655,8 +666,8 @@ def main():
     patch_gdi_capture_no_cursor(root)
     # 画质/延迟：受控端起始帧率 15 -> 25（v1.5.46）
     patch_video_qos_fps(root)
-    # 定制版：构建参数注入授权码，受控端静默激活（v1.5.47）
-    patch_agent_license_code(root, license_code)
+    # 定制版 v2：构建参数注入分组码 + 地址簿基址，受控端免授权上报（v1.5.48）
+    patch_agent_embed(root, license_code, ab_base)
 
 
 if __name__ == '__main__':
