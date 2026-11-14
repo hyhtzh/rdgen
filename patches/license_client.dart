@@ -24,6 +24,10 @@ import 'package:flutter_hbb/models/platform_model.dart';
 /// 授权服务地址（nginx 反代到本机授权服务）
 const kLicenseBase = 'https://hd.fcpx0.cn/license';
 
+/// 定制版套餐锁（构建期注入）：非空时此管理端只能用定制套餐授权码激活，
+/// 标准版 / 专业版卡在服务端与本地双层拒绝。零售版构建保持空串 = 不锁。
+const kLicensePlanLock = '';
+
 /// 地址簿服务（账号 + 云端设备清单）。
 /// 与授权服务分开部署：这里是用户的账号体系，授权那边只管激活码。
 const kAbBase = 'https://api.hydesk.cn';
@@ -613,11 +617,20 @@ class LicenseClient {
       'hostname': await hostname(),
       'platform': _platform(),
       'version': await _version(),
+      'plan_lock': kLicensePlanLock,
     });
     if (data['ok'] != true) {
       throw LicenseException(
           (data['error'] ?? 'unknown').toString(),
           (data['msg'] ?? '激活失败，请检查授权码').toString());
+    }
+    // 套餐锁兜底：服务端已按 plan_lock 拒绝过，这里再挡一次旧服务端 /
+    // 代理缓存等边角情况（std / pro 且非附加包 → 视为激活失败）。
+    if (kLicensePlanLock.isNotEmpty &&
+        data['addon'] != true &&
+        const ['std', 'pro'].contains((data['plan'] ?? '').toString())) {
+      throw LicenseException('plan_mismatch',
+          '该授权码不适用于此版本，请使用定制版授权码');
     }
     // 附加包：不动本地的主授权 token / 到期日 / 套餐，只把功能开关与附加包列表刷新一次。
     // 服务端已确认本机存在有效主授权，否则不会走到这里。
