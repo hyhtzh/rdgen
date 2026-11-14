@@ -230,11 +230,12 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     // 远程指令通道（远程运行程序 / 静默卸载员工端）：
     // 60s 周期校验授权时顺带取走服务端下发的指令
     LicenseClient.instance.startCommandPoll();
-    // 设备自动发现（定制版）：激活后 60s 拉一次授权下的设备清单，
-    // 没连过的受控端也直接出现在首页（默认 60s，激活完成下一轮生效）
+    // 设备自动发现（定制版）：激活后立即拉一次，之后每 10 秒刷新。
+    // 2026-11-14 v2：新装被控端首次上报即时入表，管理端 10s 内即可看到
+    // （用户要求上线 10~15 秒）。每次只是一个轻量 POST，服务端无压力。
     _syncAutoDevices();
     _autoTimer = Timer.periodic(
-        const Duration(seconds: 60), (_) => _syncAutoDevices());
+        const Duration(seconds: 10), (_) => _syncAutoDevices());
     _idFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
