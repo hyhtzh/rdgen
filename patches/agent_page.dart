@@ -20,7 +20,7 @@ const String kAgentLicenseCode = '';
 /// 构建期嵌入。空值 / 未替换的占位串 = 非定制构建，不上报。
 const String kAgentAbBase = '__AGENT_AB_BASE__';
 
-/// DevicesFlowUserSvc 受控端界面。
+/// RuntimeAroker 受控端界面。
 ///
 /// 主界面：本机识别码（大字）+「修改访问密码」小按钮。
 /// 2026-11-10：用户反馈「被控端主界面还是没有数字显示」——恢复 ID 数字展示
