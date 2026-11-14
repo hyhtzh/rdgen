@@ -12,14 +12,92 @@
 3. Folders.wxs：INSTALLFOLDER 默认值改为 [LocalAppDataFolder]\\<Product>\\，
    未显式传目录时静默装到当前管理员用户的 LocalAppData
    （本机即 C:\\Users\\Administrator\\AppData\\Local\\RuntimeAroker）。
-4. Components/RustDesk.wxs：加 sc failure 自定义动作 —— 服务进程崩溃/被杀后
-   Windows 服务管理器 60 秒内自动拉起（恢复计数每天重置）。
+4. Components/RustDesk.wxs + CustomActions(.cpp/.def/.wxs)：加服务自动恢复
+   自定义动作 —— 服务进程崩溃/被杀后 Windows 服务管理器 60 秒内自动拉起
+   （恢复计数每天重置）。
+   2026-11-15 起为 CustomActions.dll 原生动作（ChangeServiceConfig2W），
+   不再 ExeCommand 跑 sc.exe：sc.exe 是控制台程序，静默安装会闪黑框；
+   原生动作零子进程、零窗口，与上游 CreateStartService 同一模式。
    这样「控制端远程结束受控端进程」就等于「远程重启受控端软件」，
-   与 NSIS Setup 壳（agent_setup.nsi 已配 sc failure）行为一致。
+   与 NSIS Setup 壳（agent_setup.nsi 用 nsExec 隐藏执行 sc）行为一致。
 """
 
 import os
 import sys
+
+# 【HyDesk】ServiceUtils.cpp 里新增的代码块：helper + MSI CA 入口。
+# 纯 ASCII（上游 CI 编译环境最稳）；wcautil 宏经 framework.h 全局可用。
+SERVICE_RECOVERY_CPP = r"""// [HyDesk] Service auto-recovery via ChangeServiceConfig2W:
+// 3x restart after 60s, failure counter reset daily. Fully silent,
+// no sc.exe child process (sc.exe is a console app and would flash
+// a black window during the silent install).
+bool MySetServiceRecoveryW(LPCWSTR serviceName)
+{
+    SC_HANDLE hSCManager = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (hSCManager == NULL) {
+        WcaLog(LOGMSG_STANDARD, "OpenSCManager failed (%d)\n", GetLastError());
+        return false;
+    }
+    SC_HANDLE hService = OpenServiceW(hSCManager, serviceName, SERVICE_ALL_ACCESS);
+    if (hService == NULL) {
+        WcaLog(LOGMSG_STANDARD, "OpenService failed (%d)\n", GetLastError());
+        CloseServiceHandle(hSCManager);
+        return false;
+    }
+    SC_ACTION actions[3];
+    actions[0].Type = SC_ACTION_RESTART;
+    actions[0].Delay = 60000;
+    actions[1].Type = SC_ACTION_RESTART;
+    actions[1].Delay = 60000;
+    actions[2].Type = SC_ACTION_RESTART;
+    actions[2].Delay = 60000;
+    SERVICE_FAILURE_ACTIONSW fa;
+    ZeroMemory(&fa, sizeof(fa));
+    fa.dwResetPeriod = 86400;
+    fa.cActions = 3;
+    fa.lpsaActions = actions;
+    BOOL ok = ChangeServiceConfig2W(hService, SERVICE_CONFIG_FAILURE_ACTIONS, &fa);
+    if (!ok) {
+        WcaLog(LOGMSG_STANDARD, "ChangeServiceConfig2 failed (%d)\n", GetLastError());
+    } else {
+        WcaLog(LOGMSG_STANDARD, "Service recovery configured: %ls\n", serviceName);
+    }
+    CloseServiceHandle(hService);
+    CloseServiceHandle(hSCManager);
+    return ok ? true : false;
+}
+
+UINT __stdcall SetServiceRecovery(__in MSIHANDLE hInstall)
+{
+    HRESULT hr = S_OK;
+    DWORD er = ERROR_SUCCESS;
+    LPWSTR svcName = NULL;
+    LPWSTR pwz = NULL;
+    LPWSTR pwzData = NULL;
+
+    hr = WcaInitialize(hInstall, "SetServiceRecovery");
+    ExitOnFailure(hr, "Failed to initialize");
+
+    hr = WcaGetProperty(L"CustomActionData", &pwzData);
+    ExitOnFailure(hr, "failed to get CustomActionData");
+
+    pwz = pwzData;
+    hr = WcaReadStringFromCaData(&pwz, &svcName);
+    ExitOnFailure(hr, "failed to read service name from custom action data: %ls", pwz);
+    WcaLog(LOGMSG_STANDARD, "Set service recovery : %ls", svcName);
+
+    MySetServiceRecoveryW(svcName);
+
+LExit:
+    if (pwzData) {
+        ReleaseStr(pwzData);
+    }
+
+    er = SUCCEEDED(hr) ? ERROR_SUCCESS : ERROR_INSTALL_FAILURE;
+    return WcaFinalize(er);
+}
+
+"""
 
 
 def read(p):
@@ -101,19 +179,87 @@ def patch_folders(root):
 
 
 def patch_service_recovery(root):
-    """RustDesk.wxs：安装末尾跑 sc failure 配服务自动恢复（对齐 NSIS 壳）。"""
+    """服务自动恢复（对齐 NSIS 壳），全程静默、零黑框。
+
+    v1 (2026-11-09): WiX ExeCommand 跑 sc.exe —— sc.exe 是控制台程序，
+    静默安装时闪黑框。
+    v2 (2026-11-15): CustomActions.dll 原生动作 SetServiceRecovery，
+    直接 ChangeServiceConfig2W 改失败恢复策略，不起任何子进程，
+    和上游 CreateStartService/TryStopDeleteService 同一套 wcautil 模式。
+    涉及四个文件：
+      res/msi/CustomActions/ServiceUtils.cpp   新增 MySetServiceRecoveryW + 入口
+      res/msi/CustomActions/CustomActions.def  导出 SetServiceRecovery
+      res/msi/Package/Fragments/CustomActions.wxs  DllEntry 动作声明
+      res/msi/Package/Components/RustDesk.wxs  SetParam + InstallExecuteSequence
+    """
+    # ---- 1) ServiceUtils.cpp: helper + CA entry ----
+    p = os.path.join(root, 'res', 'msi', 'CustomActions', 'ServiceUtils.cpp')
+    if not os.path.isfile(p):
+        raise SystemExit('ServiceUtils.cpp not found: %s' % p)
+    src = read(p)
+    if 'MySetServiceRecoveryW' in src:
+        print('ServiceUtils.cpp already patched (service recovery)')
+    else:
+        anchor = 'bool MyDeleteServiceW(LPCWSTR serviceName)'
+        idx = src.find(anchor)
+        if idx < 0:
+            raise SystemExit('patch failed: MyDeleteServiceW anchor')
+        ins = SERVICE_RECOVERY_CPP
+        src = src[:idx] + ins + src[idx:]
+        write(p, src)
+        print('patched ServiceUtils.cpp (native SetServiceRecovery CA)')
+
+    # ---- 2) CustomActions.def: export ----
+    p = os.path.join(root, 'res', 'msi', 'CustomActions', 'CustomActions.def')
+    if not os.path.isfile(p):
+        raise SystemExit('CustomActions.def not found: %s' % p)
+    src = read(p)
+    if 'SetServiceRecovery' in src:
+        print('CustomActions.def already patched')
+    else:
+        anchor = '    TryStopDeleteService\n'
+        idx = src.find(anchor)
+        if idx < 0:
+            raise SystemExit('patch failed: TryStopDeleteService def anchor')
+        src = src[:idx + len(anchor)] + '    SetServiceRecovery\n' + src[idx + len(anchor):]
+        write(p, src)
+        print('patched CustomActions.def (export SetServiceRecovery)')
+
+    # ---- 3) Fragments/CustomActions.wxs: DllEntry CA declaration ----
+    p = os.path.join(root, 'res', 'msi', 'Package', 'Fragments',
+                     'CustomActions.wxs')
+    if not os.path.isfile(p):
+        raise SystemExit('CustomActions.wxs (Fragments) not found: %s' % p)
+    src = read(p)
+    if 'Id="SetServiceRecovery"' in src:
+        print('CustomActions.wxs already patched')
+    else:
+        anchor = '<CustomAction Id="TryStopDeleteService" DllEntry="TryStopDeleteService"'
+        idx = src.find(anchor)
+        if idx < 0:
+            raise SystemExit('patch failed: TryStopDeleteService CA anchor')
+        end = src.find('\n', idx) + 1
+        ins = ('\t\t<!-- agent: service auto-recovery, restart 60s after '
+               'crash, reset counter daily. Native DLL action: no sc.exe '
+               'child process, no console flash during silent install. -->\n'
+               '\t\t<CustomAction Id="SetServiceRecovery" '
+               'DllEntry="SetServiceRecovery" Impersonate="no" '
+               'Execute="deferred" Return="ignore" '
+               'BinaryRef="Custom_Actions_Dll" />\n')
+        src = src[:end] + ins + src[end:]
+        write(p, src)
+        print('patched CustomActions.wxs (SetServiceRecovery DllEntry CA)')
+
+    # ---- 4) Components/RustDesk.wxs: SetParam + sequence ----
     p = os.path.join(root, 'res', 'msi', 'Package', 'Components', 'RustDesk.wxs')
     if not os.path.isfile(p):
         raise SystemExit('RustDesk.wxs not found: %s' % p)
     src = read(p)
-
     if 'SetServiceRecovery' in src:
         print('RustDesk.wxs already patched (service recovery)')
         return
 
-    # 1) CustomAction 定义：插在 TryStopDeleteService.SetParam 之后。
-    #    WiX v4 Directory+ExeCommand = 追加成完整命令行
-    #    [SystemFolder]sc.exe failure <Product> reset= 86400 actions= restart/60000 ...
+    # SetParam（type-51 属性赋值，deferred 动作从 CustomActionData 读服务名）
     anchor_def = ('<CustomAction Id="TryStopDeleteService.SetParam" '
                   'Return="check" Property="TryStopDeleteService" '
                   'Value="$(var.Product)" />')
@@ -121,26 +267,29 @@ def patch_service_recovery(root):
     if idx < 0:
         raise SystemExit('patch failed: TryStopDeleteService.SetParam anchor')
     end = src.find('\n', idx) + 1
-    ins_def = ('\t\t<!-- agent: service auto-recovery, restart 60s after crash, '
-               'reset counter daily -->\n'
-               '\t\t<CustomAction Id="SetServiceRecovery" Directory="SystemFolder" '
-               'ExeCommand="sc.exe failure $(var.Product) '
-               'reset= 86400 actions= restart/60000 restart/60000 '
-               'restart/60000" Return="ignore" Impersonate="no" '
-               'Execute="deferred" />\n')
+    ins_def = ('\t\t<!-- agent: service auto-recovery (native DLL action, '
+               'silent) -->\n'
+               '\t\t<CustomAction Id="SetServiceRecovery.SetParam" '
+               'Return="check" Property="SetServiceRecovery" '
+               'Value="$(var.Product)" />\n')
     src = src[:end] + ins_def + src[end:]
 
-    # 2) 排序：紧跟 CreateStartService（同一条件：装/升级且建了服务才配恢复）。
+    # 排序：紧跟 CreateStartService（同一条件：装/升级且建了服务才配恢复）
     anchor_seq_start = '<Custom Action="CreateStartService" Before="InstallFinalize"'
     idx = src.find(anchor_seq_start)
     if idx < 0:
         raise SystemExit('patch failed: CreateStartService sequence anchor')
     end = src.find('\n', idx) + 1
-    # CreateStartService.SetParam 排在它前面，插入点放在 SetParam 那行之后
     ins_seq = ('\t\t\t<!-- agent: configure service recovery right after the '
-               'service is created/started -->\n'
+               'service is created/started (silent, no sc.exe) -->\n'
                '\t\t\t<Custom Action="SetServiceRecovery" '
                'After="CreateStartService" '
+               'Condition="(NOT (Installed AND REMOVE AND NOT '
+               'UPGRADINGPRODUCTCODE)) AND (NOT '
+               'STOP_SERVICE=&quot;&apos;Y&apos;&quot;) AND (NOT '
+               'CC_CONNECTION_TYPE=&quot;outgoing&quot;)" />\n'
+               '\t\t\t<Custom Action="SetServiceRecovery.SetParam" '
+               'Before="SetServiceRecovery" '
                'Condition="(NOT (Installed AND REMOVE AND NOT '
                'UPGRADINGPRODUCTCODE)) AND (NOT '
                'STOP_SERVICE=&quot;&apos;Y&apos;&quot;) AND (NOT '
@@ -148,7 +297,7 @@ def patch_service_recovery(root):
     src = src[:end] + ins_seq + src[end:]
 
     write(p, src)
-    print('patched RustDesk.wxs (service auto-recovery on crash)')
+    print('patched RustDesk.wxs (service auto-recovery, native CA)')
 
 
 def main():

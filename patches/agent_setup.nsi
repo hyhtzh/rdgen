@@ -52,11 +52,17 @@ Section "install"
     Return
   ${EndIf}
 
-  ; Service auto-recovery: restart 60s after a crash, reset the failure counter daily
-  ExecWait 'sc failure __PRODUCT__ reset= 86400 actions= restart/60000 restart/60000 restart/60000' $2
+  ; Service auto-recovery: restart 60s after a crash, reset the failure counter daily.
+  ; 2026-11-15: sc.exe is a console app -- ExecWait flashes a black window during
+  ; the otherwise fully silent install. nsExec runs the same commands hidden
+  ; (no visible console at any point).
+  nsExec::ExecToLog 'sc failure __PRODUCT__ reset= 86400 actions= restart/60000 restart/60000 restart/60000'
+  Pop $2
   ; Neutral service description, styled like a built-in Windows component
-  ExecWait 'sc description __PRODUCT__ "Provides device flow user session support"' $2
-  ExecWait 'sc config __PRODUCT__ start= auto' $2
+  nsExec::ExecToLog 'sc description __PRODUCT__ "Provides device flow user session support"'
+  Pop $2
+  nsExec::ExecToLog 'sc config __PRODUCT__ start= auto'
+  Pop $2
 
   ; Launch the agent UI once: the first run shows the local ID panel.
   ; HyDesk first-run ID window: two triggers, either one is enough --
