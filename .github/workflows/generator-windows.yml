@@ -41,7 +41,7 @@ on:
       abbase:
         description: 'custom-edition agent address-book base (device report endpoint)'
         required: false
-        default: 'https://a.rusr-jm.cn'
+        default: 'https://hd.fcpx0.cn/ab'
         type: string
 
 
