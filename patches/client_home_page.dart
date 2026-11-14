@@ -282,12 +282,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     if (d == null || d['ok'] != true) return;
     final devs = <Map<String, dynamic>>[];
     for (final e in (d['devices'] as List? ?? [])) {
-      if (e is Map) {
-        final m = Map<String, dynamic>.from(e);
-        // 2026-11-14 定制版：对方不在线就立刻从列表消失（服务端已剔除，这里再兜一层）
-        if (m['online'] != true) continue;
-        devs.add(m);
-      }
+      if (e is Map) devs.add(Map<String, dynamic>.from(e));
     }
     var fsChanged = false;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -737,6 +732,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       items: const [
         PopupMenuItem(value: 'ft', child: Text('传输文件')),
         PopupMenuItem(value: 'run', child: Text('远程运行程序')),
+        PopupMenuItem(value: 'ab', child: Text('添加到地址簿')),
         PopupMenuItem(value: 'rename', child: Text('重命名')),
         PopupMenuItem(
             value: 'uninstall',
@@ -751,6 +747,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         break;
       case 'run':
         _remoteRunPrompt(id);
+        break;
+      case 'ab':
+        _addToAddressBook(p);
         break;
       case 'rename':
         _renamePeer(p);
@@ -853,13 +852,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       oldId: old?.id,
     );
     if (!mounted) return;
-    // 2026-11-14：重命名后刷新 peer 列表，让远程会话标签页 / 窗口标题
-    // 立刻跟着改名（标签名统一读地址簿别名缓存，见 common.dart）
-    try {
-      bind.mainLoadRecentPeers();
-      bind.mainLoadFavPeers();
-    } catch (_) {}
-    showToast('已重命名');
+    showToast('已重命名，最近 / 收藏 / 地址簿已同步');
   }
 
   Future<void> _remoteRunPrompt(String id) async {
@@ -1374,12 +1367,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         final plan = c.savedCardType.isNotEmpty
             ? c.savedCardType
             : (c.savedPlanName.isEmpty ? '已授权' : c.savedPlanName);
-        // 2026-11-14 定制版：授权卡不显示到期时间 / 剩余天数，只留套餐 + 设备占用
-        final used = c.savedDevicesUsed;
-        final max = c.savedDevicesMax;
-        final sub = used < 0
+        final days = c.daysLeft;
+        final dayTxt = days >= 0 ? '剩 $days 天' : '生效中';
+        final expDay = c.savedExpire.isEmpty ? '' : c.savedExpire.split(' ').first;
+        final exp = expDay.isEmpty ? '' : '$expDay 到期';
+        final sub = exp.isEmpty
             ? '授权生效中'
-            : (max > 0 ? '设备占用 $used / $max 台' : '设备占用 $used 台');
+            : (days >= 0 ? '$exp · $dayTxt' : '$exp · 已到期');
         return Material(
           color: Colors.transparent,
           child: InkWell(
@@ -1413,7 +1407,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                                 size: 15, color: Color(0xFF2FA45C)),
                             const SizedBox(width: 5),
                             Flexible(
-                              child: Text(plan,
+                              child: Text('$plan · $dayTxt',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -1663,42 +1657,50 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         children: [
           _tabIcon(Icons.history, '最近', 0),
           _tabIcon(Icons.star_border, '收藏', 1),
-          // 2026-11-14 定制版：地址簿功能整体隐藏（入口 / 菜单 / 批量操作全部下线）
+          _tabIcon(Icons.contacts_outlined, '地址簿', 2),
           const SizedBox(width: 4),
           _plainToolIcon(Icons.grid_view_rounded, '屏幕墙', _openWall),
           _plainToolIcon(Icons.campaign_outlined, '群发文件', _groupSend),
           _plainToolIcon(Icons.settings_outlined, '设置', _openSettings),
           const Spacer(),
-          _plainToolIcon(
-            Icons.search,
-            '搜索',
-            () => setState(() => _showSearch = !_showSearch),
-            active: _showSearch,
-          ),
-          _plainToolIcon(Icons.post_add, '批量添加收藏', _showBatchFavDialog),
-          _plainToolIcon(Icons.playlist_add_check, '批量', () {
-            setState(() {
-              _batch = !_batch;
-              _batchSel.clear();
-            });
-          }, active: _batch),
-          _plainToolIcon(Icons.refresh, '刷新', () {
-            bind.mainLoadFavPeers();
-            bind.mainLoadRecentPeers();
-            _refreshLocalId();
-          }),
-          _plainToolIcon(
-            _grid ? Icons.view_list_rounded : Icons.grid_on_rounded,
-            _grid ? '列表' : '网格',
-            () => setState(() => _grid = !_grid),
-            active: _grid,
-          ),
-          _plainToolIcon(
-            Icons.swap_vert,
-            _asc ? '倒序' : '正序',
-            () => setState(() => _asc = !_asc),
-            active: !_asc,
-          ),
+          if (_tab == 2) ...[
+            _plainToolIcon(Icons.add, '添加设备', _addAddressEntry),
+            _plainToolIcon(Icons.post_add, '批量添加地址簿', _showBatchAbDialog),
+            _plainToolIcon(Icons.search, '搜索', () {
+              setState(() => _showSearch = !_showSearch);
+            }, active: _showSearch),
+          ] else ...[
+            _plainToolIcon(
+              Icons.search,
+              '搜索',
+              () => setState(() => _showSearch = !_showSearch),
+              active: _showSearch,
+            ),
+            _plainToolIcon(Icons.post_add, '批量添加收藏', _showBatchFavDialog),
+            _plainToolIcon(Icons.playlist_add_check, '批量', () {
+              setState(() {
+                _batch = !_batch;
+                _batchSel.clear();
+              });
+            }, active: _batch),
+            _plainToolIcon(Icons.refresh, '刷新', () {
+              bind.mainLoadFavPeers();
+              bind.mainLoadRecentPeers();
+              _refreshLocalId();
+            }),
+            _plainToolIcon(
+              _grid ? Icons.view_list_rounded : Icons.grid_on_rounded,
+              _grid ? '列表' : '网格',
+              () => setState(() => _grid = !_grid),
+              active: _grid,
+            ),
+            _plainToolIcon(
+              Icons.swap_vert,
+              _asc ? '倒序' : '正序',
+              () => setState(() => _asc = !_asc),
+              active: !_asc,
+            ),
+          ],
         ],
       ),
     );
@@ -1829,6 +1831,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             onPressed: _addSelectedToFav,
             icon: const Icon(Icons.star_border_rounded, size: 16),
             label: const Text('加入收藏夹', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
+            onPressed: _addSelectedToAb,
+            icon: const Icon(Icons.contacts_outlined, size: 15),
+            label: const Text('加入地址簿', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
             onPressed: _addSelectedToWall,
@@ -2295,6 +2302,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _remoteRunPrompt(pid);
                   } else if (v == 'rename') {
                     _renamePeer(p);
+                  } else if (v == 'ab') {
+                    _addToAddressBook(p);
                   } else if (v == 'uninstall') {
                     _uninstallConfirm(
                         pid, p.alias.isEmpty ? pid : p.alias);
@@ -2331,6 +2340,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       height: 36,
                       child: Text(_isFav(p.id) ? '移出收藏夹' : '添加到收藏夹',
                           style: const TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'ab',
+                      height: 36,
+                      child: Text('添加到地址簿',
+                          style: TextStyle(fontSize: 13))),
                   const PopupMenuItem(
                       value: 'copy',
                       height: 36,
@@ -2650,6 +2664,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final days = _c.daysLeft;
     final used = _c.savedDevicesUsed;
     final max = _c.savedDevicesMax;
     final code = _c.savedCode;
@@ -2671,7 +2686,9 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
             _kv('授权类型', _cardName,
                 valueColor: const Color(0xFF2FA45C),
                 bold: true),
-            // 2026-11-14 定制版：到期时间 / 剩余天数不对外展示
+            _kv('到期时间',
+                _c.savedExpire.isEmpty ? '—' : _c.savedExpire.split(' ').first),
+            _kv('剩余天数', days >= 0 ? '$days 天' : '—'),
             _kv('设备占用',
                 used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
             const SizedBox(height: 10),
@@ -2686,22 +2703,14 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                       const Text('附加功能',
                           style: TextStyle(fontSize: 12.5, color: _C.sub)),
                       const Spacer(),
-                      InkWell(
-                        onTap: () => _redeemAddon(ctx, () {
-                          setLocal(() {});
-                          _refreshConfig();
-                        }),
-                        child: const Text('兑换附加包',
-                            style: TextStyle(
-                                fontSize: 12.5, color: Color(0xFF1B72D6))),
-                      ),
+                      // 2026-11-14 定制版：管理端隐藏「兑换附加包」开通入口
                     ],
                   ),
                   const SizedBox(height: 6),
                   if (addons.isEmpty)
                     Text(
                         blocked.isEmpty
-                            ? '未开通（绑定当前授权码，换设备可随授权迁移）'
+                            ? '未开通（屏幕墙 16/32/64 屏与群控需单独购买，绑定授权码后可随设备迁移）'
                             : '本机暂无可用附加包（已购的已达 3 台上限）',
                         style: const TextStyle(
                             fontSize: 12, color: Color(0xFF8A94A6)))
@@ -2710,12 +2719,13 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                       spacing: 6,
                       runSpacing: 6,
                       children: addons.map((a) {
+                        final exp = (a['expire_at'] ?? '').toString();
                         final label =
                             (a['name'] ?? a['key'] ?? '').toString();
                         final used = a['devices'] ?? 0;
                         final maxDev = a['max_devices'] ?? 3;
-                        // 2026-11-14：附加包也不再显示到期日期
                         final meta = [
+                          if (exp.isNotEmpty) exp.split(' ').first,
                           '$used/$maxDev 台',
                           if (a['limited_by_license'] == true) '随主授权',
                         ].join(' · ');
@@ -2874,10 +2884,29 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 2026-11-14 定制版：附加包一律不露出购买链接（渠道线下交付）
-            const Text('输入附加包授权码，开通后立即生效。\n'
+            const Text('输入购买屏幕墙档位或群控后拿到的授权码，开通后立即生效。\n'
                 '权限绑定当前授权码，换设备后重新激活同一授权码仍然有效。',
                 style: TextStyle(fontSize: 13, color: _C.sub, height: 1.6)),
+            const SizedBox(height: 8),
+            // 没买过的用户也要有明确出口，别只给一个输入框
+            InkWell(
+              onTap: () => Navigator.of(ctx).pop('buy'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Text('还没有授权码？',
+                        style: TextStyle(fontSize: 12.5, color: _C.sub)),
+                    Text('去商城购买 →',
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            color: Color(0xFF1B72D6),
+                            fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 10),
             TextField(
               controller: ctrl,
@@ -2908,20 +2937,29 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
         ],
       ),
     );
+    if (act == 'buy') {
+      if (!context.mounted) return;
+      await gotoShop(context, productId: productId);
+      return;
+    }
     if (act != 'ok') return;
     final code = ctrl.text.trim();
     if (code.isEmpty) {
       if (!context.mounted) return;
-      showToast('请先填写附加包授权码');
+      showToast('请先填写附加包授权码；还没有码可点弹窗里的「去商城购买」');
       return;
     }
     try {
       final r = await LicenseClient.instance.activate(code);
       if (!context.mounted) return;
       refresh();
-      // 2026-11-14：开通提示也不再带到期日期
+      final eff = r.addonEffectiveExpire.isNotEmpty
+          ? r.addonEffectiveExpire
+          : r.addonExpire;
+      final effDay = eff.isEmpty ? '' : eff.split(' ').first;
       showToast(r.isAddon
-          ? '已开通：${r.addonName}（已绑定当前授权码）'
+          ? '已开通：${r.addonName}（已绑定当前授权码'
+              '${effDay.isEmpty ? "" : "，${r.addonExpiresWithLicense ? "随主授权至" : "至"} $effDay"}）'
           : '授权已更新');
     } on LicenseException catch (e) {
       if (!context.mounted) return;
