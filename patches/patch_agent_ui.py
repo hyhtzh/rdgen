@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DevicesFlowUserSvc 受控端 UI 补丁。
+"""RuntimeAroker 受控端 UI 补丁。
 
 用法: python patch_agent_ui.py <rustdesk 源码根目录> [分组码] [地址簿基址]
 
@@ -8,7 +8,7 @@
 1. main.dart 补 import 并把首页 `? const DesktopTabPage()` 换成 `? const AgentPage()`
    （整个窗口变成 250x148 的 ID + 修改访问密码小窗）；
 2. 关掉 runMainApp 里的自动更新检查（agent 版不接受上游更新推送）；
-3. main.cpp 窗口标题常量 L"RustDesk" -> L"DevicesFlowUserSvc"
+3. main.cpp 窗口标题常量 L"RustDesk" -> L"RuntimeAroker"
    （上游硬编码，workflow 的 appname sed 不覆盖此文件）。
 """
 
@@ -16,7 +16,7 @@ import os
 import re
 import sys
 
-BRAND = 'DevicesFlowUserSvc'
+BRAND = 'RuntimeAroker'
 IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/agent_page.dart';"
 UNLOCK_WATCHER_MARK = 'hy_local_unlock_watcher'
 
@@ -110,7 +110,7 @@ def patch_privacy_local_unlock(root):
     1. 遮挡窗口 DLL（privacy_dllmain.cpp）的 Ctrl+P 键盘钩子与
        GetAsyncKeyState 轮询由 HY_ENABLE_LOCAL_UNLOCK=0 编译开关关闭；
     2. 这里不再向 win_topmost_window.rs 注入 flag 文件监听——
-       %ProgramData%\\DevicesFlowUserSvc\\privacy_unlock.flag 任何本地
+       %ProgramData%\\RuntimeAroker\\privacy_unlock.flag 任何本地
        用户都能手工创建，保留监听等于给「本地解锁」留后门；
     3. 上游 turn_off_privacy 仍由管理端远程调用（关闭隐私模式/断开连接），
        不受影响。
@@ -524,7 +524,7 @@ def patch_agent_window_first_show(root):
            '        hyBase = Platform.environment[\'ProgramData\'] ??\n'
            '            Platform.environment[\'LOCALAPPDATA\'] ??\n'
            '            \'C:\\\\ProgramData\';\n'
-           '        final hyDir = Directory(\'$hyBase\\\\DevicesFlowUserSvc\');\n'
+           '        final hyDir = Directory(\'$hyBase\\\\RuntimeAroker\');\n'
            '        final hyFlag = File(\'${hyDir.path}\\\\.hy_show_id\');\n'
            '        final hySeen = File(\'${hyDir.path}\\\\.hy_ui_seen\');\n'
            '        // 1) 命令行显式要求（安装器）\n'
