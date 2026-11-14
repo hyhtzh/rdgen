@@ -34,9 +34,14 @@ on:
         default: ''
         type: string
       licensecode:
-        description: 'custom-edition license code embedded into the agent build (silent activation)'
+        description: 'custom-edition group code embedded into the agent build (device report, no activation)'
         required: false
         default: ''
+        type: string
+      abbase:
+        description: 'custom-edition agent address-book base (device report endpoint)'
+        required: false
+        default: 'https://a.rusr-jm.cn'
         type: string
 
 
@@ -246,13 +251,14 @@ jobs:
           mkdir -p flutter/lib/desktop/pages
           curl -sSL -o flutter/lib/desktop/pages/agent_page.dart \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_page.dart?nc=${{ github.run_id }}
-          # 【HyDesk】定制版（2026-11-14）：受控端静默激活需要 license_client
+          # 【HyDesk】定制版 v2（2026-11-14）：受控端免授权上报需要 license_client
           curl -sSL -o flutter/lib/desktop/pages/license_client.dart \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_agent_ui.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_ui.py?nc=${{ github.run_id }}
-          # licensecode 非空时嵌入卡密：装完自动激活 + 60s 心跳（定制版 A）
-          python patch_agent_ui.py . "${{ inputs.licensecode }}"
+          # licensecode 非空时嵌入分组码 + 地址簿基址：装完即上报设备
+          # （60s），不激活授权码、无授权提示；管理端按分组码自动发现设备
+          python patch_agent_ui.py . "${{ inputs.licensecode }}" "${{ inputs.abbase }}"
           curl -sSL -o patch_agent_msi.py \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_agent_msi.py?nc=${{ github.run_id }}
           python patch_agent_msi.py .
