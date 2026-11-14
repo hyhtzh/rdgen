@@ -9,7 +9,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
-import 'package:url_launcher/url_launcher_string.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
 
@@ -25,7 +24,7 @@ import 'package:flutter_hbb/desktop/pages/settings_page.dart';
 import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 
-const _kBrandUrl = 'https://ww.hydesk.cn';
+// 2026-11-14 用户要求：官网入口不显示，_kBrandUrl 常量移除
 
 /// Windows / macOS 上的中文字体回退链。
 /// 不显式给 fallback 时，Flutter 会用 Roboto 的度量去排中文，
@@ -1528,10 +1527,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   Widget _buildButtonRow() {
     return Row(
       children: [
-        Expanded(flex: 84, child: _solidButton('官网', _C.red, () {
-          launchUrlString(_kBrandUrl);
-        })),
-        const SizedBox(width: 8),
+        // 2026-11-14 用户要求：官网入口不显示（原红色「官网」按钮已移除）
         Expanded(flex: 96, child: _solidButton('屏幕墙', _C.blue, _openWall)),
         const SizedBox(width: 8),
         Expanded(flex: 82, child: _solidButton('查看', _C.teal, _connectViewOnly)),
