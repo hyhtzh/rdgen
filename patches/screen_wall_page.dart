@@ -1739,6 +1739,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
   }
 
   /// 收费档位 / 功能 未授权时弹的引导框
+  /// 2026-11-14 定制版：管理端隐藏所有开通/购买按钮，只提示联系管理员。
   void _showUpgradeDialog(String what, String productId) {
     showDialog(
       context: context,
@@ -1747,38 +1748,12 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         title: Text('该功能需要升级授权',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         content: Text(
-            '$what属于付费功能，当前授权不包含。\n\n购买拿到授权码后，在「授权详情 → 兑换附加包」里输入即可开通，立即生效，不需要重新激活主授权。附加包绑定当前授权码，换设备后重新激活同一授权码依然可用。',
+            '$what属于付费功能，当前授权不包含。\n\n如需使用，请联系管理员开通。',
             style: TextStyle(fontSize: 13, height: 1.6)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: Text('取消', style: TextStyle(color: _C.sub)),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              _redeemCode(productId: productId);
-            },
-            child: Text('已购买，兑换',
-                style: TextStyle(
-                    color: Color(0xFF2FA45C), fontWeight: FontWeight.w600)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-              if (!mounted) return;
-              // 统一走 gotoShop：浏览器唤不起时复制链接并弹窗，不会点了没反应
-              await gotoShop(context, productId: productId);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Color(0xFF1B72D6),
-              elevation: 0,
-              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
-            ),
-            child: Text('购买',
-                style: TextStyle(color: Colors.white)),
+            child: Text('知道了', style: TextStyle(color: _C.sub)),
           ),
         ],
       ),
