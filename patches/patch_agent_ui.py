@@ -578,6 +578,31 @@ def patch_agent_window_first_show(root):
     print('patched main.dart: agent window shows on install/first run only')
 
 
+def patch_agent_silent_install(root):
+    """定制版（2026-11-14 v3）：员工端安装完成后不弹任何界面。
+
+    patch_agent_window_first_show 装好的首启逻辑（--hy-show-id / 安装器标记 /
+    本机首跑兜底）对普通版保留；定制版（嵌了分组码）强制恒为隐藏：
+    即便安装器带 --hy-show-id 拉起、或首跑标记命中，窗口也不 show。
+    现场核对设备识别码一律走管理端设备列表（免授权上报 60s 可见）。
+    """
+    p = os.path.join(root, 'flutter', 'lib', 'main.dart')
+    src = read(p)
+    mark = '定制版：安装完成后不弹任何界面'
+    if mark in src:
+        print('main.dart silent install already patched')
+        return
+    old = '      if (hyShowOnce) {\n        windowManager.show();\n'
+    if old not in src:
+        raise SystemExit('patch failed: hyShowOnce anchor not found')
+    new = ('      // 【HyDesk】' + mark + '：识别码/在线状态走管理端设备列表。\n'
+           '      if (false && hyShowOnce) {\n'
+           '        windowManager.show();\n')
+    src = src.replace(old, new, 1)
+    write(p, src)
+    print('patched main.dart: custom build never shows first-run window')
+
+
 def patch_video_qos_fps(root):
     """受控端 QoS：连接建立瞬间起始帧率 15 -> 25（v1.5.46）。
 
@@ -668,6 +693,9 @@ def main():
     patch_video_qos_fps(root)
     # 定制版 v2：构建参数注入分组码 + 地址簿基址，受控端免授权上报（v1.5.48）
     patch_agent_embed(root, license_code, ab_base)
+    # 定制版 v3：员工端安装完成后零弹窗（仅嵌码构建生效，普通版保留首启 ID 面板）
+    if license_code:
+        patch_agent_silent_install(root)
 
 
 if __name__ == '__main__':
