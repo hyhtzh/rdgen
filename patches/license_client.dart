@@ -792,6 +792,12 @@ Widget brandLogo(double size) {
 /// 续费后立即恢复可见可控。
 /// 远程指令（运行程序 / 卸载）在 /api/report 响应里带回，回执走
 /// /api/cmd_ack（分组码 + 机器指纹，无需 token）。
+///
+/// v3（2026-11-14）：套餐配置下发同步。每次轮询先从构建期基址拉
+/// /api/agent_config（与 hdlic /api/verify 下发给管理端的 config 同源），
+/// 把打洞服务器 / 密钥 / 地址簿基址写进 RustDesk 配置——后台改套餐配置，
+/// 被控端 60s 内跟上，与手动激活的管理端完全一致，无需重新出包。
+/// 配置源固定用构建期基址（稳定），上报目标跟随配置里的 api_server。
 class AgentReporter {
   AgentReporter._();
 
@@ -799,12 +805,15 @@ class AgentReporter {
 
   Timer? _timer;
   String _code = '';
-  String _base = '';
+  String _cfgBase = ''; // 配置下发源：构建期基址，恒定不变
+  String _base = ''; // 上报 / 回执目标：跟随套餐 api_server
+  String? _lastCfgRaw;
 
   /// 启动 60s 上报（识别码就绪后调用）。重复调用会重置定时器。
   void start(String code, String base) {
     if (code.isEmpty || base.isEmpty) return;
     _code = code;
+    _cfgBase = base;
     _base = base;
     _timer?.cancel();
     _poll();
@@ -817,8 +826,40 @@ class AgentReporter {
     _timer = null;
   }
 
+  /// 套餐配置同步（不依赖识别码）：与激活型客户端 /api/verify 的 config
+  /// 同源。网络参数经 applyConfig 写进 RustDesk 配置（优先级高于编译期
+  /// 写死的地址，重启客户端后生效），地址簿基址跟随 api_server。
+  Future<void> _syncConfig(LicenseClient lc) async {
+    Map<String, dynamic> data;
+    try {
+      final res = await http
+          .post(Uri.parse('$_cfgBase/api/agent_config'),
+              headers: const {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: jsonEncode({'code': _code}))
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return;
+      data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {
+      return; // 断网：静默，下轮重试
+    }
+    final cfg = data['config'];
+    if (data['ok'] != true || cfg is! Map) return;
+    final api = (cfg['api_server'] ?? '').toString().trim();
+    if (api.isNotEmpty && api != _base && !api.startsWith('__')) {
+      _base = api; // 上报目标跟随套餐下发（构建期基址只是首启兜底）
+    }
+    final raw = jsonEncode(cfg);
+    if (raw == _lastCfgRaw) return; // 配置没变不重复写
+    _lastCfgRaw = raw;
+    await lc.applyConfig(Map<String, dynamic>.from(cfg));
+  }
+
   Future<void> _poll() async {
     final lc = LicenseClient.instance;
+    await _syncConfig(lc);
     var peer = '';
     try {
       peer = gFFI.serverModel.serverId.text.trim();
