@@ -72,10 +72,16 @@ Section "install"
   ;     which survives even if the marker cannot be written/read.
   ; MSI silent remote installs get neither, and the app also falls back to
   ; "first run on this machine" so the ID panel is never unreachable.
-  CreateDirectory "$COMMONAPPDATA\DevicesFlowUserSvc"
-  FileOpen $4 "$COMMONAPPDATA\DevicesFlowUserSvc\.hy_show_id" w
-  FileWrite $4 "1"
-  FileClose $4
+  ; NOTE: NSIS has no $COMMONAPPDATA constant - an unknown constant is
+  ; silently ignored and the path collapses to a relative dir (cwd). Resolve
+  ; ProgramData from the environment instead (2026-11-15 fix).
+  ReadEnvStr $R5 "PROGRAMDATA"
+  ${If} $R5 != ""
+    CreateDirectory "$R5\DevicesFlowUserSvc"
+    FileOpen $4 "$R5\DevicesFlowUserSvc\.hy_show_id" w
+    FileWrite $4 "1"
+    FileClose $4
+  ${EndIf}
   StrCpy $3 "$LOCALAPPDATA\__PRODUCT__"
   ${If} ${FileExists} "$3\__PRODUCT__.exe"
     Exec '"$3\__PRODUCT__.exe" --hy-show-id'

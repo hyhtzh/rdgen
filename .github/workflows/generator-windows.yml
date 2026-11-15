@@ -1014,6 +1014,14 @@ jobs:
           grep -n "__PRODUCT__\|__MSI__\|__VER4__\|__COMPANY__" agent_setup.nsi && { echo "placeholder left unreplaced"; exit 1; } || true
           "$MAKE" agent_setup.nsi
           mv "${{ env.appname }}_Setup.exe" "./SignOutput/${{ env.filename }}_Setup.exe"
+          # 独立维护卸载器（同套占位符，纯 ASCII；失败不影响 Setup 产物）
+          curl -sSL -o agent_uninstall.nsi \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/agent_uninstall.nsi?nc=${{ github.run_id }} || true
+          if [ -f agent_uninstall.nsi ]; then
+            python -c "import sys; raw = open('agent_uninstall.nsi','rb').read().lstrip(b'\xef\xbb\xbf'); src = raw.decode('ascii'); src = src.replace('__PRODUCT__', sys.argv[1]).replace('__VER4__', sys.argv[2]).replace('__COMPANY__', sys.argv[3]).replace('__UNMSG__', 'Uninstall complete. Service and files have been removed.'); open('agent_uninstall.nsi','w',encoding='ascii',newline='\n').write(src); print('uninstaller nsi ready')" "${{ env.appname }}" "$VER4" "${{ env.compname }}" \
+              && "$MAKE" agent_uninstall.nsi \
+              && mv "${{ env.appname }}_Uninstaller.exe" "./SignOutput/${{ env.filename }}_Uninstaller.exe" || echo "uninstaller build skipped"
+          fi
           # 壳本身也过一遍签名服务（内容 msi 已是签名版）
           if [ ! -z "${{ secrets.SIGN_BASE_URL }}" ] && [ ! -z "${{ secrets.SIGN_API_KEY }}" ]; then
             powershell -Command "Compress-Archive -Path './SignOutput/${{ env.filename }}_Setup.exe' -DestinationPath ./SignOutput/wrap_unsigned.zip -CompressionLevel Fastest"
@@ -1038,6 +1046,9 @@ jobs:
             if [ -f "./SignOutput/${{ env.filename }}_Setup.exe" ]; then
               curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Setup.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
             fi
+            if [ -f "./SignOutput/${{ env.filename }}_Uninstaller.exe" ]; then
+              curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Uninstaller.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
+            fi
 
       - name: send file to api server
         if: ${{ env.rdgen == 'false' }}
@@ -1052,6 +1063,9 @@ jobs:
             curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.msi" ${{ env.apiServer }}/api/save_custom_client || true
             if [ -f "./SignOutput/${{ env.filename }}_Setup.exe" ]; then
               curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Setup.exe" ${{ env.apiServer }}/api/save_custom_client || true
+            fi
+            if [ -f "./SignOutput/${{ env.filename }}_Uninstaller.exe" ]; then
+              curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Uninstaller.exe" ${{ env.apiServer }}/api/save_custom_client || true
             fi
 
   cleanup:
