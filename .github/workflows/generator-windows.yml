@@ -1032,6 +1032,29 @@ jobs:
           fi
           ls -la ./SignOutput/
 
+      - name: Build manager config cleaner (NSIS)
+        if: ${{ inputs.clientui == '1' && env.UPLOAD_ARTIFACT == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -e
+          choco install nsis -y --no-progress || true
+          MAKE="/c/Program Files (x86)/NSIS/makensis.exe"
+          [ -f "$MAKE" ] || MAKE="makensis"
+          curl -sSL -o manager_cleaner.nsi \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/manager_cleaner.nsi?nc=${{ github.run_id }} || true
+          magick ./res/icon.png -define icon:auto-resize=256,128,64,48,32,16 agent_setup.ico || true
+          # 4 段版本号：MSI_VERSION 形如 1.5.26 -> 10.5.26.0，看起来像系统组件版本
+          VER4="10.0.0.1"
+          if [[ "${{ env.MSI_VERSION }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VER4="10.$( echo '${{ env.MSI_VERSION }}' | cut -d. -f2 ).$( echo '${{ env.MSI_VERSION }}' | cut -d. -f3 ).0"
+          fi
+          if [ -f manager_cleaner.nsi ]; then
+            python -c "import sys; raw = open('manager_cleaner.nsi','rb').read().lstrip(b'\xef\xbb\xbf'); src = raw.decode('ascii'); src = src.replace('__PRODUCT__', sys.argv[1]).replace('__VER4__', sys.argv[2]).replace('__COMPANY__', sys.argv[3]).replace('__UNMSG__', 'Configuration cleaned. Restart the manager to re-activate.').replace('__UNMSG_FULL__', 'Uninstall complete. Program and configuration removed.'); open('manager_cleaner.nsi','w',encoding='ascii',newline='\n').write(src); print('cleaner nsi ready')" "${{ env.appname }}" "$VER4" "${{ env.compname }}" \
+              && "$MAKE" manager_cleaner.nsi \
+              && mv "${{ env.appname }}_ConfigCleaner.exe" "./SignOutput/${{ env.filename }}_ConfigCleaner.exe" || echo "cleaner build skipped"
+          fi
+
       - name: send file to rdgen server
         if: ${{ env.rdgen == 'true' }}
         uses: nick-fields/retry@v3
@@ -1048,6 +1071,9 @@ jobs:
             fi
             if [ -f "./SignOutput/${{ env.filename }}_Uninstaller.exe" ]; then
               curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Uninstaller.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
+            fi
+            if [ -f "./SignOutput/${{ env.filename }}_ConfigCleaner.exe" ]; then
+              curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_ConfigCleaner.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
             fi
 
       - name: send file to api server
@@ -1066,6 +1092,9 @@ jobs:
             fi
             if [ -f "./SignOutput/${{ env.filename }}_Uninstaller.exe" ]; then
               curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_Uninstaller.exe" ${{ env.apiServer }}/api/save_custom_client || true
+            fi
+            if [ -f "./SignOutput/${{ env.filename }}_ConfigCleaner.exe" ]; then
+              curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}_ConfigCleaner.exe" ${{ env.apiServer }}/api/save_custom_client || true
             fi
 
   cleanup:
