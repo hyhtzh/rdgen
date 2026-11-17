@@ -20,6 +20,14 @@ import re
 import shutil
 import sys
 
+# Windows runner 的 stdout 默认是 cp1251/cp437，打印中文会 UnicodeEncodeError
+# （2026-11-17 v1.5.59 B 版 client 构建即因此失败）。强制 UTF-8 + replace。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/client_home_page.dart';"
 WALL_IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/screen_wall_page.dart';"
 
@@ -415,7 +423,8 @@ def patch_display_name(root, app_name):
                        "  final name = appName;",
                        'common.dart: window title uses appName')
     write(path, src)
-    print('  patched common.dart: display name = %s' % name)
+    print('  patched common.dart: display name = %s'
+          % name.encode('unicode_escape').decode('ascii'))
 
 
 def main():
