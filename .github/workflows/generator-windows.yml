@@ -43,6 +43,11 @@ on:
         required: false
         default: 'https://hd.fcpx0.cn/ab'
         type: string
+      nosend:
+        description: '1 = 不回传生成器站点（直连派发构建用）'
+        required: false
+        default: ''
+        type: string
 
 
 env:
@@ -1056,8 +1061,20 @@ jobs:
               && mv "${{ env.appname }}_ConfigCleaner.exe" "./SignOutput/${{ env.filename }}_ConfigCleaner.exe" || echo "cleaner build skipped"
           fi
 
+      - name: upload build outputs
+        # 直连派发（生成器站点维护期旁路）：仅 nosend=1 时把产物挂到 artifacts
+        if: ${{ always() && inputs.nosend == '1' && env.UPLOAD_ARTIFACT == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hy-build-${{ env.filename }}-${{ github.run_id }}
+          path: |
+            ./SignOutput/*.exe
+            ./SignOutput/*.msi
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: send file to rdgen server
-        if: ${{ env.rdgen == 'true' }}
+        if: ${{ env.rdgen == 'true' && inputs.nosend != '1' }}
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
