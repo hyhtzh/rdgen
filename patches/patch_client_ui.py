@@ -376,9 +376,52 @@ def patch_plan_lock(root, license_code):
         print('copied locked license_client.dart -> flutter pages')
 
 
+# 定制版管理端显示名：按构建参数 appname 映射成客户看到的中文名。
+# 文件名必须保持 ASCII（MSI/NSIS/签名兼容），显示名在 Dart 侧单独注入。
+DISPLAY_NAMES = {
+    'HyDeskB': 'HyDesk定制款',
+}
+
+
+def patch_display_name(root, app_name):
+    """把 common.dart 的 appName 换成定制显示名（窗口标题 + 界面文案同源）。
+    getWindowName() 原本直接调 bind.mainGetAppNameSync()（返回 exe 名），
+    一并改为走 appName，否则窗口标题仍是英文。appname 未登记则不动。"""
+    name = DISPLAY_NAMES.get((app_name or '').strip())
+    if not name:
+        return
+    path = os.path.join(root, 'flutter', 'lib', 'common.dart')
+    if not os.path.isfile(path):
+        raise SystemExit('common.dart not found for display name: %s' % path)
+    src = read(path)
+    if ('return \'%s\';' % name) in src:
+        print('  skip (already patched): common.dart display name')
+        return
+    old_getter = ("String _appName = '';\n"
+                  "String get appName {\n"
+                  "  if (_appName.isEmpty) {\n"
+                  "    _appName = bind.mainGetAppNameSync();\n"
+                  "  }\n"
+                  "  return _appName;\n"
+                  "}")
+    new_getter = ("String _appName = '';\n"
+                  "String get appName {\n"
+                  "  // 【HyDesk】定制版显示名（构建期注入，patch_client_ui.py）\n"
+                  "  return '%s';\n"
+                  "}" % name)
+    src = replace_once(src, old_getter, new_getter, 'common.dart: display name')
+    src = replace_once(src,
+                       "  final name = bind.mainGetAppNameSync();",
+                       "  final name = appName;",
+                       'common.dart: window title uses appName')
+    write(path, src)
+    print('  patched common.dart: display name = %s' % name)
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     license_code = sys.argv[2].strip() if len(sys.argv) > 2 else ''
+    app_name = sys.argv[3].strip() if len(sys.argv) > 3 else ''
     main_dart = os.path.join(root, 'flutter', 'lib', 'main.dart')
     dest_dir = os.path.join(root, 'flutter', 'lib', 'desktop', 'pages')
     src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
@@ -406,6 +449,8 @@ def main():
     patch_video_quality_default(root)
     # 定制版管理端套餐锁（licensecode 非空时注入）
     patch_plan_lock(root, license_code)
+    # 定制版管理端显示名（按 appname 映射，如 B 版 → HyDesk定制款）
+    patch_display_name(root, app_name)
 
 
 if __name__ == '__main__':

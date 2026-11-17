@@ -733,6 +733,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       items: const [
         PopupMenuItem(value: 'ft', child: Text('传输文件')),
         PopupMenuItem(value: 'run', child: Text('远程运行程序')),
+        PopupMenuItem(value: 'msg', child: Text('发送消息')),
         PopupMenuItem(value: 'ab', child: Text('添加到地址簿')),
         PopupMenuItem(value: 'rename', child: Text('重命名')),
         PopupMenuItem(
@@ -748,6 +749,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         break;
       case 'run':
         _remoteRunPrompt(id);
+        break;
+      case 'msg':
+        _sendMsgTo(id);
         break;
       case 'ab':
         _addToAddressBook(p);
@@ -1024,6 +1028,124 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       showToast('下发失败：所选设备需与本机在同一授权卡下（远程卸载限制）');
     } else {
       showToast('已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
+    }
+  }
+
+  /// 单台设备发消息（右键菜单入口，定制B版 2026-11-17）
+  Future<void> _sendMsgTo(String id) async {
+    final ctrl = TextEditingController();
+    final text = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('发送消息（$id）', style: const TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: ctrl,
+            autofocus: true,
+            maxLines: 5,
+            maxLength: 1000,
+            decoration: const InputDecoration(
+              hintText: '输入要发送的内容…',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: const Text('发送')),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (text == null || text.isEmpty || !mounted) return;
+    try {
+      final r =
+          await LicenseClient.instance.issueCommand(id, 'msg', payload: text);
+      if (!mounted) return;
+      showToast(r['ok'] == true ? '已发送，对方上线后弹窗展示' : (r['msg'] ?? '发送失败'));
+    } catch (_) {
+      if (mounted) showToast('发送失败：网络异常');
+    }
+  }
+
+  /// 批量群发文字消息（定制B版 2026-11-17）：勾选多台设备群发一条消息，
+  /// 员工端弹窗展示原文，不占用远控会话；离线设备上线后也能收到。
+  /// 服务端按授权卡校验，非同一卡下的设备会被拒。
+  Future<void> _batchSendMessage() async {
+    final ids = _batchSel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      showToast('先勾选要发送的设备');
+      return;
+    }
+    final ctrl = TextEditingController();
+    final text = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('群发消息（已选 ${ids.length} 台）',
+            style: const TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('消息会直接弹窗显示在员工端电脑上，最多 1000 字。',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF666666))),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                maxLines: 5,
+                maxLength: 1000,
+                decoration: const InputDecoration(
+                  hintText: '输入要发送的内容…',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: const Text('发送')),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (text == null || text.isEmpty || !mounted) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance
+            .issueCommand(id, 'msg', payload: text);
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    if (fail == 0) {
+      showToast('已向 $ok 台设备发送消息，对方上线后弹窗展示');
+    } else if (ok == 0) {
+      showToast('发送失败：所选设备需与本机在同一授权卡下');
+    } else {
+      showToast('已发送 $ok 台，失败 $fail 台');
     }
   }
 
@@ -1847,6 +1969,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             onPressed: _batchRemoteRun,
             icon: const Icon(Icons.play_circle_outline, size: 16),
             label: const Text('远程运行', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
+            onPressed: _batchSendMessage,
+            icon: const Icon(Icons.chat_bubble_outline, size: 15),
+            label: const Text('发消息', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
             onPressed: _batchUninstall,

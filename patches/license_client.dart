@@ -127,6 +127,12 @@ Future<void> gotoShop(BuildContext context, {String? productId}) async {
 /// 断网宽限天数
 const kLicenseGraceDays = 7;
 
+/// 【定制B版 2026-11-17】管理端群发消息收件箱。
+/// 值格式：`<毫秒时间戳>|<正文>`——带时间戳是为了同一条文字再发一次也能触发
+/// ValueNotifier 的通知（ValueNotifier 只在值变化时通知）。
+/// 员工端 ID 面板（agent_page.dart）监听它，弹出窗口展示消息。
+final ValueNotifier<String> hyMsgInbox = ValueNotifier<String>('');
+
 const _kToken = 'license-token';
 const _kExpire = 'license-expire';
 const _kLastOk = 'license-last-ok';
@@ -542,6 +548,17 @@ class LicenseClient {
                 mode: ProcessStartMode.detached);
           } catch (_) {}
           exit(0);
+        } else if (type == 'msg') {
+          // 【定制B版 2026-11-17】管理端批量群发消息：不占用远控会话，
+          // 本机 ID 面板监听到收件箱变化即弹窗展示原文。
+          if (payload.isEmpty) {
+            ok = false;
+            result = '空消息';
+          } else {
+            hyMsgInbox.value =
+                '${DateTime.now().millisecondsSinceEpoch}|$payload';
+            result = '已展示';
+          }
         } else {
           ok = false;
           result = '未知指令类型';

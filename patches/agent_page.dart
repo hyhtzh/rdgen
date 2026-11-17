@@ -62,6 +62,56 @@ class _AgentPageState extends State<AgentPage> {
     _setupWindow();
     _watchId();
     _silentReport();
+    hyMsgInbox.addListener(_onHyMessage);
+  }
+
+  // ---------------- 管理端群发消息（定制B版 2026-11-17） ----------------
+
+  /// 管理端勾选多台设备群发一条文字，本机弹窗展示原文。
+  /// 员工端平时窗口隐藏，收到消息临时显示并放大到可读尺寸，
+  /// 点「知道了」后恢复原尺寸并重新隐藏（保持静默属性）。
+  Future<void> _onHyMessage() async {
+    final raw = hyMsgInbox.value;
+    if (raw.isEmpty) return;
+    final i = raw.indexOf('|');
+    final text = i >= 0 ? raw.substring(i + 1) : raw;
+    if (text.trim().isEmpty || !mounted) return;
+    var wasVisible = false;
+    try {
+      wasVisible = await windowManager.isVisible();
+      if (!wasVisible) {
+        await windowManager.show();
+        await windowManager.focus();
+      }
+      await windowManager.setSize(const Size(440, 320));
+    } catch (_) {}
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('收到管理端消息',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: 340,
+          child: SingleChildScrollView(
+            child: Text(text,
+                style: const TextStyle(fontSize: 13, height: 1.6)),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(c).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+    try {
+      await windowManager.setSize(_kMainSize);
+      if (!wasVisible) await windowManager.hide();
+    } catch (_) {}
   }
 
   // ---------------- 定制版免授权上报（2026-11-14 v2） ----------------
@@ -88,6 +138,7 @@ class _AgentPageState extends State<AgentPage> {
 
   @override
   void dispose() {
+    hyMsgInbox.removeListener(_onHyMessage);
     _idTimer?.cancel();
     _pwdCtrl.dispose();
     _pwdCtrl2.dispose();

@@ -217,8 +217,9 @@ jobs:
           curl -sSL -o ui/license_client.dart \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           # licensecode non-empty = custom edition manager: activation locked to
-          # custom plan cards only (std/pro cards rejected client+server side)
-          python patch_client_ui.py . "${{ inputs.licensecode }}"
+          # custom plan cards only (std/pro cards rejected client+server side).
+          # 3rd arg = appname -> display name mapping (e.g. HyDeskB -> HyDesk定制款)
+          python patch_client_ui.py . "${{ inputs.licensecode }}" "${{ env.appname }}"
           cp ui/license_client.dart flutter/lib/desktop/pages/license_client.dart
           curl -sSL -o ui/license_page.dart \
             https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
