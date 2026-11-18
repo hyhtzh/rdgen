@@ -294,6 +294,14 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         _firstSeen[id] = now;
         fsChanged = true;
       }
+      // 【HyDesk】2026-11-18：自动发现的设备没有地址簿别名时，远程会话
+      // 标签页 / 窗口标题会回退成 id@hostname，多个窗口无法区分。把受控端
+      // 上报的机器名（/api/devices 的 name）写进会话标签缓存，标签即显示
+      // 机器名。地址簿里重命名过的设备以用户自定义名为准，不被覆盖。
+      final machineName = (e['name'] ?? '').toString().trim();
+      if (machineName.isNotEmpty && _abAliasOf(id).isEmpty) {
+        hySetTabAlias(id, machineName);
+      }
     }
     if (fsChanged) _saveFirstSeen();
     if (!mounted) return;
@@ -312,7 +320,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       final id = (e['peer_id'] ?? '').toString().replaceAll(' ', '');
       if (id.isEmpty || known.contains(id)) continue;
       known.add(id);
-      // 地址簿里改过名就用名字，否则显示识别码
+      // 命名优先级：地址簿重命名 > 受控端上报的机器名 > 识别码。
+      // 2026-11-18：机器名（/api/devices 的 name）此前被丢弃，导致列表和
+      // 远程会话标签都显示 id@hostname，多窗口无法区分。
       var alias = '';
       var note = '';
       for (final ab in AddressBookStore.instance.entries) {
@@ -322,6 +332,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           break;
         }
       }
+      if (alias.isEmpty) alias = (e['name'] ?? '').toString().trim();
       final p = Peer.fromJson(<String, dynamic>{
         'id': id,
         'alias': alias,
