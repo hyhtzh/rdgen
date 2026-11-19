@@ -67,9 +67,10 @@ class _AgentPageState extends State<AgentPage> {
 
   // ---------------- 管理端群发消息（定制B版 2026-11-17） ----------------
 
-  /// 管理端勾选多台设备群发一条文字，本机弹窗展示原文。
-  /// 员工端平时窗口隐藏，收到消息临时显示并放大到可读尺寸，
-  /// 点「知道了」后恢复原尺寸并重新隐藏（保持静默属性）。
+  /// 管理端勾选多台设备群发一条文字，本机用原生右下角半透明气泡展示原文。
+  /// 员工端平时窗口隐藏；气泡由 hy_toast 的独立分层窗口绘制（不占 Flutter
+  /// 窗口、不抢焦点、不弹遮罩），8 秒后自动淡出。只有内核没带 watcher 时
+  /// 才退回窗口弹窗兜底。
   Future<void> _onHyMessage() async {
     final raw = hyMsgInbox.value;
     if (raw.isEmpty) return;
