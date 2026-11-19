@@ -671,7 +671,10 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
             kv('设备占用', used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 5),
-              child: Row(
+              child: StatefulBuilder(builder: (d, setLocal) {
+                final addons = c.savedAddons;
+                final blocked = c.blockedAddons;
+                return Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   SizedBox(
@@ -702,10 +705,7 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                         ],
                       )),
                   Expanded(
-                    child: StatefulBuilder(builder: (d, setLocal) {
-                      final addons = c.savedAddons;
-                      final blocked = c.blockedAddons;
-                      return Column(
+                    child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           if (addons.isEmpty)
@@ -744,11 +744,11 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                                 ),
                               )),
                         ],
-                      );
-                    }),
+                      ),
                   ),
                 ],
-              ),
+                );
+              }),
             ),
             kv('激活码', code.isEmpty ? '—' : code),
           ],
