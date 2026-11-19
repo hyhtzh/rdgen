@@ -69,79 +69,34 @@ class _AgentPageState extends State<AgentPage> {
 
   /// 管理端勾选多台设备群发一条文字，本机用原生右下角半透明气泡展示原文。
   /// 员工端平时窗口隐藏；气泡由 hy_toast 的独立分层窗口绘制（不占 Flutter
-  /// 窗口、不抢焦点、不弹遮罩），8 秒后自动淡出。只有内核没带 watcher 时
-  /// 才退回窗口弹窗兜底。
+  /// 窗口、不抢焦点、不弹遮罩），8 秒后自动淡出。不再有大灰窗兜底。
   Future<void> _onHyMessage() async {
     final raw = hyMsgInbox.value;
     if (raw.isEmpty) return;
     final i = raw.indexOf('|');
     final body = (i >= 0 ? raw.substring(i + 1) : raw).trim();
     if (body.isEmpty || !mounted) return;
-    // 【定制B版 2026-11-19】改为原生右下角半透明气泡（与聊天消息同一套实现）：
-    // 正文写进 %TEMP%\hydesk_msg.txt，由 hy_toast 的 cm_msg_watcher 读走后
-    // 用 WS_EX_LAYERED 气泡显示——右下角、真透明、8 秒淡出，不打扰正在
-    // 工作的员工。不再把 210×132 的小窗放大成 440×320 的大灰窗加遮罩。
-    final f = File('${Directory.systemTemp.path}'
-        '${Platform.pathSeparator}hydesk_msg.txt');
-    try {
-      await f.writeAsString(body, flush: true);
-    } catch (_) {
-      if (mounted) await _showHyMessageDialog(body);
-      return;
+    // 【定制B版 2026-11-20】原生右下角半透明气泡（与聊天消息同一套实现）：
+    // 正文写进跨会话共享目录 %ProgramData%\DevicesFlowUserSvc\hydesk_msg.txt，
+    // hy_toast 的 watcher 原子领取后用 WS_EX_LAYERED 气泡显示——右下角、
+    // 真透明、8 秒淡出。不再写 %TEMP%（不同会话/账户的临时目录不一致），
+    // 也不再把 210×132 的小窗放大成 440×320 的大灰窗兜底——用户明确要求
+    // 只保留原生气泡。ProgramData 不可写时才回退 %TEMP%，且只写一个位置，
+    // 避免 watcher 在两处各领一次弹出重复气泡。
+    final dirs = <String>[];
+    final pd = Platform.environment['ProgramData'];
+    if (pd != null && pd.isNotEmpty) {
+      dirs.add('$pd${Platform.pathSeparator}DevicesFlowUserSvc');
     }
-    // 兜底：内核没带 watcher（旧版 / 非 Windows）时文件不会被消费，
-    // 1.5 秒后仍存在就退回窗口弹窗，保证消息不丢。
-    Future.delayed(const Duration(milliseconds: 1500), () async {
-      var pending = false;
+    dirs.add(Directory.systemTemp.path);
+    for (final dir in dirs) {
       try {
-        pending = await f.exists();
+        await Directory(dir).create(recursive: true);
+        await File('$dir${Platform.pathSeparator}hydesk_msg.txt')
+            .writeAsString(body, flush: true);
+        return;
       } catch (_) {}
-      if (!pending || !mounted) return;
-      try {
-        await f.delete();
-      } catch (_) {}
-      if (mounted) await _showHyMessageDialog(body);
-    });
-  }
-
-  /// 兜底弹窗：仅在原生气泡不可用时使用（旧内核 / 写文件失败）。
-  Future<void> _showHyMessageDialog(String body) async {
-    var wasVisible = false;
-    try {
-      wasVisible = await windowManager.isVisible();
-      if (!wasVisible) {
-        await windowManager.show();
-        await windowManager.focus();
-      }
-      await windowManager.setSize(const Size(440, 320));
-    } catch (_) {}
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (c) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text('收到管理端消息',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-        content: SizedBox(
-          width: 340,
-          child: SingleChildScrollView(
-            child: Text(body,
-                style: const TextStyle(fontSize: 13, height: 1.6)),
-          ),
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.of(c).pop(),
-            child: const Text('知道了'),
-          ),
-        ],
-      ),
-    );
-    try {
-      await windowManager.setSize(_kMainSize);
-      if (!wasVisible) await windowManager.hide();
-    } catch (_) {}
+    }
   }
 
   // ---------------- 定制版免授权上报（2026-11-14 v2） ----------------
