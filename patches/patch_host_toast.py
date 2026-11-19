@@ -303,12 +303,20 @@ def patch_msi_silent_uninstall(root):
 
 
 def patch_cm_msg_watcher(root):
-    """【定制B版 2026-11-19】UI 进程启动管理端消息 watcher。
+    """【定制B版 2026-11-20】用户会话常驻进程全部启动消息 watcher。
 
-    管理端群发消息由 Flutter 写 %TEMP%\\hydesk_msg.txt，本进程（用户会话）
-    的 hy_toast 线程读走后弹原生右下角半透明气泡。挂在「返回 StartUi 之前」
-    而不是单独依赖 --cm：任何带界面的进程都会经过这里，服务进程在
-    --service 分支已提前 return；start_msg_watcher 自身幂等，重复启动无副作用。
+    管理端群发消息由 Flutter 写 %ProgramData%\\DevicesFlowUserSvc\\hydesk_msg.txt，
+    hy_toast 线程原子领取后弹原生右下角半透明气泡。
+
+    11-19 版只挂在 core_main() 末尾的 StartUi 之前，而 --service / --server
+    分支都在前面 return None，被控端常驻进程根本到不了那里 —— 这是用户反馈
+    「群发消息还是弹旧的大窗」的根因。现在覆盖 3 个**用户会话**分支：
+      --server（服务拉起的用户会话服务进程，start_server 阻塞前）、
+      --cm（连接管理器）、
+      StartUi（主 UI 进程）。
+    --service 是 Session 0 的 SYSTEM 服务，那里创建的窗口不可见且会抢走消息，
+    故意不注入。start_msg_watcher 自身幂等，同一进程多次调用无副作用；
+    跨进程用 rename 原子领取，保证一条消息只弹一次。
     """
     p = os.path.join(root, 'src', 'core_main.rs')
     if not os.path.isfile(p):
@@ -318,34 +326,36 @@ def patch_cm_msg_watcher(root):
     if 'hy_cm_msg_watcher' in src:
         print('core_main.rs already patched (cm msg watcher)')
         return
-    inject = ('    // 【HyDesk】hy_cm_msg_watcher：UI 进程启动管理端消息监听\n'
-              '    // （幂等；服务进程在 --service 分支已 return，到不了这里）\n'
-              '    #[cfg(target_os = "windows")]\n'
-              '    crate::hy_toast::start_msg_watcher();\n')
-    # 首选：StartUi 之前（覆盖所有界面进程）
-    old = ('    #[cfg(feature = "flutter")]\n'
-           '    return Some(CoreMainAction::StartUi(flutter_args));\n')
-    if old in src:
-        src = src.replace(old, inject + old, 1)
-    else:
-        # 兜底：--cm 分支（部分分支源码结构不同）
-        old = ('        } else if args[0] == "--cm" {\n'
-               '            // call connection manager to establish connections\n'
-               '            // meanwhile, return true to call flutter window to show control panel\n'
-               '            crate::ui_interface::start_option_status_sync();\n')
-        if old not in src:
-            raise SystemExit('patch failed: neither StartUi nor --cm anchor found')
-        src = src.replace(
-            old,
-            '        } else if args[0] == "--cm" {\n'
-            '            // call connection manager to establish connections\n'
-            '            // meanwhile, return true to call flutter window to show control panel\n'
-            '            // 【HyDesk】hy_cm_msg_watcher：管理端消息监听（幂等）\n'
-            '            #[cfg(target_os = "windows")]\n'
-            '            crate::hy_toast::start_msg_watcher();\n'
-            '            crate::ui_interface::start_option_status_sync();\n', 1)
+
+    def block(indent):
+        return (indent + '// 【HyDesk】hy_cm_msg_watcher：用户会话进程启动消息监听\n'
+                + indent + '#[cfg(target_os = "windows")]\n'
+                + indent + 'crate::hy_toast::start_msg_watcher();\n')
+
+    hits = 0
+    # 1) --server：必须在 crate::start_server(true, false) 这个阻塞调用之前
+    a1 = ('        } else if args[0] == "--server" {\n'
+          '            log::info!("start --server with user {}", crate::username());\n')
+    if a1 in src:
+        src = src.replace(a1, a1 + block('            '), 1)
+        hits += 1
+    # 2) --cm：连接管理器（不 return None，后面还会走到 StartUi）
+    a2 = ('        } else if args[0] == "--cm" {\n'
+          '            // call connection manager to establish connections\n'
+          '            // meanwhile, return true to call flutter window to show control panel\n')
+    if a2 in src:
+        src = src.replace(a2, a2 + block('            '), 1)
+        hits += 1
+    # 3) StartUi：主 UI 进程
+    a3 = ('    #[cfg(feature = "flutter")]\n'
+          '    return Some(CoreMainAction::StartUi(flutter_args));\n')
+    if a3 in src:
+        src = src.replace(a3, block('    ') + a3, 1)
+        hits += 1
+    if hits == 0:
+        raise SystemExit('patch failed: no core_main.rs anchor found')
     write(p, src)
-    print('patched core_main.rs (cm msg watcher)')
+    print('patched core_main.rs (cm msg watcher, %d anchors)' % hits)
 
 
 def main():
