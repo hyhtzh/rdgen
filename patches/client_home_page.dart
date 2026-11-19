@@ -2883,7 +2883,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                     Text(
                         blocked.isEmpty
                             ? '未开通（屏幕墙 16/32/64 屏与群控需单独购买，绑定授权码后可随设备迁移）'
-                            : '本机暂无可用附加包（已购的已达 3 台上限）',
+                            : '本机暂无可用附加包（已购的已达 ${blocked.first["max_devices"] ?? 3} 台上限）',
                         style: const TextStyle(
                             fontSize: 12, color: Color(0xFF8A94A6)))
                   else
