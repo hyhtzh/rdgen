@@ -351,18 +351,34 @@ def patch_cm_hide_no_minimize(root):
 
 
 def patch_cursor_move_guard(root):
-    """受控端光标保护：连接首个 (0,0) 事件丢弃 + 同坐标去重。
+    """受控端光标保护 v2：按连接隔离的初始化门控 + 全量去重 + 微调节流。
 
     现象一「远程连接后受控端鼠标跳到桌面左上角」：
-    客户端刚连上时可能先发一个坐标 (0,0) 的绝对移动事件（坐标尚未初始化），
-    受控端 handle_mouse_simulation_ 的 MOUSE_TYPE_MOVE 分支无条件执行
-    `en.mouse_move_to(evt.x, evt.y)` → SetCursorPos(0,0) → 光标跳到左上角。
+    客户端刚连上时先发一个坐标 (0,0) 的绝对移动事件（坐标尚未初始化），
+    上游 handle_mouse_simulation_ 的 MOUSE_TYPE_MOVE 分支无条件执行
+    `en.mouse_move_to(mx, my)` → SetCursorPos(0,0)。上游自己在 MOUSE_TYPE_UP
+    分支也注明「clients ... send button events without coordinates ... avoid
+    jumping to (0,0)」，说明 (0,0) 作「坐标未提供」的默认值是协议层已知情况。
 
-    现象二「Win7/Win10 上鼠标闪烁」：
-    每个 MOVE 事件都调一次 SetCursorPos，客户端高频重发同一坐标时，受控端
-    光标被反复重新定位/重绘，视觉上就是闪烁（Win7 无 DWM 光标合成优化更明显）。
+    现象二「Win7/部分 Win10 上鼠标闪烁」：
+    每个 MOVE 都调一次 SetCursorPos，光标被反复重新定位/重绘；叠加 GDI 抓屏
+    的 CAPTUREBLT（见 patch_gdi_capture_no_cursor）后更明显。
 
-    处理：每个连接的第一个绝对移动若是 (0,0) 丢弃；同一坐标 500ms 内不重复下发。
+    v1（1.5.42 起、1.5.61 也带）只丢「每个连接的第一个 (0,0)」且用全局单条
+    LAST 记录，三处缺陷导致用户装了 1.5.61 仍反馈跳左上角：
+      1) (0,0) 若不是首个事件、而是若干事件之后才来，照样 SetCursorPos(0,0)；
+      2) 连接 id 复用（重连）时 new_session 判为 false，(0,0) 被放行；
+      3) 屏幕墙/群控多连接交替发 MOVE，全局单条互相覆盖，去重完全失效。
+
+    v2 改为按 conn 存 HashMap，每个连接独立维护「坐标是否已初始化」：
+      1) 未初始化前，丢弃所有 (0,0)，直到出现第一个真实坐标；
+      2) 初始化后 (0,0) 视为合法（用户确实把鼠标移到左上角）；
+      3) 同坐标完全去重（不再限 500ms），8ms 内 <=1px 的连续微调跳过；
+      4) 超过 30s 无输入按新会话重置门控，覆盖「重连复用 conn」的情况；
+      5) 条目数上限 128，超过时清理 60s 未活动的连接。
+
+    注意：MOUSE_TYPE_DOWN/UP 分支只做 mouse_down/up、不自带坐标，点击位置
+    完全依赖此前的 MOVE 同步。所以这里只能过滤冗余移动，不能整段禁用同步。
     """
     p = os.path.join(root, 'src', 'server', 'input_service.rs')
     if not os.path.isfile(p):
@@ -370,7 +386,7 @@ def patch_cursor_move_guard(root):
     with open(p, encoding='utf-8') as f:
         src = f.read()
 
-    if 'hy_should_move_mouse' in src:
+    if 'hy_cursor_guard_v2' in src or 'hy_should_move_mouse' in src:
         print('input_service.rs cursor guard already patched')
         return
 
@@ -381,44 +397,59 @@ def patch_cursor_move_guard(root):
         raise SystemExit('patch failed: mouse_move_to anchor not found')
     new = ('            #[cfg(not(target_os = "linux"))]\n'
            '            let (mx, my) = (evt.x, evt.y);\n'
-           '            // 【HyDesk】防「连上就跳桌面左上角」+ 防 Win7/Win10 光标闪烁，\n'
-           '            // 见 hy_should_move_mouse 注释。\n'
+           '            // 【HyDesk v2】过滤初始化 (0,0) 与冗余移动，\n'
+           '            // 见 hy_should_move_mouse 注释（按连接隔离状态）。\n'
            '            if hy_should_move_mouse(conn, mx, my) {\n'
            '                en.mouse_move_to(mx, my);\n'
            '            }\n')
     src = src.replace(anchor, new, 1)
 
-    helper = ('/// 【HyDesk】受控端光标移动保护。\n'
-              '///\n'
-              '/// 1) 每个连接的第一个绝对移动事件若为 (0,0)，多半是客户端刚连上、\n'
-              '///    坐标还没初始化，直接 SetCursorPos(0,0) 会让受控端鼠标跳到\n'
-              '///    桌面左上角 —— 丢弃。\n'
-              '/// 2) 同一坐标 500ms 内不重复下发：每个 MOVE 都 SetCursorPos 会让\n'
-              '///    Win7/Win10 的光标反复重绘（表现为鼠标闪烁）。\n'
+    helper = ('/// 【HyDesk v2】受控端光标移动保护（2026-11-20）。\n'
+              '/// 按连接隔离状态：初始化门控 + 全量去重 + 微调节流。\n'
+              '/// hy_cursor_guard_v2\n'
               '#[allow(dead_code)]\n'
               'fn hy_should_move_mouse(conn: i32, x: i32, y: i32) -> bool {\n'
-              '    static LAST: std::sync::Mutex<Option<(i32, (i32, i32), Instant)>> =\n'
-              '        std::sync::Mutex::new(None);\n'
+              '    use std::collections::HashMap;\n'
+              '    use std::time::{Duration, Instant};\n'
+              '    // bool: 该连接是否已收到过第一个非 (0,0) 的绝对坐标\n'
+              '    static GUARD: std::sync::Mutex<\n'
+              '        Option<HashMap<i32, (bool, (i32, i32), Instant)>>,\n'
+              '    > = std::sync::Mutex::new(None);\n'
               '    let now = Instant::now();\n'
-              '    let mut last = LAST.lock().unwrap();\n'
-              '    let new_session = match *last {\n'
-              '        Some((lc, _, _)) => lc != conn,\n'
-              '        None => true,\n'
-              '    };\n'
-              '    if new_session && x == 0 && y == 0 {\n'
-              '        *last = Some((conn, (x, y), now));\n'
+              '    let mut guard = GUARD.lock().unwrap();\n'
+              '    let map = guard.get_or_insert_with(HashMap::new);\n'
+              '    if map.len() > 128 {\n'
+              '        map.retain(|_, v| v.2.elapsed() < Duration::from_secs(60));\n'
+              '    }\n'
+              '    let (mut init, (lx, ly), lt) = map\n'
+              '        .get(&conn)\n'
+              '        .copied()\n'
+              '        .unwrap_or((false, (i32::MIN, i32::MIN), now));\n'
+              '    // 连接断开后重连可能复用 conn：超过 30s 无输入按新会话处理，\n'
+              '    // 重新进入初始化门控，避免旧状态把新会话的 (0,0) 放行。\n'
+              '    if lt.elapsed() > Duration::from_secs(30) {\n'
+              '        init = false;\n'
+              '    }\n'
+              '    // 1) 坐标未初始化：连上时发来的 (0,0) 一律丢弃，直到出现真实坐标。\n'
+              '    if !init && x == 0 && y == 0 {\n'
+              '        map.insert(conn, (false, (x, y), now));\n'
               '        return false;\n'
               '    }\n'
-              '    if let Some((lc, (lx, ly), t)) = *last {\n'
-              '        if lc == conn\n'
-              '            && lx == x\n'
-              '            && ly == y\n'
-              '            && t.elapsed() < Duration::from_millis(500)\n'
-              '        {\n'
-              '            return false;\n'
-              '        }\n'
+              '    // 2) 同坐标完全去重：高频重发同一位置时不再 SetCursorPos。\n'
+              '    if lx == x && ly == y {\n'
+              '        return false;\n'
               '    }\n'
-              '    *last = Some((conn, (x, y), now));\n'
+              '    // 3) 8ms 内 <=1px 的连续微调跳过，降低 Win7 光标重绘频率。\n'
+              '    //    (0,0) 已初始化后视为明确目标，不参与节流，保证点左上角可用。\n'
+              '    if init\n'
+              '        && !(x == 0 && y == 0)\n'
+              '        && lt.elapsed() < Duration::from_millis(8)\n'
+              '        && ((lx as i64) - (x as i64)).abs() <= 1\n'
+              '        && ((ly as i64) - (y as i64)).abs() <= 1\n'
+              '    {\n'
+              '        return false;\n'
+              '    }\n'
+              '    map.insert(conn, (true, (x, y), now));\n'
               '    true\n'
               '}\n'
               '\n'
@@ -430,7 +461,7 @@ def patch_cursor_move_guard(root):
 
     with open(p, 'w', encoding='utf-8', newline='\n') as f:
         f.write(src)
-    print('patched input_service.rs: cursor move guard (drop leading 0,0 + dedup)')
+    print('patched input_service.rs: cursor guard v2 (per-conn init gate + full dedup)')
 
 
 def patch_gdi_capture_no_cursor(root):
@@ -463,6 +494,12 @@ def patch_gdi_capture_no_cursor(root):
            '                // "also make cursor blinking"）。Win7 没有 DDA，必现。\n'
            '                SRCCOPY,\n')
     src = src.replace(old, new, 1)
+    # 顺手清掉 import 里的 CAPTUREBLT：全文件仅 BitBlt 那一处用到，
+    # 不去掉会留一条 unused import 警告（1.5.61 编译日志里就有）。
+    imp_old = ('        CAPTUREBLT,\n'
+               '        DIB_RGB_COLORS, //CAPTUREBLT,\n')
+    if imp_old in src:
+        src = src.replace(imp_old, '        DIB_RGB_COLORS,\n', 1)
     with open(p, 'w', encoding='utf-8', newline='\n') as f:
         f.write(src)
     print('patched gdi.rs: BitBlt drops CAPTUREBLT (no cursor in capture)')
