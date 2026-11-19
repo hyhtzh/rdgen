@@ -140,6 +140,7 @@ mod imp {
     }
 
     static UNINSTALL_STARTED: AtomicBool = AtomicBool::new(false);
+    static MSG_WATCHER_ON: AtomicBool = AtomicBool::new(false);
 
     /// 标记文件目录（与隐私屏信号文件同目录；用户会话与 SYSTEM 服务都可达）
     fn hy_base_dir() -> std::path::PathBuf {
@@ -239,6 +240,11 @@ mod imp {
     }
 
     pub fn start_msg_watcher() {
+        // 幂等：core_main 的 UI 启动路径可能被多次经过（多窗口/重启 CM），
+        // 只允许一个监听线程，避免同一条消息被弹两次。
+        if MSG_WATCHER_ON.swap(true, Ordering::AcqRel) {
+            return;
+        }
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_millis(600));
             let p = msg_file_path();
