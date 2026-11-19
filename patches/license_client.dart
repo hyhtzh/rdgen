@@ -872,18 +872,19 @@ class AgentReporter {
     _code = await _resolveCode(defaultCode);
     if (_code.isEmpty) return; // 没有任何可用分组码：静默不上报
     _timer?.cancel();
-    // 【定制B版 2026-11-19】装完 5 秒内出现在管理端：
+    // 【定制B版 2026-11-20】装完 5 秒内出现在管理端、消息 3 秒内到员工端：
     // 首报立刻发出（不 await，不与后面的定时器串行等待）；
-    // 前 6 轮按 5 秒一次加速上报（≈30 秒覆盖安装/首启窗口），
-    // 之后回到 15 秒常规心跳，避免长期高频打接口。
+    // 前 10 轮按 2 秒一次加速上报（覆盖安装/首启窗口），
+    // 之后 3 秒常规心跳。群发消息是 /api/report 响应里带回的 cmds，
+    // 原来的 15 秒心跳会让消息平均慢 7.5 秒、最坏 15 秒才弹出。
     _poll();
     var burst = 0;
-    _timer = Timer.periodic(const Duration(seconds: 5), (t) {
+    _timer = Timer.periodic(const Duration(seconds: 2), (t) {
       _poll();
-      if (++burst >= 6) {
+      if (++burst >= 10) {
         t.cancel();
         _timer = Timer.periodic(
-            const Duration(seconds: 15), (_) => _poll());
+            const Duration(seconds: 3), (_) => _poll());
       }
     });
   }
@@ -971,12 +972,13 @@ class AgentReporter {
 
   Future<void> _pollInner() async {
     final lc = LicenseClient.instance;
-    // v4.1：上报 15s 一轮；配置同步每 4 轮一次（≈60s），避免打套餐配置接口
-    // v5（2026-11-19）：首轮配置同步改为后台进行，不再阻塞首报
+    // v4.1：配置同步按固定间隔做，避免每轮都打套餐配置接口
+    // v6（2026-11-20）：心跳提速到 3s，配置同步改为每 20 轮一次（≈60s）；
+    // 首轮配置同步仍在后台进行，不阻塞首报
     _ticks++;
     if (_ticks == 1) {
       _syncConfig(lc); // 不 await：首报优先，配置随后落地
-    } else if (_ticks % 4 == 1) {
+    } else if (_ticks % 20 == 1) {
       await _syncConfig(lc);
     }
     var peer = '';
