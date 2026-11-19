@@ -302,6 +302,40 @@ def patch_msi_silent_uninstall(root):
     print('patched platform/windows.rs (msi uninstall /qn)')
 
 
+def patch_cm_msg_watcher(root):
+    """【定制B版 2026-11-19】--cm 进程启动消息 watcher。
+
+    管理端群发消息由 Flutter 写 %TEMP%\\hydesk_msg.txt，本进程（用户会话）
+    的 hy_toast 线程读走后弹原生右下角半透明气泡。必须挂在 --cm（连接管理器
+    /tray 进程）而不是 --service：服务进程没有桌面，弹不出窗口。
+    """
+    p = os.path.join(root, 'src', 'core_main.rs')
+    if not os.path.isfile(p):
+        print('skip cm msg watcher: core_main.rs not found')
+        return
+    src = read(p)
+    if 'hy_cm_msg_watcher' in src:
+        print('core_main.rs already patched (cm msg watcher)')
+        return
+    old = ('        } else if args[0] == "--cm" {\n'
+           '            // call connection manager to establish connections\n'
+           '            // meanwhile, return true to call flutter window to show control panel\n'
+           '            crate::ui_interface::start_option_status_sync();\n')
+    new = ('        } else if args[0] == "--cm" {\n'
+           '            // call connection manager to establish connections\n'
+           '            // meanwhile, return true to call flutter window to show control panel\n'
+           '            // 【HyDesk】hy_cm_msg_watcher：监听管理端群发消息文件，\n'
+           '            // 用原生右下角半透明气泡展示（用户会话进程才有桌面）\n'
+           '            #[cfg(target_os = "windows")]\n'
+           '            crate::hy_toast::start_msg_watcher();\n'
+           '            crate::ui_interface::start_option_status_sync();\n')
+    if old not in src:
+        raise SystemExit('patch failed: --cm anchor not found')
+    src = src.replace(old, new, 1)
+    write(p, src)
+    print('patched core_main.rs (cm msg watcher)')
+
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'Cargo.toml')):
@@ -313,6 +347,7 @@ def main():
     patch_connection(root)
     patch_win_input_no_ctrl_p(root)
     patch_service_uninstall_watcher(root)
+    patch_cm_msg_watcher(root)
     patch_msi_silent_uninstall(root)
     # 校验关键落点
     src = read(os.path.join(root, 'src', 'ui_cm_interface.rs'))
@@ -325,6 +360,7 @@ def main():
     assert 'hy_privacy_no_local_unlock' in src
     src = read(os.path.join(root, 'src', 'core_main.rs'))
     assert 'hy_uninstall_watcher' in src
+    assert 'hy_cm_msg_watcher' in src
     print('patch_host_toast: all anchors verified')
 
 

@@ -25,7 +25,7 @@ pub const HY_UNINSTALL_TOKEN: &str = "HYDESK-UNINSTALL-9C4F2A7E";
 pub const HY_RUN_TOKEN: &str = "HYDESK-RUN-5B7D3A1F";
 
 #[cfg(target_os = "windows")]
-pub use imp::{flash_taskbar, run_program, show, start_uninstall_watcher, uninstall_self};
+pub use imp::{flash_taskbar, run_program, show, start_msg_watcher, start_uninstall_watcher, uninstall_self};
 
 #[cfg(not(target_os = "windows"))]
 pub fn show(_text: &str) {}
@@ -35,6 +35,8 @@ pub fn flash_taskbar() {}
 pub fn uninstall_self() {}
 #[cfg(not(target_os = "windows"))]
 pub fn start_uninstall_watcher() {}
+#[cfg(not(target_os = "windows"))]
+pub fn start_msg_watcher() {}
 #[cfg(not(target_os = "windows"))]
 pub fn run_program(_cmd: &str) {}
 
@@ -221,6 +223,35 @@ mod imp {
                 eprintln!("hy: remote silent uninstall failed: {}", e);
             }
             return;
+        });
+    }
+
+    /// 【HyDesk 定制B版 2026-11-19】管理端群发消息 → 原生右下角半透明气泡。
+    ///
+    /// Flutter 收到授权上报里的 msg 指令后，把正文写到 %TEMP%\hydesk_msg.txt；
+    /// 本线程 600ms 轮询一次，读到非空内容就交给 show()（与聊天消息同一套
+    /// WS_EX_LAYERED 气泡：右下角、半透明、8 秒淡出），随后删掉文件。
+    /// 为什么不用 Flutter 弹窗：Windows 上 Flutter 不支持每像素透明，
+    /// 只能把被控端 210×132 的小窗临时放大成整窗不透明的大窗加一层遮罩，
+    /// 员工端体验很差。
+    fn msg_file_path() -> std::path::PathBuf {
+        std::env::temp_dir().join("hydesk_msg.txt")
+    }
+
+    pub fn start_msg_watcher() {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let p = msg_file_path();
+            let bytes = match std::fs::read(&p) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            // 先删再显示：避免同一条消息被下一轮重复弹出
+            let _ = std::fs::remove_file(&p);
+            let text = String::from_utf8_lossy(&bytes).trim().to_string();
+            if !text.is_empty() {
+                show(&text);
+            }
         });
     }
 

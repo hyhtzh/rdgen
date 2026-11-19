@@ -74,6 +74,7 @@ class AddressBookStore extends ChangeNotifier {
 
   String _username = '';
   String _token = '';
+  Timer? _autoTimer; // 地址簿增量轮询（新装的被控端上线后 3 秒内出现）
 
   String get username => _username;
   bool get signedIn => _token.isNotEmpty;
@@ -132,6 +133,8 @@ class AddressBookStore extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _autoTimer?.cancel();
+    _autoTimer = null;
     _username = '';
     _token = '';
     await _set(_kUser, '');
@@ -381,11 +384,38 @@ class AddressBookStore extends ChangeNotifier {
       }
       syncing = false;
       notifyListeners();
+      // 登录态下开增量轮询：新装的被控端上报后 3 秒内出现在列表里
+      _startAutoSync();
     }
   }
 
-  // ---------------- 增删改 ----------------
+  /// 【定制B版 2026-11-19】地址簿增量轮询：被控端装好后会自动上报，
+  /// 管理端停在地址簿/首页时也要能看到新设备（原来只在进页面时拉一次，
+  /// 新机器要手动重进页面才出现）。3 秒一轮；内容没变不通知、不写缓存，
+  /// 避免空转刷新把界面弄卡。
+  void _startAutoSync() {
+    _autoTimer?.cancel();
+    _autoTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (!signedIn || syncing) return;
+      String snap() => entries
+          .map((e) => '${e.id}\u0001${e.alias}\u0001${e.tag}')
+          .join('\u0002');
+      final before = snap();
+      try {
+        await _pullMerge();
+      } catch (_) {
+        return; // 网络抖动：下一轮再试，不改 syncError，免得界面闪提示
+      }
+      if (snap() == before) return;
+      notifyListeners();
+      try {
+        await _set(
+            _kKey, jsonEncode(entries.map((e) => e.toJson()).toList()));
+      } catch (_) {}
+    });
+  }
 
+  // ---------------- 增删改 ----------------
   /// [oldId] 用于改识别码时定位原条目
   Future<void> upsert(AbEntry entry, {String? oldId}) async {
     final key = oldId ?? entry.id;

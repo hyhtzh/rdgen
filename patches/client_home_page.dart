@@ -1088,6 +1088,13 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   /// 员工端弹窗展示原文，不占用远控会话；离线设备上线后也能收到。
   /// 服务端按授权卡校验，非同一卡下的设备会被拒。
   Future<void> _batchSendMessage() async {
+    // 【定制B版 2026-11-19】群发消息纳入授权门禁：
+    // 批量下发属于「群控包」（feature=group）的增值能力，服务端只校验
+    // 卡归属、不校验功能权限，所以门禁必须在这里拦，未开通不下发。
+    if (!licenseFeature('group')) {
+      showToast('群发消息属于「群控包」增值功能，请先在授权详情里点「兑换附加包」开通');
+      return;
+    }
     final ids = _batchSel
         .map((s) => s.replaceAll(' ', ''))
         .where((s) => s.isNotEmpty)
@@ -1983,8 +1990,19 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           ),
           TextButton.icon(
             onPressed: _batchSendMessage,
-            icon: const Icon(Icons.chat_bubble_outline, size: 15),
-            label: const Text('发消息', style: TextStyle(fontSize: 12.5)),
+            // 【定制B版 2026-11-19】群发消息需「群控包」：未开通时显示锁图标，
+            // 点击给出开通指引；开通状态在授权配置里，随弹窗重建刷新。
+            icon: Icon(
+                licenseFeature('group')
+                    ? Icons.chat_bubble_outline
+                    : Icons.lock_outline,
+                size: 15,
+                color: licenseFeature('group') ? null : const Color(0xFF9AA4B2)),
+            label: Text('发消息',
+                style: TextStyle(
+                    fontSize: 12.5,
+                    color:
+                        licenseFeature('group') ? null : const Color(0xFF9AA4B2))),
           ),
           TextButton.icon(
             onPressed: _batchUninstall,
@@ -2842,7 +2860,22 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                       const Text('附加功能',
                           style: TextStyle(fontSize: 12.5, color: _C.sub)),
                       const Spacer(),
-                      // 2026-11-14 定制版：管理端隐藏「兑换附加包」开通入口
+                      // 【定制B版 2026-11-19】恢复「兑换附加包」入口：
+                      // 员工端/管理端拿到附加包卡密后，不必再绕去屏幕墙或商城，
+                      // 在授权详情里直接兑换，绑定当前主授权码即可生效。
+                      InkWell(
+                        onTap: () => _redeemAddon(context, _refreshConfig),
+                        borderRadius: BorderRadius.circular(4),
+                        child: const Padding(
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                          child: Text('兑换附加包',
+                              style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Color(0xFF1B72D6),
+                                  fontWeight: FontWeight.w500)),
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 6),

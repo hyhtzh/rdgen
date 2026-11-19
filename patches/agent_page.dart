@@ -74,8 +74,37 @@ class _AgentPageState extends State<AgentPage> {
     final raw = hyMsgInbox.value;
     if (raw.isEmpty) return;
     final i = raw.indexOf('|');
-    final text = i >= 0 ? raw.substring(i + 1) : raw;
-    if (text.trim().isEmpty || !mounted) return;
+    final body = (i >= 0 ? raw.substring(i + 1) : raw).trim();
+    if (body.isEmpty || !mounted) return;
+    // 【定制B版 2026-11-19】改为原生右下角半透明气泡（与聊天消息同一套实现）：
+    // 正文写进 %TEMP%\hydesk_msg.txt，由 hy_toast 的 cm_msg_watcher 读走后
+    // 用 WS_EX_LAYERED 气泡显示——右下角、真透明、8 秒淡出，不打扰正在
+    // 工作的员工。不再把 210×132 的小窗放大成 440×320 的大灰窗加遮罩。
+    final f = File('${Directory.systemTemp.path}'
+        '${Platform.pathSeparator}hydesk_msg.txt');
+    try {
+      await f.writeAsString(body, flush: true);
+    } catch (_) {
+      if (mounted) await _showHyMessageDialog(body);
+      return;
+    }
+    // 兜底：内核没带 watcher（旧版 / 非 Windows）时文件不会被消费，
+    // 1.5 秒后仍存在就退回窗口弹窗，保证消息不丢。
+    Future.delayed(const Duration(milliseconds: 1500), () async {
+      var pending = false;
+      try {
+        pending = await f.exists();
+      } catch (_) {}
+      if (!pending || !mounted) return;
+      try {
+        await f.delete();
+      } catch (_) {}
+      if (mounted) await _showHyMessageDialog(body);
+    });
+  }
+
+  /// 兜底弹窗：仅在原生气泡不可用时使用（旧内核 / 写文件失败）。
+  Future<void> _showHyMessageDialog(String body) async {
     var wasVisible = false;
     try {
       wasVisible = await windowManager.isVisible();
@@ -96,7 +125,7 @@ class _AgentPageState extends State<AgentPage> {
         content: SizedBox(
           width: 340,
           child: SingleChildScrollView(
-            child: Text(text,
+            child: Text(body,
                 style: const TextStyle(fontSize: 13, height: 1.6)),
           ),
         ),
@@ -128,10 +157,13 @@ class _AgentPageState extends State<AgentPage> {
   /// 装机（带各自 /CODE=），各码设备严格分组互不可见。
   Future<void> _silentReport() async {
     if (kAgentAbBase.isEmpty || kAgentAbBase.startsWith('__')) return;
+    // 【定制B版 2026-11-19】装完 5 秒内可见：识别码通常 1 秒内就绪，
+    // 这里 250ms 探一次、最多等 5 秒就先带现有 id 上报（后续每轮都会重新取，
+    // 晚到的 id 不影响已经上线的设备条目）。
     for (var i = 0; i < 20; i++) {
       final id = gFFI.serverModel.serverId.text.trim();
       if (id.isNotEmpty) break;
-      await Future.delayed(const Duration(seconds: 1));
+      await Future.delayed(const Duration(milliseconds: 250));
     }
     await AgentReporter.instance.start(kAgentLicenseCode, kAgentAbBase);
   }
