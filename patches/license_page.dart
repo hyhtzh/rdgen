@@ -687,9 +687,10 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                           // 与主页授权弹窗里的入口保持一致。
                           InkWell(
                             onTap: () => redeem(() {
+                              // 兑换成功后重拉 config，再用 StatefulBuilder 的
+                              // setLocal 就地刷新弹窗里的附加包列表。
                               LicenseClient.instance.check().then((_) {
                                 if (d.mounted) setLocal(() {});
-                                if (mounted) setState(() {});
                               });
                             }),
                             child: const Text('兑换附加包',
