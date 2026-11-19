@@ -689,7 +689,7 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                             Text(
                                 blocked.isEmpty
                                     ? '未开通（绑定当前授权码，换设备可带走）'
-                                    : '本机暂无可用附加包（已购的已达 3 台上限）',
+                                    : '本机暂无可用附加包（已购的已达 ${blocked.first["max_devices"] ?? 3} 台上限）',
                                 style: const TextStyle(
                                     fontSize: 13, color: Color(0xFF8A94A6)))
                           else
