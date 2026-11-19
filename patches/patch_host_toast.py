@@ -303,11 +303,12 @@ def patch_msi_silent_uninstall(root):
 
 
 def patch_cm_msg_watcher(root):
-    """【定制B版 2026-11-19】--cm 进程启动消息 watcher。
+    """【定制B版 2026-11-19】UI 进程启动管理端消息 watcher。
 
     管理端群发消息由 Flutter 写 %TEMP%\\hydesk_msg.txt，本进程（用户会话）
-    的 hy_toast 线程读走后弹原生右下角半透明气泡。必须挂在 --cm（连接管理器
-    /tray 进程）而不是 --service：服务进程没有桌面，弹不出窗口。
+    的 hy_toast 线程读走后弹原生右下角半透明气泡。挂在「返回 StartUi 之前」
+    而不是单独依赖 --cm：任何带界面的进程都会经过这里，服务进程在
+    --service 分支已提前 return；start_msg_watcher 自身幂等，重复启动无副作用。
     """
     p = os.path.join(root, 'src', 'core_main.rs')
     if not os.path.isfile(p):
@@ -317,21 +318,32 @@ def patch_cm_msg_watcher(root):
     if 'hy_cm_msg_watcher' in src:
         print('core_main.rs already patched (cm msg watcher)')
         return
-    old = ('        } else if args[0] == "--cm" {\n'
-           '            // call connection manager to establish connections\n'
-           '            // meanwhile, return true to call flutter window to show control panel\n'
-           '            crate::ui_interface::start_option_status_sync();\n')
-    new = ('        } else if args[0] == "--cm" {\n'
-           '            // call connection manager to establish connections\n'
-           '            // meanwhile, return true to call flutter window to show control panel\n'
-           '            // 【HyDesk】hy_cm_msg_watcher：监听管理端群发消息文件，\n'
-           '            // 用原生右下角半透明气泡展示（用户会话进程才有桌面）\n'
-           '            #[cfg(target_os = "windows")]\n'
-           '            crate::hy_toast::start_msg_watcher();\n'
-           '            crate::ui_interface::start_option_status_sync();\n')
-    if old not in src:
-        raise SystemExit('patch failed: --cm anchor not found')
-    src = src.replace(old, new, 1)
+    inject = ('    // 【HyDesk】hy_cm_msg_watcher：UI 进程启动管理端消息监听\n'
+              '    // （幂等；服务进程在 --service 分支已 return，到不了这里）\n'
+              '    #[cfg(target_os = "windows")]\n'
+              '    crate::hy_toast::start_msg_watcher();\n')
+    # 首选：StartUi 之前（覆盖所有界面进程）
+    old = ('    #[cfg(feature = "flutter")]\n'
+           '    return Some(CoreMainAction::StartUi(flutter_args));\n')
+    if old in src:
+        src = src.replace(old, inject + old, 1)
+    else:
+        # 兜底：--cm 分支（部分分支源码结构不同）
+        old = ('        } else if args[0] == "--cm" {\n'
+               '            // call connection manager to establish connections\n'
+               '            // meanwhile, return true to call flutter window to show control panel\n'
+               '            crate::ui_interface::start_option_status_sync();\n')
+        if old not in src:
+            raise SystemExit('patch failed: neither StartUi nor --cm anchor found')
+        src = src.replace(
+            old,
+            '        } else if args[0] == "--cm" {\n'
+            '            // call connection manager to establish connections\n'
+            '            // meanwhile, return true to call flutter window to show control panel\n'
+            '            // 【HyDesk】hy_cm_msg_watcher：管理端消息监听（幂等）\n'
+            '            #[cfg(target_os = "windows")]\n'
+            '            crate::hy_toast::start_msg_watcher();\n'
+            '            crate::ui_interface::start_option_status_sync();\n', 1)
     write(p, src)
     print('patched core_main.rs (cm msg watcher)')
 
