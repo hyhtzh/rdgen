@@ -674,10 +674,32 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SizedBox(
+                  SizedBox(
                       width: 92,
-                      child: Text('附加功能',
-                          style: TextStyle(fontSize: 13, color: _LC.sub))),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('附加功能',
+                              style: TextStyle(fontSize: 13, color: _LC.sub)),
+                          const SizedBox(height: 2),
+                          // 【定制B版 2026-11-20】恢复兑换入口（11-14 定制时曾隐藏）：
+                          // 拿到附加包卡密后在这里直接兑换，绑定当前授权码生效，
+                          // 与主页授权弹窗里的入口保持一致。
+                          InkWell(
+                            onTap: () => redeem(() {
+                              LicenseClient.instance.check().then((_) {
+                                if (d.mounted) setLocal(() {});
+                                if (mounted) setState(() {});
+                              });
+                            }),
+                            child: const Text('兑换附加包',
+                                style: TextStyle(
+                                    fontSize: 12.5,
+                                    color: Color(0xFF1B72D6),
+                                    fontWeight: FontWeight.w500)),
+                          ),
+                        ],
+                      )),
                   Expanded(
                     child: StatefulBuilder(builder: (d, setLocal) {
                       final addons = c.savedAddons;
@@ -720,7 +742,6 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                                       fontSize: 11.5, color: Color(0xFFC8811A)),
                                 ),
                               )),
-                          // 2026-11-14 定制版：管理端隐藏「兑换附加包」开通入口
                         ],
                       );
                     }),
