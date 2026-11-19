@@ -1078,14 +1078,14 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       final r =
           await LicenseClient.instance.issueCommand(id, 'msg', payload: text);
       if (!mounted) return;
-      showToast(r['ok'] == true ? '已发送，对方上线后弹窗展示' : (r['msg'] ?? '发送失败'));
+      showToast(r['ok'] == true ? '已发送，对方上线后右下角气泡提示' : (r['msg'] ?? '发送失败'));
     } catch (_) {
       if (mounted) showToast('发送失败：网络异常');
     }
   }
 
   /// 批量群发文字消息（定制B版 2026-11-17）：勾选多台设备群发一条消息，
-  /// 员工端弹窗展示原文，不占用远控会话；离线设备上线后也能收到。
+  /// 员工端右下角气泡展示原文，不占用远控会话；离线设备上线后也能收到。
   /// 服务端按授权卡校验，非同一卡下的设备会被拒。
   Future<void> _batchSendMessage() async {
     // 【定制B版 2026-11-19】群发消息纳入授权门禁：
@@ -1115,7 +1115,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('消息会直接弹窗显示在员工端电脑上，最多 1000 字。',
+              const Text('消息会在员工端电脑右下角以气泡提示显示，最多 1000 字。',
                   style: TextStyle(fontSize: 12, color: Color(0xFF666666))),
               const SizedBox(height: 10),
               TextField(
@@ -1159,7 +1159,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     }
     if (!mounted) return;
     if (fail == 0) {
-      showToast('已向 $ok 台设备发送消息，对方上线后弹窗展示');
+      showToast('已向 $ok 台设备发送消息，对方上线后右下角气泡提示');
     } else if (ok == 0) {
       showToast('发送失败：所选设备需与本机在同一授权卡下');
     } else {
