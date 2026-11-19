@@ -227,36 +227,57 @@ mod imp {
         });
     }
 
-    /// 【HyDesk 定制B版 2026-11-19】管理端群发消息 → 原生右下角半透明气泡。
+    /// 【HyDesk 定制B版 2026-11-20】管理端群发消息 → 原生右下角半透明气泡。
     ///
-    /// Flutter 收到授权上报里的 msg 指令后，把正文写到 %TEMP%\hydesk_msg.txt；
-    /// 本线程 600ms 轮询一次，读到非空内容就交给 show()（与聊天消息同一套
-    /// WS_EX_LAYERED 气泡：右下角、半透明、8 秒淡出），随后删掉文件。
+    /// Flutter 收到上报响应里的 msg 指令后，把正文写到共享目录的
+    /// hydesk_msg.txt；本线程 150ms 轮询、用 rename 原子领取后交给 show()
+    /// （与聊天消息同一套 WS_EX_LAYERED 气泡：右下角、半透明、8 秒淡出）。
     /// 为什么不用 Flutter 弹窗：Windows 上 Flutter 不支持每像素透明，
     /// 只能把被控端 210×132 的小窗临时放大成整窗不透明的大窗加一层遮罩，
     /// 员工端体验很差。
+    /// 消息文件统一放在 %ProgramData%\\DevicesFlowUserSvc（与卸载标记同目录），
+    /// 用户会话进程与 SYSTEM 服务都能访问；不再用 %TEMP%——不同会话/不同账户的
+    /// 临时目录并不相同，这是 2026-11-20 反馈「群发消息没走原生气泡」的根因之一。
     fn msg_file_path() -> std::path::PathBuf {
+        hy_base_dir().join("hydesk_msg.txt")
+    }
+
+    /// 兼容旧版客户端（仍写 %TEMP%）残留的消息文件。
+    fn legacy_msg_file_path() -> std::path::PathBuf {
         std::env::temp_dir().join("hydesk_msg.txt")
     }
 
     pub fn start_msg_watcher() {
-        // 幂等：core_main 的 UI 启动路径可能被多次经过（多窗口/重启 CM），
-        // 只允许一个监听线程，避免同一条消息被弹两次。
+        // 幂等：core_main 可能在多个分支注入本调用（--server / --cm / StartUi），
+        // 同一进程只允许一个监听线程。
         if MSG_WATCHER_ON.swap(true, Ordering::AcqRel) {
             return;
         }
-        std::thread::spawn(|| loop {
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            let p = msg_file_path();
-            let bytes = match std::fs::read(&p) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            // 先删再显示：避免同一条消息被下一轮重复弹出
-            let _ = std::fs::remove_file(&p);
-            let text = String::from_utf8_lossy(&bytes).trim().to_string();
-            if !text.is_empty() {
-                show(&text);
+        std::thread::spawn(|| {
+            let paths = [msg_file_path(), legacy_msg_file_path()];
+            let mut seq: u64 = 0;
+            loop {
+                // 150ms：消息到达后几乎立刻弹出（此前 600ms + 1.5s 弹窗兜底）
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                for p in &paths {
+                    let bytes = match std::fs::read(p) {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+                    // 原子领取：rename 是跨进程互斥的，多个用户会话进程同时
+                    // 监听时只有一个能领到，避免同一条消息弹出两次气泡。
+                    seq = seq.wrapping_add(1);
+                    let claim = p.with_extension(
+                        format!("txt.{}.{}", std::process::id(), seq));
+                    if std::fs::rename(p, &claim).is_err() {
+                        continue;
+                    }
+                    let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                    let _ = std::fs::remove_file(&claim);
+                    if !text.is_empty() {
+                        show(&text);
+                    }
+                }
             }
         });
     }
