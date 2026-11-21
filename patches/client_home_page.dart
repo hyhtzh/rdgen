@@ -172,7 +172,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   int _apiOk = 1;
   Timer? _netProbe;
   int _tab = 1; // 0 最近, 1 收藏, 2 地址簿
-  bool _grid = false;
+  bool _grid = true; // 2026-11-21：默认网格视图（用户要求）
 
   /// 文件传输宿主是否展开（宿主常驻 Stack，收起时传输继续跑）
   bool _ftOpen = false;
@@ -404,6 +404,28 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               loginMethod: (a['loginMethod'] ?? '') as String,
             );
             break;
+          // 【HyDesk】2026-11-21：远程画面右键「将标签页移至新窗口」发出的
+          // 消息由主窗口处理。上游 DesktopHomePage 里有这个分支，但首页被
+          // 替换成 ClientHomePage 后 handler 跟着丢了，导致点击无效。
+          case kWindowEventMoveTabToNewWindow:
+            final args = (call.arguments as String).split(',');
+            int? winId;
+            try {
+              winId = int.parse(args[0]);
+            } catch (e) {
+              debugPrint('moveTabToNewWindow: bad window id ${call.arguments}: $e');
+            }
+            WindowType? winType;
+            try {
+              winType = WindowType.values.byName(args[3]);
+            } catch (e) {
+              debugPrint('moveTabToNewWindow: bad window type ${call.arguments}: $e');
+            }
+            if (winId != null && winType != null) {
+              await rustDeskWinManager.moveTabToNewWindow(
+                  winId, args[1], args[2], winType);
+            }
+            break;
           default:
             break;
         }
@@ -538,6 +560,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           p.alias.toLowerCase().contains(q) ||
           p.hostname.toLowerCase().contains(q);
     }).toList();
+    // 2026-11-21：「最近」列表保留 RustDesk 原生顺序（按最近连接时间倒序），
+    // 不再按识别码字母重排——否则最新连过的设备排到最后，找不到。
+    if (_tab == 0) return list;
     list.sort((a, b) {
       if (a.online != b.online) return a.online ? -1 : 1;
       final r = a.getId().toLowerCase().compareTo(b.getId().toLowerCase());
@@ -1078,23 +1103,16 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       final r =
           await LicenseClient.instance.issueCommand(id, 'msg', payload: text);
       if (!mounted) return;
-      showToast(r['ok'] == true ? '已发送，对方上线后右下角气泡提示' : (r['msg'] ?? '发送失败'));
+      showToast(r['ok'] == true ? '已发送，对方上线后弹窗展示' : (r['msg'] ?? '发送失败'));
     } catch (_) {
       if (mounted) showToast('发送失败：网络异常');
     }
   }
 
   /// 批量群发文字消息（定制B版 2026-11-17）：勾选多台设备群发一条消息，
-  /// 员工端右下角气泡展示原文，不占用远控会话；离线设备上线后也能收到。
+  /// 员工端弹窗展示原文，不占用远控会话；离线设备上线后也能收到。
   /// 服务端按授权卡校验，非同一卡下的设备会被拒。
   Future<void> _batchSendMessage() async {
-    // 【定制B版 2026-11-19】群发消息纳入授权门禁：
-    // 批量下发属于「群控包」（feature=group）的增值能力，服务端只校验
-    // 卡归属、不校验功能权限，所以门禁必须在这里拦，未开通不下发。
-    if (!licenseFeature('group')) {
-      showToast('群发消息属于「群控包」增值功能，请先在授权详情里点「兑换附加包」开通');
-      return;
-    }
     final ids = _batchSel
         .map((s) => s.replaceAll(' ', ''))
         .where((s) => s.isNotEmpty)
@@ -1115,7 +1133,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('消息会在员工端电脑右下角以气泡提示显示，最多 1000 字。',
+              const Text('消息会直接弹窗显示在员工端电脑上，最多 1000 字。',
                   style: TextStyle(fontSize: 12, color: Color(0xFF666666))),
               const SizedBox(height: 10),
               TextField(
@@ -1159,7 +1177,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     }
     if (!mounted) return;
     if (fail == 0) {
-      showToast('已向 $ok 台设备发送消息，对方上线后右下角气泡提示');
+      showToast('已向 $ok 台设备发送消息，对方上线后弹窗展示');
     } else if (ok == 0) {
       showToast('发送失败：所选设备需与本机在同一授权卡下');
     } else {
@@ -1277,7 +1295,24 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   }
 
   void _connectPeer(Peer p) {
+    // 【HyDesk】2026-11-21：连接前把设备显示名同步写入 Rust peer 表 + 标签
+    // 缓存，确保远程会话标签页直接显示名字，而不是 id@hostname。
+    _ensurePeerAlias(p);
     connect(context, p.id, password: p.password.isEmpty ? null : p.password);
+  }
+
+  /// 确保打开会话时，Rust peer 表的 alias 与界面显示名一致。
+  /// 上游 tablabelGetter 读 mainGetPeerOptionSync(id,'alias')，自动发现设备
+  /// 不在 peer 表、alias 常年为空 → 标签回退成 id@hostname。连接前主动写入。
+  void _ensurePeerAlias(Peer p) {
+    final id = p.id.replaceAll(' ', '');
+    if (id.isEmpty) return;
+    final name = _displayName(p).trim();
+    if (name.isEmpty) return;
+    try {
+      bind.mainSetPeerOptionSync(id: id, key: 'alias', value: name);
+    } catch (_) {}
+    hySetTabAlias(id, name);
   }
 
   Future<void> _addAddressEntry() async {
@@ -1486,15 +1521,64 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   }
 
   Widget _buildLocalInfo() {
-    // 2026-11-14 定制版：管理端不再显示本机识别码 / 验证码（受控端才有
-    // 身份概念，管理端展示这两个只会让现场误把管理端当受控端连），
-    // 左栏只保留授权状态卡。
+    // 2026-11-21：恢复本机识别码 / 验证码面板（用户要求恢复所有隐藏按钮）。
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 6),
+        _buildLocalIdCard(),
+        const SizedBox(height: 10),
         _buildLicenseCard(),
       ],
+    );
+  }
+
+  /// 本机识别码 / 验证码卡片（2026-11-21 恢复）
+  Widget _buildLocalIdCard() {
+    return AnimatedBuilder(
+      animation: gFFI.serverModel,
+      builder: (context, _) {
+        final id = _localId;
+        final pwd = _localPwd;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4F8FE),
+            border: Border.all(color: _C.line),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('本机识别码',
+                  style: TextStyle(fontSize: 11.5, color: _C.sub)),
+              const SizedBox(height: 3),
+              SelectableText(
+                formatAbId(id),
+                style: const TextStyle(
+                    fontSize: 17, fontWeight: FontWeight.w600, color: _C.blue),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text('验证码 ',
+                      style: TextStyle(fontSize: 11.5, color: _C.sub)),
+                  SelectableText(pwd,
+                      style: const TextStyle(
+                          fontSize: 13, color: _C.dark)),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: '刷新验证码',
+                    icon: const Icon(Icons.refresh, size: 16, color: _C.blue),
+                    onPressed: _refreshPwd,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1668,12 +1752,14 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   Widget _buildButtonRow() {
     return Row(
       children: [
-        // 2026-11-14 用户要求：官网入口不显示（原红色「官网」按钮已移除）
-        Expanded(flex: 96, child: _solidButton('屏幕墙', _C.blue, _openWall)),
+        // 2026-11-21：恢复官网入口（用户要求恢复所有隐藏按钮）
+        Expanded(flex: 72, child: _solidButton('官网', _C.red, _upgrade)),
         const SizedBox(width: 8),
-        Expanded(flex: 82, child: _solidButton('查看', _C.teal, _connectViewOnly)),
+        Expanded(flex: 88, child: _solidButton('屏幕墙', _C.blue, _openWall)),
         const SizedBox(width: 8),
-        Expanded(flex: 82, child: _solidButton('控制', _C.green, _doConnect)),
+        Expanded(flex: 76, child: _solidButton('查看', _C.teal, _connectViewOnly)),
+        const SizedBox(width: 8),
+        Expanded(flex: 76, child: _solidButton('控制', _C.green, _doConnect)),
         const SizedBox(width: 8),
         SizedBox(width: 44, height: 40, child: _buildMoreButton()),
       ],
@@ -1725,12 +1811,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             break;
         }
       },
-      // 标准版不下发 file_transfer / terminal，这里直接不显示入口
+      // 2026-11-21：恢复传输文件 / 终端入口（用户要求恢复所有隐藏按钮）
       itemBuilder: (context) => [
-        if (licenseFeature('file_transfer'))
-          const PopupMenuItem(value: 'file', child: Text('传输文件')),
-        if (licenseFeature('terminal'))
-          const PopupMenuItem(value: 'terminal', child: Text('终端 (beta)')),
+        const PopupMenuItem(value: 'file', child: Text('传输文件')),
+        const PopupMenuItem(value: 'terminal', child: Text('终端 (beta)')),
         const PopupMenuItem(value: 'approval', child: Text('请求授权连接')),
         const PopupMenuDivider(),
         const PopupMenuItem(value: 'quit', child: Text('退出程序')),
@@ -1990,19 +2074,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
           ),
           TextButton.icon(
             onPressed: _batchSendMessage,
-            // 【定制B版 2026-11-19】群发消息需「群控包」：未开通时显示锁图标，
-            // 点击给出开通指引；开通状态在授权配置里，随弹窗重建刷新。
-            icon: Icon(
-                licenseFeature('group')
-                    ? Icons.chat_bubble_outline
-                    : Icons.lock_outline,
-                size: 15,
-                color: licenseFeature('group') ? null : const Color(0xFF9AA4B2)),
-            label: Text('发消息',
-                style: TextStyle(
-                    fontSize: 12.5,
-                    color:
-                        licenseFeature('group') ? null : const Color(0xFF9AA4B2))),
+            icon: const Icon(Icons.chat_bubble_outline, size: 15),
+            label: const Text('发消息', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
             onPressed: _batchUninstall,
@@ -2860,21 +2933,11 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                       const Text('附加功能',
                           style: TextStyle(fontSize: 12.5, color: _C.sub)),
                       const Spacer(),
-                      // 【定制B版 2026-11-19】恢复「兑换附加包」入口：
-                      // 员工端/管理端拿到附加包卡密后，不必再绕去屏幕墙或商城，
-                      // 在授权详情里直接兑换，绑定当前主授权码即可生效。
-                      InkWell(
-                        onTap: () => _redeemAddon(context, _refreshConfig),
-                        borderRadius: BorderRadius.circular(4),
-                        child: const Padding(
-                          padding:
-                              EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-                          child: Text('兑换附加包',
-                              style: TextStyle(
-                                  fontSize: 12.5,
-                                  color: Color(0xFF1B72D6),
-                                  fontWeight: FontWeight.w500)),
-                        ),
+                      // 2026-11-21：恢复「兑换附加包」入口（用户要求）
+                      TextButton(
+                        onPressed: () => _redeemAddon(ctx, setLocal),
+                        child: const Text('兑换附加包',
+                            style: TextStyle(fontSize: 12, color: _C.blue)),
                       ),
                     ],
                   ),
@@ -2883,7 +2946,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                     Text(
                         blocked.isEmpty
                             ? '未开通（屏幕墙 16/32/64 屏与群控需单独购买，绑定授权码后可随设备迁移）'
-                            : '本机暂无可用附加包（已购的已达 ${blocked.first["max_devices"] ?? 3} 台上限）',
+                            : '本机暂无可用附加包（已购的已达 3 台上限）',
                         style: const TextStyle(
                             fontSize: 12, color: Color(0xFF8A94A6)))
                   else
@@ -2975,7 +3038,12 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
           child: const Text('关闭',
               style: TextStyle(fontSize: 13.5, color: _C.sub)),
         ),
-        // 2026-11-14 定制版：管理端隐藏续费入口（续费走销售侧，客户端不打扰）
+        // 2026-11-21：恢复续费入口（用户要求恢复所有隐藏按钮）
+        TextButton(
+          onPressed: () => _upgrade(context),
+          child: const Text('续费/购买',
+              style: TextStyle(fontSize: 13.5, color: _C.blue)),
+        ),
         TextButton(
           onPressed: () => _unbind(context),
           child: const Text('解绑设备',
