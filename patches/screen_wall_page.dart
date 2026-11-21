@@ -1748,12 +1748,20 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
         title: Text('该功能需要升级授权',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         content: Text(
-            '$what属于付费功能，当前授权不包含。\n\n如需使用，请联系管理员开通。',
+            '$what属于付费功能，当前授权不包含。\n\n如需使用，可点「去购买」或联系管理员开通。',
             style: TextStyle(fontSize: 13, height: 1.6)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: Text('知道了', style: TextStyle(color: _C.sub)),
+          ),
+          // 2026-11-21：恢复购买入口（用户要求）
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              gotoShop(context, productId: productId);
+            },
+            child: Text('去购买', style: TextStyle(color: _C.blue)),
           ),
         ],
       ),
