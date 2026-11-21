@@ -74,7 +74,6 @@ class AddressBookStore extends ChangeNotifier {
 
   String _username = '';
   String _token = '';
-  Timer? _autoTimer; // 地址簿增量轮询（新装的被控端上线后 3 秒内出现）
 
   String get username => _username;
   bool get signedIn => _token.isNotEmpty;
@@ -133,8 +132,6 @@ class AddressBookStore extends ChangeNotifier {
   }
 
   Future<void> logout() async {
-    _autoTimer?.cancel();
-    _autoTimer = null;
     _username = '';
     _token = '';
     await _set(_kUser, '');
@@ -384,38 +381,11 @@ class AddressBookStore extends ChangeNotifier {
       }
       syncing = false;
       notifyListeners();
-      // 登录态下开增量轮询：新装的被控端上报后 3 秒内出现在列表里
-      _startAutoSync();
     }
   }
 
-  /// 【定制B版 2026-11-19】地址簿增量轮询：被控端装好后会自动上报，
-  /// 管理端停在地址簿/首页时也要能看到新设备（原来只在进页面时拉一次，
-  /// 新机器要手动重进页面才出现）。3 秒一轮；内容没变不通知、不写缓存，
-  /// 避免空转刷新把界面弄卡。
-  void _startAutoSync() {
-    _autoTimer?.cancel();
-    _autoTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (!signedIn || syncing) return;
-      String snap() => entries
-          .map((e) => '${e.id}\u0001${e.alias}\u0001${e.tag}')
-          .join('\u0002');
-      final before = snap();
-      try {
-        await _pullMerge();
-      } catch (_) {
-        return; // 网络抖动：下一轮再试，不改 syncError，免得界面闪提示
-      }
-      if (snap() == before) return;
-      notifyListeners();
-      try {
-        await _set(
-            _kKey, jsonEncode(entries.map((e) => e.toJson()).toList()));
-      } catch (_) {}
-    });
-  }
-
   // ---------------- 增删改 ----------------
+
   /// [oldId] 用于改识别码时定位原条目
   Future<void> upsert(AbEntry entry, {String? oldId}) async {
     final key = oldId ?? entry.id;
@@ -1417,15 +1387,14 @@ class _AddressBookViewState extends State<AddressBookView> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        // 重命名后隐藏识别码，防 ID 泄露；未命名仍显示便于辨认
-                        if (e.alias.isEmpty)
-                          Text(
-                            formatAbId(e.id),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 10.5, color: _AC.sub),
-                          ),
+                        // 2026-11-21：恢复重命名后也显示识别码（用户要求）
+                        Text(
+                          formatAbId(e.id),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 10.5, color: _AC.sub),
+                        ),
                         if (e.note.isNotEmpty)
                           Text(
                             e.note,
@@ -1507,11 +1476,8 @@ class _AddressBookViewState extends State<AddressBookView> {
     final seed = e.display.isEmpty ? e.id : e.display;
     final letter = seed.isEmpty ? '?' : seed.substring(0, 1);
     final user = store.username.isEmpty ? '' : store.username;
-    // 已命名设备不再显示识别码（防泄露）；未命名的照常显示
-    final named = e.alias.trim().isNotEmpty;
-    final second = named
-        ? ''
-        : (user.isEmpty ? formatAbId(e.id) : '$user@${formatAbId(e.id)}');
+    // 2026-11-21：恢复重命名后也显示识别码（用户要求恢复所有隐藏项）
+    final second = user.isEmpty ? formatAbId(e.id) : '$user@${formatAbId(e.id)}';
     return InkWell(
       onTap: () {
         if (_batch) {
