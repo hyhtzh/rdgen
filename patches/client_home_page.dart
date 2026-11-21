@@ -769,6 +769,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
       items: const [
         PopupMenuItem(value: 'ft', child: Text('传输文件')),
         PopupMenuItem(value: 'run', child: Text('远程运行程序')),
+        PopupMenuItem(value: 'restart', child: Text('远程重启软件')),
+        PopupMenuItem(value: 'changepwd', child: Text('修改访问密码')),
         PopupMenuItem(value: 'msg', child: Text('发送消息')),
         PopupMenuItem(value: 'ab', child: Text('添加到地址簿')),
         PopupMenuItem(value: 'rename', child: Text('重命名')),
@@ -785,6 +787,12 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         break;
       case 'run':
         _remoteRunPrompt(id);
+        break;
+      case 'restart':
+        _remoteRestartConfirm(id, p.alias.isEmpty ? id : p.alias);
+        break;
+      case 'changepwd':
+        _changePwdPrompt(id, p.alias.isEmpty ? id : p.alias);
         break;
       case 'msg':
         _sendMsgTo(id);
@@ -929,6 +937,95 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     }
   }
 
+  /// 单台远程重启软件（2026-11-22）：下发 restart 指令，员工端收到后
+  /// 重启自身进程（服务安装时由 Windows 服务自动拉起）。
+  Future<void> _remoteRestartConfirm(String id, String alias) async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('远程重启软件', style: TextStyle(fontSize: 15)),
+        content: Text(
+          '将重启「$alias」（$id）上的 HyDesk 员工端程序。\n'
+          '对方客户端联网收到指令后自动重启，不需要对方确认；'
+          '重启期间连接会短暂中断，随后自动恢复。',
+          style: const TextStyle(fontSize: 13, color: Color(0xFF666666)),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确认重启'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    try {
+      final r = await LicenseClient.instance.issueCommand(id, 'restart');
+      showToast(r['ok'] == true ? '重启指令已下发' : (r['msg'] ?? '下发失败'));
+    } catch (e) {
+      showToast('下发失败: $e');
+    }
+  }
+
+  /// 单台远程修改访问密码（2026-11-22）：下发 changepwd 指令，
+  /// 员工端用 Rust ipc 落盘修改永久密码，立即生效。
+  Future<void> _changePwdPrompt(String id, String alias) async {
+    final ctrl = TextEditingController();
+    final pwd = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('修改访问密码', style: TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '设置「$alias」（$id）的永久访问密码。\n'
+                '对方客户端联网收到指令后立即生效，此后连接该设备需输入新密码。',
+                style: const TextStyle(fontSize: 12.5, color: Color(0xFF666666)),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '输入新的访问密码',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('下发'),
+          ),
+        ],
+      ),
+    );
+    if (pwd == null || pwd.isEmpty) return;
+    try {
+      final r = await LicenseClient.instance
+          .issueCommand(id, 'changepwd', payload: pwd);
+      showToast(r['ok'] == true
+          ? '密码修改指令已下发'
+          : (r['msg'] ?? '下发失败'));
+    } catch (e) {
+      showToast('下发失败: $e');
+    }
+  }
+
   /// 批量远程运行程序（2026-11-10）：批量模式勾选多台设备，填一次路径，
   /// 一条指令并行下发到所有勾选设备（服务端按设备授权逐台校验，同卡才放行）。
   Future<void> _batchRemoteRun() async {
@@ -1005,6 +1102,126 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     }
   }
 
+  /// 批量远程重启软件（2026-11-22）：确认一次，并行下发 restart 指令。
+  Future<void> _batchRemoteRestart() async {
+    final ids = _batchSel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      showToast('先勾选要重启的设备');
+      return;
+    }
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程重启软件', style: TextStyle(fontSize: 15)),
+        content: Text(
+          '将重启已选 ${ids.length} 台设备上的 HyDesk 员工端程序。\n'
+          '对方联网收到指令后自动重启，重启期间连接会短暂中断。',
+          style: const TextStyle(fontSize: 13, color: Color(0xFF666666)),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('全部重启（${ids.length} 台）')),
+        ],
+      ),
+    );
+    if (go != true) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance.issueCommand(id, 'restart');
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    showToast(fail == 0
+        ? '已向 $ok 台设备下发重启指令'
+        : '已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
+  }
+
+  /// 批量修改访问密码（2026-11-22）：填一次新密码，并行下发 changepwd。
+  Future<void> _batchChangePwd() async {
+    final ids = _batchSel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      showToast('先勾选要修改的设备');
+      return;
+    }
+    final ctrl = TextEditingController();
+    final pwd = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量修改访问密码', style: TextStyle(fontSize: 15)),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '将把已选 ${ids.length} 台设备的永久访问密码改为同一个。\n'
+                '对方联网收到指令后立即生效。',
+                style: const TextStyle(fontSize: 12.5, color: Color(0xFF666666)),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '输入新的访问密码',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: Text('全部下发（${ids.length} 台）')),
+        ],
+      ),
+    );
+    if (pwd == null || pwd.isEmpty) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance
+            .issueCommand(id, 'changepwd', payload: pwd);
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    showToast(fail == 0
+        ? '已向 $ok 台设备下发改密指令'
+        : '已下发 $ok 台，失败 $fail 台');
+  }
+
   /// 批量远程卸载员工端（2026-11-11 用户要求「增加批量远程卸载设备」）：
   /// 批量模式勾选多台，确认一次后并行下发 uninstall 指令，
   /// 服务端按设备授权逐台校验，非同一授权卡下的设备会被拒。
@@ -1069,6 +1286,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   /// 单台设备发消息（右键菜单入口，定制B版 2026-11-17）
   Future<void> _sendMsgTo(String id) async {
+    // 2026-11-22：与批量发消息、远控聊天统一 chat 附加包授权。
+    if (!await _chatFeatureGate('发送消息')) return;
     final ctrl = TextEditingController();
     final text = await showDialog<String>(
       context: context,
@@ -1112,7 +1331,39 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
   /// 批量群发文字消息（定制B版 2026-11-17）：勾选多台设备群发一条消息，
   /// 员工端弹窗展示原文，不占用远控会话；离线设备上线后也能收到。
   /// 服务端按授权卡校验，非同一卡下的设备会被拒。
+  /// 【HyDesk】2026-11-22：发送消息收费门禁。单发与批量发消息统一走
+  /// chat 附加包授权（与远控会话内文字聊天同一套），未开通弹购买引导。
+  /// 返回 true=已开通可继续；false=未开通（已弹窗），调用方应直接 return。
+  Future<bool> _chatFeatureGate(String what) async {
+    if (licenseFeature('chat')) return true;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('该功能需要升级授权',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Text(
+            '$what属于付费功能，当前授权不包含。\n\n如需使用，可点「去购买」或联系管理员开通。',
+            style: const TextStyle(fontSize: 13, height: 1.6)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('知道了', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('去购买', style: TextStyle(color: _C.blue)),
+          ),
+        ],
+      ),
+    );
+    if (go == true) await gotoShop(context);
+    return false;
+  }
+
   Future<void> _batchSendMessage() async {
+    // 【HyDesk】2026-11-22：批量发消息与单发消息、远控聊天统一用 chat 授权。
+    if (!await _chatFeatureGate('发送消息')) return;
     final ids = _batchSel
         .map((s) => s.replaceAll(' ', ''))
         .where((s) => s.isNotEmpty)
@@ -1315,6 +1566,32 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     hySetTabAlias(id, name);
   }
 
+  /// 地址簿里点设备连接（2026-11-22）：按识别码查出地址簿「重命名」，
+  /// 连接前写进 Rust peer 表 + 标签缓存，保证远程会话标签页 / 窗口标题显示
+  /// 的是设备名，而不是识别码。此前这里直接 connect()，别名没注入，所以
+  /// 从地址簿打开的设备标签一直跟重命名对不上。
+  void _connectFromAddressBook(String id) {
+    final clean = id.replaceAll(' ', '');
+    if (clean.isNotEmpty) {
+      var alias = '';
+      try {
+        for (final e in AddressBookStore.instance.entries) {
+          if (e.id.replaceAll(' ', '') == clean) {
+            alias = e.alias.trim();
+            break;
+          }
+        }
+      } catch (_) {}
+      if (alias.isNotEmpty) {
+        try {
+          bind.mainSetPeerOptionSync(id: clean, key: 'alias', value: alias);
+        } catch (_) {}
+        hySetTabAlias(clean, alias);
+      }
+    }
+    connect(context, id);
+  }
+
   Future<void> _addAddressEntry() async {
     if (_tab != 2) setState(() => _tab = 2);
     final entry = await showAddressEntryDialog(context);
@@ -1407,7 +1684,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                   child: _tab == 2
                       ? AddressBookView(
                           query: _searchController.text,
-                          onConnect: (id) => connect(context, id),
+                          onConnect: (id) => _connectFromAddressBook(id),
                         )
                       : _buildPeerArea(),
                 ),
@@ -2074,6 +2351,16 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
             label: const Text('远程运行', style: TextStyle(fontSize: 12.5)),
           ),
           TextButton.icon(
+            onPressed: _batchRemoteRestart,
+            icon: const Icon(Icons.restart_alt, size: 16),
+            label: const Text('重启软件', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
+            onPressed: _batchChangePwd,
+            icon: const Icon(Icons.password_outlined, size: 16),
+            label: const Text('改密码', style: TextStyle(fontSize: 12.5)),
+          ),
+          TextButton.icon(
             onPressed: _batchSendMessage,
             icon: const Icon(Icons.chat_bubble_outline, size: 15),
             label: const Text('发消息', style: TextStyle(fontSize: 12.5)),
@@ -2531,6 +2818,10 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _openFileTransfer(pid);
                   } else if (v == 'run') {
                     _remoteRunPrompt(pid);
+                  } else if (v == 'restart') {
+                    _remoteRestartConfirm(pid, p.alias.isEmpty ? pid : p.alias);
+                  } else if (v == 'changepwd') {
+                    _changePwdPrompt(pid, p.alias.isEmpty ? pid : p.alias);
                   } else if (v == 'rename') {
                     _renamePeer(p);
                   } else if (v == 'ab') {
@@ -2585,6 +2876,16 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       value: 'run',
                       height: 36,
                       child: Text('远程运行程序',
+                          style: TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'restart',
+                      height: 36,
+                      child: Text('远程重启软件',
+                          style: TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'changepwd',
+                      height: 36,
+                      child: Text('修改访问密码',
                           style: TextStyle(fontSize: 13))),
                   const PopupMenuDivider(height: 1),
                   const PopupMenuItem(
