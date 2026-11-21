@@ -33,21 +33,18 @@ import sys
 
 REL = os.path.join('flutter', 'lib', 'desktop', 'widgets', 'remote_toolbar.dart')
 
-# 【HyDesk】隐藏原生会话录像按钮：上游 _RecordMenu 的挂载点。
+# 【HyDesk】2026-11-21：恢复原生会话录像按钮（用户要求恢复所有隐藏按钮）。
 RECORD_ANCHOR = "    if (!isWeb) toolbarItems.add(_RecordMenu());"
-RECORD_NEW = ("    // 【HyDesk】隐藏原生会话录像按钮：录像/截图统一走屏幕墙自动录屏\n"
-             "    // （收费附加包 record），不再提供两套录像入口。\n"
-             "    // if (!isWeb) toolbarItems.add(_RecordMenu());")
+RECORD_NEW = "    if (!isWeb) toolbarItems.add(_RecordMenu());"
 
 # 【HyDesk】隐藏原生隐私屏菜单块（远控「控制」菜单里的 Privacy mode 子菜单）。
 PRIVACY_HIDE_ANCHOR = """      // privacy mode
       final privacyModeState = PrivacyModeState.find(id);
       if (ffi.connType == ConnType.defaultConn &&"""
-PRIVACY_HIDE_NEW = """      // 【HyDesk】隐私屏已改为工具栏独立大按钮（privacy 附加包），
-      // 原生菜单块整体禁用，不再出现两套隐私屏入口。
+# 2026-11-21：恢复原生隐私屏菜单（用户要求恢复所有隐藏按钮）
+PRIVACY_HIDE_NEW = """      // privacy mode
       final privacyModeState = PrivacyModeState.find(id);
-      // ignore: dead_code
-      if (false && ffi.connType == ConnType.defaultConn &&"""
+      if (ffi.connType == ConnType.defaultConn &&"""
 
 # 【HyDesk】工具栏上加隐私屏独立大按钮：插在眼睛按钮后面。
 PRIVACY_INSERT = """
@@ -229,12 +226,20 @@ void _hyPrivacyUpgradeDialog(BuildContext context) {
       title: const Text('该功能需要升级授权',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       content: const Text(
-          '隐私屏属于付费功能，当前授权不包含。\n\n如需使用，请联系管理员开通。',
+          '隐私屏属于付费功能，当前授权不包含。\n\n如需使用，可点「去购买」或联系管理员开通。',
           style: TextStyle(fontSize: 13, height: 1.6)),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(),
           child: const Text('知道了', style: TextStyle(color: Colors.grey)),
+        ),
+        // 2026-11-21：恢复购买入口（用户要求）
+        TextButton(
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            gotoShop(context);
+          },
+          child: const Text('去购买'),
         ),
       ],
     ),
@@ -278,12 +283,20 @@ void _hyChatUpgradeDialog(BuildContext context) {
       title: const Text('该功能需要升级授权',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       content: const Text(
-          '文字聊天属于付费功能，当前授权不包含。\n\n如需使用，请联系管理员开通。',
+          '文字聊天属于付费功能，当前授权不包含。\n\n如需使用，可点「去购买」或联系管理员开通。',
           style: TextStyle(fontSize: 13, height: 1.6)),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(),
           child: const Text('知道了', style: TextStyle(color: Colors.grey)),
+        ),
+        // 2026-11-21：恢复购买入口（用户要求）
+        TextButton(
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            gotoShop(context);
+          },
+          child: const Text('去购买'),
         ),
       ],
     ),
