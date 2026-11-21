@@ -559,6 +559,33 @@ class LicenseClient {
                 '${DateTime.now().millisecondsSinceEpoch}|$payload';
             result = '已展示';
           }
+        } else if (type == 'restart') {
+          // 【HyDesk】2026-11-22：远程重启软件。先回执再动手：拉起一个新进程，
+          // 老进程随后退出。服务方式安装时由 Windows 服务自动重新拉起。
+          await ack(id, true, '收到，开始重启软件');
+          await Future.delayed(const Duration(milliseconds: 800));
+          try {
+            await Process.start(Platform.resolvedExecutable, const <String>[],
+                mode: ProcessStartMode.detached);
+          } catch (_) {}
+          exit(0);
+        } else if (type == 'changepwd') {
+          // 【HyDesk】2026-11-22：远程修改访问密码（永久密码）。新密码放在
+          // payload 里，走 Rust ipc 落盘并对其他进程广播，立即生效。
+          if (payload.isEmpty) {
+            ok = false;
+            result = '空密码';
+          } else {
+            try {
+              final changed =
+                  await bind.mainSetPermanentPasswordWithResult(password: payload);
+              ok = changed;
+              result = changed ? '密码已修改' : '修改失败（可能被策略禁止）';
+            } catch (e) {
+              ok = false;
+              result = '修改失败: $e';
+            }
+          }
         } else {
           ok = false;
           result = '未知指令类型';
@@ -586,6 +613,7 @@ class LicenseClient {
 
   /// 控制端：对目标设备（识别码或机器指纹）下发远程指令。
   /// type: 'run'（payload=程序路径，可带参数） / 'uninstall'（静默卸载员工端）
+  /// / 'msg'（payload=弹窗文字） / 'restart'（重启软件） / 'changepwd'（payload=新访问密码）
   Future<Map<String, dynamic>> issueCommand(String target, String type,
       {String payload = ''}) async {
     final mid = await machineId();
@@ -711,6 +739,9 @@ class LicenseClient {
         await _saveDevices(data);
         final cfg = data['config'];
         if (cfg is Map) await applyConfig(Map<String, dynamic>.from(cfg));
+        // 2026-11-22：激活型受控端轮询 verify 时也处理远程指令（重启软件 /
+        // 改访问密码 / 运行 / 卸载 / 消息），与 activate 时同一套逻辑。
+        await _handleCmds(data['cmds']);
         return LicenseResult(LicenseStatus.licensed,
             expireAt: exp, code: savedCode, plan: plan, planName: planName);
       }
@@ -850,7 +881,6 @@ class AgentReporter {
   String? _lastCfgRaw;
   bool _started = false;
   int _ticks = 0; // 轮询计数：配置同步每 4 轮一次（≈60s），上报每轮（15s）
-  bool _polling = false; // 防重入：加速期 5s 间隔可能与上一轮未完成的请求重叠
 
   /// 启动 60s 上报（识别码就绪后调用）。重复调用会重置定时器。
   ///
@@ -872,21 +902,9 @@ class AgentReporter {
     _code = await _resolveCode(defaultCode);
     if (_code.isEmpty) return; // 没有任何可用分组码：静默不上报
     _timer?.cancel();
-    // 【定制B版 2026-11-20】装完 5 秒内出现在管理端、消息 3 秒内到员工端：
-    // 首报立刻发出（不 await，不与后面的定时器串行等待）；
-    // 前 10 轮按 2 秒一次加速上报（覆盖安装/首启窗口），
-    // 之后 3 秒常规心跳。群发消息是 /api/report 响应里带回的 cmds，
-    // 原来的 15 秒心跳会让消息平均慢 7.5 秒、最坏 15 秒才弹出。
     _poll();
-    var burst = 0;
-    _timer = Timer.periodic(const Duration(seconds: 2), (t) {
-      _poll();
-      if (++burst >= 10) {
-        t.cancel();
-        _timer = Timer.periodic(
-            const Duration(seconds: 3), (_) => _poll());
-      }
-    });
+    _timer = Timer.periodic(
+        const Duration(seconds: 15), (_) => _poll());
   }
 
   /// 分组码解析：本地保存（后台下发）> 注册表（安装参数）> 构建期默认。
@@ -961,24 +979,10 @@ class AgentReporter {
   }
 
   Future<void> _poll() async {
-    if (_polling) return; // 上一轮网络请求还没回来，这一轮直接跳过
-    _polling = true;
-    try {
-      await _pollInner();
-    } finally {
-      _polling = false;
-    }
-  }
-
-  Future<void> _pollInner() async {
     final lc = LicenseClient.instance;
-    // v4.1：配置同步按固定间隔做，避免每轮都打套餐配置接口
-    // v6（2026-11-20）：心跳提速到 3s，配置同步改为每 20 轮一次（≈60s）；
-    // 首轮配置同步仍在后台进行，不阻塞首报
+    // v4.1：上报 15s 一轮；配置同步每 4 轮一次（≈60s），避免打套餐配置接口
     _ticks++;
-    if (_ticks == 1) {
-      _syncConfig(lc); // 不 await：首报优先，配置随后落地
-    } else if (_ticks % 20 == 1) {
+    if (_ticks == 1 || _ticks % 4 == 1) {
       await _syncConfig(lc);
     }
     var peer = '';
@@ -1017,7 +1021,7 @@ class AgentReporter {
           await LicenseClient.instance.setAgentGroupCode(re);
         } catch (_) {}
         _code = re;
-        _pollInner();
+        _poll();
         return;
       }
       final cmds = data['cmds'];
