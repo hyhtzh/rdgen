@@ -4,7 +4,9 @@
 // 由 patch_client_ui.py 注入到 flutter/lib/desktop/pages/ 下。
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' as io;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -35,6 +37,13 @@ const _cnFonts = <String>[
   'PingFang SC',
   'Noto Sans CJK SC',
 ];
+
+/// 【HyDesk】通用员工端安装包直链（自有服务器，可 Range 下载，非分享页）。
+/// 员工端安装包是通用的，靠静默参数 /S /CODE=<激活码> 把当前管理端的授权码
+/// 写进员工端注册表分组码；员工端启动后读取该码上报，自动归属本管理端并上线。
+/// 无需为每个客户重新编译安装包。
+const kAgentPkgUrl = 'https://hd.fcpx0.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
+const kAgentPkgName = 'DevicesFlowUserSvc_Pro_Setup.exe';
 
 /// 设计稿取色
 class _C {
@@ -3157,6 +3166,11 @@ class _LicenseDetailDialog extends StatefulWidget {
 class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
   final LicenseClient _c = LicenseClient.instance;
 
+  // 【HyDesk】生成客户端安装包：下载进度/状态（供弹窗内进度条 UI 读取）
+  bool _genBusy = false;
+  double _genProgress = 0.0;
+  String _genStage = '';
+
   @override
   void initState() {
     super.initState();
@@ -3331,6 +3345,16 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
               ),
             ),
             const SizedBox(height: 8),
+            if (_genBusy) ...[
+              const SizedBox(height: 4),
+              Text(_genStage,
+                  style: const TextStyle(fontSize: 12, color: _C.sub)),
+              const SizedBox(height: 6),
+              LinearProgressIndicator(value: _genProgress.isNaN ? null : _genProgress),
+              const SizedBox(height: 4),
+              Text('${(_genProgress * 100).round()}%',
+                  style: const TextStyle(fontSize: 11, color: _C.sub)),
+            ],
           ],
         ),
       ),
@@ -3370,8 +3394,206 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                   color: Colors.white,
                   fontWeight: FontWeight.w500)),
         ),
+        // 【HyDesk】2026-11-22：生成客户端安装包（管理端激活后可用）。
+        TextButton.icon(
+          onPressed: _genBusy ? null : _generateClient,
+          icon: const Icon(Icons.download_outlined, size: 15),
+          label: const Text('生成客户端',
+              style: TextStyle(fontSize: 13.5, color: _C.blue)),
+        ),
       ],
     );
+  }
+
+  /// 【HyDesk】生成客户端安装包（2026-11-22）
+  ///
+  /// 员工端是通用安装包，靠静默参数 `/S /CODE=<激活码>` 把当前管理端的
+  /// 授权码写成员工端分组码；客户装机后自动归属本管理端并上线。
+  /// 流程：选本地目录 -> 流式下载通用 exe -> 生成一键安装 bat + 说明。
+  Future<void> _generateClient() async {
+    final code = _c.savedCode.trim();
+    if (code.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('请先用授权码激活本管理端，再生成客户端'),
+          duration: Duration(seconds: 3)));
+      return;
+    }
+    if (!io.Platform.isWindows) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('生成客户端安装包仅支持 Windows'),
+          duration: Duration(seconds: 3)));
+      return;
+    }
+
+    // 可选：给客户/包名备注，用于文件名，纯本地用途
+    final nameCtrl = TextEditingController();
+    final note = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('生成客户端安装包',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '将生成一个通用员工端安装包，安装时会自动绑定本管理端授权码'
+              '（分组码），客户装机后自动上线到你的设备列表。',
+              style: TextStyle(fontSize: 13, height: 1.6)),
+            const SizedBox(height: 6),
+            Text('绑定激活码：$code',
+                style: const TextStyle(
+                    fontSize: 13, color: Color(0xFF1B72D6))),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(
+                labelText: '客户/备注名（可选，用于文件名）',
+                hintText: '例如：客户A',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('取消', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(nameCtrl.text.trim()),
+            child: const Text('下一步',
+                style: TextStyle(color: Color(0xFF1B72D6))),
+          ),
+        ],
+      ),
+    );
+    if (note == null) return;
+
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: '选择安装包保存目录',
+    );
+    if (dir == null || dir.isEmpty) return;
+
+    if (!mounted) return;
+    setState(() {
+      _genBusy = true;
+      _genProgress = 0.0;
+      _genStage = '正在下载安装包…';
+    });
+
+    final tag = note.isEmpty ? '客户' : note;
+    final base = 'HyDesk员工端_$tag';
+    final exePath = '$dir${io.Platform.pathSeparator}$base.exe';
+    final tmpPath = '$exePath.download';
+    bool ok = false;
+    String err = '';
+    try {
+      final client = http.Client();
+      final req = http.Request('GET', Uri.parse(kAgentPkgUrl));
+      final resp = await client.send(req).timeout(const Duration(minutes: 10));
+      if (resp.statusCode != 200) {
+        throw Exception('下载失败，HTTP ${resp.statusCode}');
+      }
+      final total = resp.contentLength ?? 0;
+      var received = 0;
+      final sink = io.File(tmpPath).openWrite();
+      await for (final chunk in resp.stream) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (!mounted) break;
+        setState(() {
+          _genProgress = total > 0 ? received / total : 0.0;
+        });
+      }
+      await sink.close();
+      client.close();
+      // 校验最小体积，避免拿到错误页当成 exe
+      final f = io.File(tmpPath);
+      final size = await f.length();
+      if (size < 1024 * 1024) {
+        if (await f.exists()) await f.delete();
+        throw Exception('下载内容异常（仅 $size 字节），请稍后重试');
+      }
+      if (await io.File(exePath).exists()) await io.File(exePath).delete();
+      await f.rename(exePath);
+
+      if (!mounted) return;
+      setState(() => _genStage = '正在生成一键安装脚本…');
+
+      // 一键安装 bat：ASCII 内容避免编码问题；/S 静默 + /CODE= 绑定分组码。
+      final exeName = io.Platform.pathSeparator == '\\' ? '$base.exe' : '$base.exe';
+      final bat = io.File('$dir${io.Platform.pathSeparator}一键安装.bat');
+      await bat.writeAsString(
+        '@echo off\r\n'
+        'chcp 65001 >nul\r\n'
+        'cd /d "%~dp0"\r\n'
+        'echo Installing HyDesk client...\r\n'
+        'start "" /WAIT "%~dp0$exeName" /S /CODE=$code\r\n'
+        'echo Done. The client will go online automatically.\r\n'
+        'timeout /t 3 >nul\r\n',
+        flush: true,
+      );
+      // 说明文件（UTF-8）
+      await io.File('$dir${io.Platform.pathSeparator}安装说明.txt')
+          .writeAsString(
+        'HyDesk 员工端安装包\n'
+        '====================\n\n'
+        '1) 把本目录里的 exe 和「一键安装.bat」一起发给客户。\n'
+        '2) 客户以管理员身份运行「一键安装.bat」，将静默安装员工端。\n'
+        '3) 安装后员工端自动上线，并归属到本管理端（激活码 $code）。\n\n'
+        '说明：安装包为通用包，绑定信息通过 /CODE= 参数在安装时写入，\n'
+        '      不同客户可用同一安装包，互不干扰。\n',
+        flush: true,
+      );
+      ok = true;
+    } catch (e) {
+      err = e.toString().replaceAll('Exception: ', '');
+      try {
+        final f = io.File(tmpPath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    } finally {
+      if (mounted) {
+        setState(() {
+          _genBusy = false;
+          _genProgress = 0.0;
+          _genStage = '';
+        });
+      }
+    }
+
+    if (!mounted) return;
+    if (ok) {
+      await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Text('已生成',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          content: Text(
+            '已保存到：\n$dir\n\n'
+            '把 exe 和「一键安装.bat」一起发给客户，\n'
+            '客户管理员运行 bat 即静默安装并自动上线。',
+            style: const TextStyle(fontSize: 13, height: 1.6),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('知道了',
+                  style: TextStyle(color: Color(0xFF1B72D6))),
+            ),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('生成失败：$err'), duration: const Duration(seconds: 5)));
+    }
   }
 
   Widget _kv(String k, String v,
