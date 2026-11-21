@@ -731,7 +731,7 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                           const SizedBox(height: 6),
                           TextButton.icon(
                             onPressed: () async {
-                              await redeem(setLocal);
+                              await redeem(() => setLocal(() {}));
                             },
                             icon: const Icon(Icons.add_card, size: 15),
                             label: const Text('兑换附加包',
