@@ -634,7 +634,8 @@ class _AddressBookViewState extends State<AddressBookView> {
   final Set<String> _sel = {};
 
   /// 排列方式：列表 / 网格（和首页设备列表那套一致）
-  bool _grid = false;
+  /// 2026-11-22：改为默认网格排列（用户要求，与首页设备区一致）。
+  bool _grid = true;
 
   /// 名称正序 / 倒序
   bool _asc = true;
@@ -1015,6 +1016,18 @@ class _AddressBookViewState extends State<AddressBookView> {
                   label: const Text('远程运行',
                       style: TextStyle(fontSize: 12.5)),
                 ),
+                TextButton.icon(
+                  onPressed: _sel.isEmpty ? null : _batchRemoteRestart,
+                  icon: const Icon(Icons.restart_alt, size: 15),
+                  label: const Text('重启软件',
+                      style: TextStyle(fontSize: 12.5)),
+                ),
+                TextButton.icon(
+                  onPressed: _sel.isEmpty ? null : _batchChangePwd,
+                  icon: const Icon(Icons.password_outlined, size: 15),
+                  label: const Text('改密码',
+                      style: TextStyle(fontSize: 12.5)),
+                ),
                 TextButton(
                   onPressed: () => setState(() {
                     _batch = false;
@@ -1239,6 +1252,124 @@ class _AddressBookViewState extends State<AddressBookView> {
     } else {
       showToast('已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
     }
+  }
+
+  /// 批量远程重启软件（2026-11-22）
+  Future<void> _batchRemoteRestart() async {
+    final ids = _sel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程重启软件', style: TextStyle(fontSize: 16)),
+        content: Text(
+          '将重启已选 ${ids.length} 台设备上的 HyDesk 员工端程序，'
+          '对方联网收到指令后自动重启，重启期间连接会短暂中断。',
+          style: const TextStyle(fontSize: 12.5, color: _AC.sub),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _AC.blue),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text('全部重启（${ids.length} 台）'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance.issueCommand(id, 'restart');
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    showToast(fail == 0
+        ? '已向 $ok 台设备下发重启指令'
+        : '已下发 $ok 台，失败 $fail 台');
+  }
+
+  /// 批量修改访问密码（2026-11-22）
+  Future<void> _batchChangePwd() async {
+    final ids = _sel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) return;
+    final ctrl = TextEditingController();
+    final pwd = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量修改访问密码', style: TextStyle(fontSize: 16)),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '将把已选 ${ids.length} 台设备的永久访问密码改为同一个，'
+                '对方联网收到指令后立即生效。',
+                style: const TextStyle(fontSize: 12.5, color: _AC.sub),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '输入新的访问密码',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _AC.blue),
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
+            child: Text('全部下发（${ids.length} 台）'),
+          ),
+        ],
+      ),
+    );
+    if (pwd == null || pwd.isEmpty) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance
+            .issueCommand(id, 'changepwd', payload: pwd);
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    showToast(fail == 0
+        ? '已向 $ok 台设备下发改密指令'
+        : '已下发 $ok 台，失败 $fail 台');
   }
 
   Future<void> _addOneToWall(String id) async {    final n = await addPeersToScreenWall([id]);
