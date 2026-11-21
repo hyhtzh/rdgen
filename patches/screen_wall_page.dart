@@ -1761,7 +1761,7 @@ class _ScreenWallPageState extends State<ScreenWallPage> {
               Navigator.of(ctx).pop();
               gotoShop(context, productId: productId);
             },
-            child: Text('去购买', style: TextStyle(color: _C.blue)),
+            child: Text('去购买', style: TextStyle(color: _C.accent)),
           ),
         ],
       ),
