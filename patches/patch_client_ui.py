@@ -339,6 +339,30 @@ def patch_common_tab_label(root):
     src = replace_once(src, old, new, 'common.dart: tab label uses device name')
     write(path, src)
 
+    # 2026-11-21：上一版只改 getDesktopTabLabel，但上游 tabbar_widget 的
+    # tablabelGetter 会用 mainGetPeerOptionSync(id,'alias') 作为 alias 传进来；
+    # 自动发现设备不在 Rust peer 表，alias 常年为空，且连接那一刻缓存可能
+    # 还没灌入 —— 结果标签回退成 id@hostname。这里在 tablabelGetter 里再补
+    # 一层：只要缓存里有地址簿重命名/机器名，就强制用它当 alias，确保取到
+    # 设备名而非识别码。
+    tb_path = os.path.join(root, 'flutter', 'lib', 'desktop', 'widgets',
+                           'tabbar_widget.dart')
+    if os.path.isfile(tb_path):
+        tb = read(tb_path)
+        tb_old = "final alias = bind.mainGetPeerOptionSync(id: peerId, key: 'alias');"
+        tb_new = ("final alias = hyTabAliasOf(peerId).isNotEmpty\n"
+                  "        ? hyTabAliasOf(peerId)\n"
+                  "        : bind.mainGetPeerOptionSync(id: peerId, key: 'alias');")
+        cnt = tb.count(tb_old)
+        if cnt and ('hyTabAliasOf(peerId)' not in tb):
+            tb = tb.replace(tb_old, tb_new)
+            write(tb_path, tb)
+            print('  patch: tabbar_widget.dart: tablabelGetter uses alias cache (%d)' % cnt)
+        elif 'hyTabAliasOf(peerId)' in tb:
+            print('  skip (already patched): tabbar_widget.dart: tablabelGetter')
+        else:
+            print('  WARN: tabbar_widget.dart tablabelGetter anchor not found')
+
 
 def patch_video_quality_default(root):
     """远程画质默认值：custom 档未配置时 50 -> 70（v1.5.46）。
