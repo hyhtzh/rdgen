@@ -418,8 +418,15 @@ class _ActivateCardState extends State<_ActivateCard> {
             ),
           ),
           const SizedBox(height: 10),
-          // 2026-11-14 定制版：管理端隐藏购买入口（发码走销售侧，客户端不打扰）
-          const SizedBox(height: 4),
+          // 2026-11-21：恢复购买授权入口（用户要求恢复所有隐藏按钮）
+          SizedBox(
+            height: 34,
+            child: TextButton(
+              onPressed: _busy ? null : _buy,
+              child: const Text('还没有授权码？去购买 →',
+                  style: TextStyle(fontSize: 12.5, color: _LC.blue)),
+            ),
+          ),
           // 激活前也要能退出：不能强制用户激活了才能关软件
           SizedBox(
             height: 34,
@@ -671,48 +678,25 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
             kv('设备占用', used < 0 ? '—' : (max > 0 ? '$used / $max 台' : '$used 台')),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 5),
-              child: StatefulBuilder(builder: (d, setLocal) {
-                final addons = c.savedAddons;
-                final blocked = c.blockedAddons;
-                return Row(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SizedBox(
+                  const SizedBox(
                       width: 92,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('附加功能',
-                              style: TextStyle(fontSize: 13, color: _LC.sub)),
-                          const SizedBox(height: 2),
-                          // 【定制B版 2026-11-20】恢复兑换入口（11-14 定制时曾隐藏）：
-                          // 拿到附加包卡密后在这里直接兑换，绑定当前授权码生效，
-                          // 与主页授权弹窗里的入口保持一致。
-                          InkWell(
-                            onTap: () => redeem(() {
-                              // 兑换成功后重拉 config，再用 StatefulBuilder 的
-                              // setLocal 就地刷新弹窗里的附加包列表。
-                              LicenseClient.instance.check().then((_) {
-                                if (d.mounted) setLocal(() {});
-                              });
-                            }),
-                            child: const Text('兑换附加包',
-                                style: TextStyle(
-                                    fontSize: 12.5,
-                                    color: Color(0xFF1B72D6),
-                                    fontWeight: FontWeight.w500)),
-                          ),
-                        ],
-                      )),
+                      child: Text('附加功能',
+                          style: TextStyle(fontSize: 13, color: _LC.sub))),
                   Expanded(
-                    child: Column(
+                    child: StatefulBuilder(builder: (d, setLocal) {
+                      final addons = c.savedAddons;
+                      final blocked = c.blockedAddons;
+                      return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           if (addons.isEmpty)
                             Text(
                                 blocked.isEmpty
                                     ? '未开通（绑定当前授权码，换设备可带走）'
-                                    : '本机暂无可用附加包（已购的已达 ${blocked.first["max_devices"] ?? 3} 台上限）',
+                                    : '本机暂无可用附加包（已购的已达 3 台上限）',
                                 style: const TextStyle(
                                     fontSize: 13, color: Color(0xFF8A94A6)))
                           else
@@ -743,12 +727,28 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
                                       fontSize: 11.5, color: Color(0xFFC8811A)),
                                 ),
                               )),
+                          // 2026-11-21：恢复「兑换附加包」入口（用户要求）
+                          const SizedBox(height: 6),
+                          TextButton.icon(
+                            onPressed: () async {
+                              await redeem(setLocal);
+                            },
+                            icon: const Icon(Icons.add_card, size: 15),
+                            label: const Text('兑换附加包',
+                                style: TextStyle(fontSize: 12.5)),
+                            style: TextButton.styleFrom(
+                                minimumSize: Size.zero,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap),
+                          ),
                         ],
-                      ),
+                      );
+                    }),
                   ),
                 ],
-                );
-              }),
+              ),
             ),
             kv('激活码', code.isEmpty ? '—' : code),
           ],
@@ -759,7 +759,12 @@ Future<void> showMobileLicenseDetail(BuildContext context) async {
           onPressed: () => Navigator.of(ctx).pop(),
           child: const Text('关闭', style: TextStyle(fontSize: 13.5, color: _LC.sub)),
         ),
-        // 2026-11-14 定制版：管理端隐藏「购买授权」入口（续费走销售侧）
+        // 2026-11-21：恢复「购买授权」入口（用户要求恢复所有隐藏按钮）
+        TextButton(
+          onPressed: () => gotoShop(context),
+          child: const Text('购买授权',
+              style: TextStyle(fontSize: 13.5, color: _LC.blue)),
+        ),
         TextButton(
           onPressed: unbind,
           child: const Text('解绑设备',
