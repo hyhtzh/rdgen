@@ -16,6 +16,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/desktop/pages/license_client.dart';
 
 // 2026-11-14 用户要求：官网不外显，_kBrandUrl 一并移除（关于页不再展示官方网站）
 
@@ -325,7 +326,14 @@ class _SettingsRouteState extends State<SettingsRoute> {
         _row('本机识别码',
             Text(id.isEmpty ? '-' : id,
                 style: const TextStyle(fontSize: 13, color: _SC.sub))),
-        // 2026-11-14 用户要求：官网与「关于」里的官方网站一律不显示
+        // 2026-11-21：恢复官方网站入口（用户要求恢复所有隐藏项）
+        _row(
+            '官方网站',
+            InkWell(
+              onTap: () => openExternalUrl(kPurchaseUrl),
+              child: const Text(kPurchaseUrl,
+                  style: TextStyle(fontSize: 12.5, color: _SC.blue)),
+            )),
       ]),
       const Padding(
         padding: EdgeInsets.only(top: 4),
