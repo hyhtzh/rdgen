@@ -1753,7 +1753,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return Row(
       children: [
         // 2026-11-21：恢复官网入口（用户要求恢复所有隐藏按钮）
-        Expanded(flex: 72, child: _solidButton('官网', _C.red, _upgrade)),
+        Expanded(flex: 72,
+            child: _solidButton('官网', _C.red, () => _upgrade(context))),
         const SizedBox(width: 8),
         Expanded(flex: 88, child: _solidButton('屏幕墙', _C.blue, _openWall)),
         const SizedBox(width: 8),
@@ -2935,7 +2936,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
                       const Spacer(),
                       // 2026-11-21：恢复「兑换附加包」入口（用户要求）
                       TextButton(
-                        onPressed: () => _redeemAddon(ctx, setLocal),
+                        onPressed: () => _redeemAddon(ctx, () => setLocal(() {})),
                         child: const Text('兑换附加包',
                             style: TextStyle(fontSize: 12, color: _C.blue)),
                       ),
