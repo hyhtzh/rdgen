@@ -249,6 +249,60 @@ def patch_win_input_no_ctrl_p(root):
     print('patched win_input.rs (Ctrl+P local unlock disabled)')
 
 
+def patch_win_input_hide_cursor(root):
+    """隐私屏开启时隐藏受控端本机鼠标光标（2026-11-24 用户要求）。
+
+    隐私屏是数字时钟遮挡屏：开启时遮挡窗口铺满本机屏幕，但鼠标箭头仍浮在
+    遮挡层上（本机用户能看到/移动光标）。在隐私屏输入钩子线程里（运行在用户
+    交互会话，能安装 WH_MOUSE_LL），do_hook 成功后 ShowCursor(FALSE) 隐藏光标，
+    退出钩子前 ShowCursor(TRUE) 恢复。这样只有隐私屏期间光标不可见，关闭后
+    立即恢复，不影响正常桌面使用。
+
+    ShowCursor 是引用计数，这里 FALSE/TRUE 严格配对（线程内 0 -> -1 -> 0）。
+    """
+    p = os.path.join(root, 'src', 'privacy_mode', 'win_input.rs')
+    if not os.path.isfile(p):
+        raise SystemExit('patch failed: win_input.rs not found (hide cursor)')
+    src = read(p)
+    if 'hy_privacy_hide_cursor' in src:
+        print('win_input.rs already patched (privacy hide cursor)')
+        return
+
+    # 1) 钩子建立成功后隐藏光标
+    old1 = ('            if hook_keyboard.is_null() {\n'
+            '                return;\n'
+            '            }\n'
+            '\n'
+            '            let mut msg = MSG {')
+    new1 = ('            if hook_keyboard.is_null() {\n'
+            '                return;\n'
+            '            }\n'
+            '\n'
+            '            // 【HyDesk】hy_privacy_hide_cursor: 隐私屏开启时隐藏本机鼠标光标\n'
+            '            // （数字时钟遮挡屏上不再显示箭头），关闭钩子前恢复。\n'
+            '            #[cfg(windows)]\n'
+            '            unsafe { winapi::um::winuser::ShowCursor(FALSE); }\n'
+            '\n'
+            '            let mut msg = MSG {')
+    if old1 not in src:
+        raise SystemExit('patch failed: hide-cursor start anchor not found')
+    src = src.replace(old1, new1, 1)
+
+    # 2) 解除钩子前恢复光标
+    old2 = ('            if FALSE == UnhookWindowsHookEx(hook_keyboard as _) {')
+    new2 = ('            // 【HyDesk】hy_privacy_hide_cursor: 隐私屏关闭，恢复鼠标光标\n'
+            '            #[cfg(windows)]\n'
+            '            unsafe { winapi::um::winuser::ShowCursor(TRUE); }\n'
+            '\n'
+            '            if FALSE == UnhookWindowsHookEx(hook_keyboard as _) {')
+    if old2 not in src:
+        raise SystemExit('patch failed: hide-cursor restore anchor not found')
+    src = src.replace(old2, new2, 1)
+
+    write(p, src)
+    print('patched win_input.rs (privacy hides cursor while active)')
+
+
 def patch_service_uninstall_watcher(root):
     """--service 分支启动卸载标记 watcher（SYSTEM 权限静默卸载）。
 
@@ -302,62 +356,6 @@ def patch_msi_silent_uninstall(root):
     print('patched platform/windows.rs (msi uninstall /qn)')
 
 
-def patch_cm_msg_watcher(root):
-    """【定制B版 2026-11-20】用户会话常驻进程全部启动消息 watcher。
-
-    管理端群发消息由 Flutter 写 %ProgramData%\\DevicesFlowUserSvc\\hydesk_msg.txt，
-    hy_toast 线程原子领取后弹原生右下角半透明气泡。
-
-    11-19 版只挂在 core_main() 末尾的 StartUi 之前，而 --service / --server
-    分支都在前面 return None，被控端常驻进程根本到不了那里 —— 这是用户反馈
-    「群发消息还是弹旧的大窗」的根因。现在覆盖 3 个**用户会话**分支：
-      --server（服务拉起的用户会话服务进程，start_server 阻塞前）、
-      --cm（连接管理器）、
-      StartUi（主 UI 进程）。
-    --service 是 Session 0 的 SYSTEM 服务，那里创建的窗口不可见且会抢走消息，
-    故意不注入。start_msg_watcher 自身幂等，同一进程多次调用无副作用；
-    跨进程用 rename 原子领取，保证一条消息只弹一次。
-    """
-    p = os.path.join(root, 'src', 'core_main.rs')
-    if not os.path.isfile(p):
-        print('skip cm msg watcher: core_main.rs not found')
-        return
-    src = read(p)
-    if 'hy_cm_msg_watcher' in src:
-        print('core_main.rs already patched (cm msg watcher)')
-        return
-
-    def block(indent):
-        return (indent + '// 【HyDesk】hy_cm_msg_watcher：用户会话进程启动消息监听\n'
-                + indent + '#[cfg(target_os = "windows")]\n'
-                + indent + 'crate::hy_toast::start_msg_watcher();\n')
-
-    hits = 0
-    # 1) --server：必须在 crate::start_server(true, false) 这个阻塞调用之前
-    a1 = ('        } else if args[0] == "--server" {\n'
-          '            log::info!("start --server with user {}", crate::username());\n')
-    if a1 in src:
-        src = src.replace(a1, a1 + block('            '), 1)
-        hits += 1
-    # 2) --cm：连接管理器（不 return None，后面还会走到 StartUi）
-    a2 = ('        } else if args[0] == "--cm" {\n'
-          '            // call connection manager to establish connections\n'
-          '            // meanwhile, return true to call flutter window to show control panel\n')
-    if a2 in src:
-        src = src.replace(a2, a2 + block('            '), 1)
-        hits += 1
-    # 3) StartUi：主 UI 进程
-    a3 = ('    #[cfg(feature = "flutter")]\n'
-          '    return Some(CoreMainAction::StartUi(flutter_args));\n')
-    if a3 in src:
-        src = src.replace(a3, block('    ') + a3, 1)
-        hits += 1
-    if hits == 0:
-        raise SystemExit('patch failed: no core_main.rs anchor found')
-    write(p, src)
-    print('patched core_main.rs (cm msg watcher, %d anchors)' % hits)
-
-
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else '.'
     if not os.path.isfile(os.path.join(root, 'Cargo.toml')):
@@ -368,8 +366,8 @@ def main():
     patch_chat_model(root)
     patch_connection(root)
     patch_win_input_no_ctrl_p(root)
+    patch_win_input_hide_cursor(root)
     patch_service_uninstall_watcher(root)
-    patch_cm_msg_watcher(root)
     patch_msi_silent_uninstall(root)
     # 校验关键落点
     src = read(os.path.join(root, 'src', 'ui_cm_interface.rs'))
@@ -380,9 +378,9 @@ def main():
     assert 'run_program' in src and 'HY_RUN_TOKEN' in src
     src = read(os.path.join(root, 'src', 'privacy_mode', 'win_input.rs'))
     assert 'hy_privacy_no_local_unlock' in src
+    assert 'hy_privacy_hide_cursor' in src and 'ShowCursor(FALSE)' in src
     src = read(os.path.join(root, 'src', 'core_main.rs'))
     assert 'hy_uninstall_watcher' in src
-    assert 'hy_cm_msg_watcher' in src
     print('patch_host_toast: all anchors verified')
 
 
