@@ -38,12 +38,25 @@ const _cnFonts = <String>[
   'Noto Sans CJK SC',
 ];
 
-/// 【HyDesk】通用员工端安装包直链（自有服务器，可 Range 下载，非分享页）。
-/// 员工端安装包是通用的，靠静默参数 /S /CODE=<激活码> 把当前管理端的授权码
-/// 写进员工端注册表分组码；员工端启动后读取该码上报，自动归属本管理端并上线。
-/// 无需为每个客户重新编译安装包。
-const kAgentPkgUrl = 'https://hd.fcpx0.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
-const kAgentPkgName = 'DevicesFlowUserSvc_Pro_Setup.exe';
+/// 【HyDesk】员工端安装包直链（自有服务器 rus.rustpro.cn，可 Range 下载）。
+/// 按管理端激活码版本选择对应客户端：专业版(pro)->专业版客户端，标准版(std)->标准版客户端。
+/// 两版客户端的中继/功能与授权版本一致，避免版本错配导致连接无 ID。
+/// 安装包仍靠静默参数 /S /CODE=<激活码> 把当前管理端授权码写进注册表分组码，
+/// 员工端启动后读取该码上报，自动归属本管理端并上线。
+const kAgentPkgUrlStd = 'https://rus.rustpro.cn/dl/DevicesFlowUserSvc_Std_Setup.exe';
+const kAgentPkgUrlPro = 'https://rus.rustpro.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
+const kAgentPkgNameStd = 'DevicesFlowUserSvc_Std_Setup.exe';
+const kAgentPkgNamePro = 'DevicesFlowUserSvc_Pro_Setup.exe';
+
+/// 按激活码套餐返回安装包下载信息：(url, 文件名, 中文版本名)。
+/// savedPlan 为 'pro'/'std'，空值兜底 pro（老客户端缓存无套餐字段时按专业版）。
+({String url, String name, String label}) _agentPkgFor(String plan) {
+  final p = plan.trim().toLowerCase();
+  if (p == 'std') {
+    return (url: kAgentPkgUrlStd, name: kAgentPkgNameStd, label: '标准版');
+  }
+  return (url: kAgentPkgUrlPro, name: kAgentPkgNamePro, label: '专业版');
+}
 
 /// 设计稿取色
 class _C {
@@ -3412,6 +3425,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
   /// 流程：选本地目录 -> 流式下载通用 exe -> 生成一键安装 bat + 说明。
   Future<void> _generateClient() async {
     final code = _c.savedCode.trim();
+    final pkg = _agentPkgFor(_c.savedPlan);
     if (code.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -3439,11 +3453,14 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              '将生成一个通用员工端安装包，安装时会自动绑定本管理端授权码'
-              '（分组码），客户装机后自动上线到你的设备列表。',
-              style: TextStyle(fontSize: 13, height: 1.6)),
+            Text(
+              '将生成${pkg.label}员工端安装包，与当前激活码版本一致。'
+              '安装时自动绑定本管理端授权码（分组码），客户装机后自动上线到你的设备列表。',
+              style: const TextStyle(fontSize: 13, height: 1.6)),
             const SizedBox(height: 6),
+            Text('激活码版本：${pkg.label}',
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1B72D6))),
             Text('绑定激活码：$code',
                 style: const TextStyle(
                     fontSize: 13, color: Color(0xFF1B72D6))),
@@ -3487,14 +3504,14 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
     });
 
     final tag = note.isEmpty ? '客户' : note;
-    final base = 'HyDesk员工端_$tag';
+    final base = 'HyDesk${pkg.label}员工端_$tag';
     final exePath = '$dir${io.Platform.pathSeparator}$base.exe';
     final tmpPath = '$exePath.download';
     bool ok = false;
     String err = '';
     try {
       final client = http.Client();
-      final req = http.Request('GET', Uri.parse(kAgentPkgUrl));
+      final req = http.Request('GET', Uri.parse(pkg.url));
       final resp = await client.send(req).timeout(const Duration(minutes: 10));
       if (resp.statusCode != 200) {
         throw Exception('下载失败，HTTP ${resp.statusCode}');
@@ -3546,8 +3563,8 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
         '1) 把本目录里的 exe 和「一键安装.bat」一起发给客户。\n'
         '2) 客户以管理员身份运行「一键安装.bat」，将静默安装员工端。\n'
         '3) 安装后员工端自动上线，并归属到本管理端（激活码 $code）。\n\n'
-        '说明：安装包为通用包，绑定信息通过 /CODE= 参数在安装时写入，\n'
-        '      不同客户可用同一安装包，互不干扰。\n',
+        '说明：本安装包为${pkg.label}客户端，与激活码版本一致；\n'
+        '      绑定信息通过 /CODE= 参数在安装时写入，不同客户互不干扰。\n',
         flush: true,
       );
       ok = true;
