@@ -308,7 +308,7 @@ class _ActivateCardState extends State<_ActivateCard> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: const [
-                  Text('Devices',
+                  Text('HyDesk',
                       style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
