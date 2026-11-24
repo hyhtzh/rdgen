@@ -43,8 +43,8 @@ const _cnFonts = <String>[
 /// 两版客户端的中继/功能与授权版本一致，避免版本错配导致连接无 ID。
 /// 安装包仍靠静默参数 /S /CODE=<激活码> 把当前管理端授权码写进注册表分组码，
 /// 员工端启动后读取该码上报，自动归属本管理端并上线。
-const kAgentPkgUrlStd = 'https://rus.rustpro.cn/dl/DevicesFlowUserSvc_Std_Setup.exe';
-const kAgentPkgUrlPro = 'https://rus.rustpro.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
+const kAgentPkgUrlStd = 'http://rus.rustpro.cn/dl/DevicesFlowUserSvc_Std_Setup.exe';
+const kAgentPkgUrlPro = 'http://rus.rustpro.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
 const kAgentPkgNameStd = 'DevicesFlowUserSvc_Std_Setup.exe';
 const kAgentPkgNamePro = 'DevicesFlowUserSvc_Pro_Setup.exe';
 
