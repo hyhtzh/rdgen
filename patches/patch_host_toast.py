@@ -280,8 +280,9 @@ def patch_win_input_hide_cursor(root):
             '\n'
             '            // 【HyDesk】hy_privacy_hide_cursor: 隐私屏开启时隐藏本机鼠标光标\n'
             '            // （数字时钟遮挡屏上不再显示箭头），关闭钩子前恢复。\n'
+            '            // 用字面量 0/1 代替 FALSE/TRUE，避免依赖 winapi TRUE 常量导入。\n'
             '            #[cfg(windows)]\n'
-            '            unsafe { winapi::um::winuser::ShowCursor(FALSE); }\n'
+            '            unsafe { winapi::um::winuser::ShowCursor(0); }\n'
             '\n'
             '            let mut msg = MSG {')
     if old1 not in src:
@@ -292,7 +293,7 @@ def patch_win_input_hide_cursor(root):
     old2 = ('            if FALSE == UnhookWindowsHookEx(hook_keyboard as _) {')
     new2 = ('            // 【HyDesk】hy_privacy_hide_cursor: 隐私屏关闭，恢复鼠标光标\n'
             '            #[cfg(windows)]\n'
-            '            unsafe { winapi::um::winuser::ShowCursor(TRUE); }\n'
+            '            unsafe { winapi::um::winuser::ShowCursor(1); }\n'
             '\n'
             '            if FALSE == UnhookWindowsHookEx(hook_keyboard as _) {')
     if old2 not in src:
@@ -378,7 +379,7 @@ def main():
     assert 'run_program' in src and 'HY_RUN_TOKEN' in src
     src = read(os.path.join(root, 'src', 'privacy_mode', 'win_input.rs'))
     assert 'hy_privacy_no_local_unlock' in src
-    assert 'hy_privacy_hide_cursor' in src and 'ShowCursor(FALSE)' in src
+    assert 'hy_privacy_hide_cursor' in src and 'ShowCursor(0)' in src and 'ShowCursor(1)' in src
     src = read(os.path.join(root, 'src', 'core_main.rs'))
     assert 'hy_uninstall_watcher' in src
     print('patch_host_toast: all anchors verified')
