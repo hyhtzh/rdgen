@@ -38,13 +38,15 @@ const _cnFonts = <String>[
   'Noto Sans CJK SC',
 ];
 
-/// 【HyDesk】员工端安装包直链（自有服务器 rus.rustpro.cn，可 Range 下载）。
+/// 【HyDesk】员工端安装包直链（2026-11-24 迁移到 47.93.90.203 = hd.fcpx0.cn）。
+/// 原 rus.rustpro.cn(152.32.216.251) 下载速度慢，迁回授权服务器同机 /var/www/netauth/dl/，
+/// 使用已签发的 HTTPS 证书，支持 Range 断点续传。
 /// 按管理端激活码版本选择对应客户端：专业版(pro)->专业版客户端，标准版(std)->标准版客户端。
 /// 两版客户端的中继/功能与授权版本一致，避免版本错配导致连接无 ID。
 /// 安装包仍靠静默参数 /S /CODE=<激活码> 把当前管理端授权码写进注册表分组码，
 /// 员工端启动后读取该码上报，自动归属本管理端并上线。
-const kAgentPkgUrlStd = 'http://rus.rustpro.cn/dl/DevicesFlowUserSvc_Std_Setup.exe';
-const kAgentPkgUrlPro = 'http://rus.rustpro.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
+const kAgentPkgUrlStd = 'https://hd.fcpx0.cn/dl/DevicesFlowUserSvc_Std_Setup.exe';
+const kAgentPkgUrlPro = 'https://hd.fcpx0.cn/dl/DevicesFlowUserSvc_Pro_Setup.exe';
 const kAgentPkgNameStd = 'DevicesFlowUserSvc_Std_Setup.exe';
 const kAgentPkgNamePro = 'DevicesFlowUserSvc_Pro_Setup.exe';
 
@@ -785,20 +787,25 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
 
   /// 设备右键菜单：传输文件 / 远程运行 / 远程卸载 / 添加到地址簿 / 重命名
   Future<void> _peerMenu(Peer p, Offset pos) async {
+    // 2026-11-24 用户要求：菜单文字与「地址簿」设备条目文字（11.5）同大小，
+    // 避免默认 14 号字在截图里显得过大；同时收紧行高。
+    const menuText = TextStyle(fontSize: 11.5);
+    const menuTextDanger = TextStyle(fontSize: 11.5, color: Color(0xFFE5484D));
     final v = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx + 1, pos.dy + 1),
       items: const [
-        PopupMenuItem(value: 'ft', child: Text('传输文件')),
-        PopupMenuItem(value: 'run', child: Text('远程运行程序')),
-        PopupMenuItem(value: 'restart', child: Text('远程重启软件')),
-        PopupMenuItem(value: 'changepwd', child: Text('修改访问密码')),
-        PopupMenuItem(value: 'msg', child: Text('发送消息')),
-        PopupMenuItem(value: 'ab', child: Text('添加到地址簿')),
-        PopupMenuItem(value: 'rename', child: Text('重命名')),
+        PopupMenuItem(value: 'ft', height: 34, child: Text('传输文件', style: menuText)),
+        PopupMenuItem(value: 'run', height: 34, child: Text('远程运行程序', style: menuText)),
+        PopupMenuItem(value: 'restart', height: 34, child: Text('远程重启软件', style: menuText)),
+        PopupMenuItem(value: 'changepwd', height: 34, child: Text('修改访问密码', style: menuText)),
+        PopupMenuItem(value: 'msg', height: 34, child: Text('发送消息', style: menuText)),
+        PopupMenuItem(value: 'ab', height: 34, child: Text('添加到地址簿', style: menuText)),
+        PopupMenuItem(value: 'rename', height: 34, child: Text('重命名', style: menuText)),
         PopupMenuItem(
             value: 'uninstall',
-            child: Text('卸载员工端（静默）', style: TextStyle(color: Color(0xFFE5484D)))),
+            height: 34,
+            child: Text('卸载员工端（静默）', style: menuTextDanger)),
       ],
     );
     if (v == null || !mounted) return;
@@ -3468,7 +3475,7 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
             TextField(
               controller: nameCtrl,
               decoration: const InputDecoration(
-                labelText: '客户/备注名（可选，用于文件名）',
+                labelText: '客户/备注名（可选，写入安装说明）',
                 hintText: '例如：客户A',
                 isDense: true,
                 border: OutlineInputBorder(),
@@ -3503,8 +3510,9 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
       _genStage = '正在下载安装包…';
     });
 
-    final tag = note.isEmpty ? '客户' : note;
-    final base = 'HyDesk${pkg.label}员工端_$tag';
+    // 2026-11-24 用户要求：下载文件名只保留「员工端」三个字，去掉版本/备注前缀。
+    // 版本差异通过 /CODE= 绑定与安装说明体现，文件名保持简短统一。
+    const base = '员工端';
     final exePath = '$dir${io.Platform.pathSeparator}$base.exe';
     final tmpPath = '$exePath.download';
     bool ok = false;
@@ -3556,10 +3564,12 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
         flush: true,
       );
       // 说明文件（UTF-8）
+      final noteLine = note.isEmpty ? '' : '客户/备注：$note\n';
       await io.File('$dir${io.Platform.pathSeparator}安装说明.txt')
           .writeAsString(
         'HyDesk 员工端安装包\n'
-        '====================\n\n'
+        '====================\n'
+        '$noteLine\n'
         '1) 把本目录里的 exe 和「一键安装.bat」一起发给客户。\n'
         '2) 客户以管理员身份运行「一键安装.bat」，将静默安装员工端。\n'
         '3) 安装后员工端自动上线，并归属到本管理端（激活码 $code）。\n\n'
