@@ -3146,11 +3146,45 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     fontFamilyFallback: _cnFonts),
               ),
               const Spacer(),
+              // 【HyDesk】2026-11-25：离线时在状态条右侧给一个「启动服务」按钮，
+              // 调用上游 start_service(true)（stop-service=N）重启被控服务，
+              // 随后重拉本机 ID + 重新探测 API，让「服务器不可达」可自助恢复。
+              if (offline)
+                TextButton(
+                  onPressed: _startService,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: const Size(0, 24),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text(
+                    '启动服务',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: _C.blue,
+                        fontFamilyFallback: _cnFonts),
+                  ),
+                ),
             ],
           ),
         );
       },
     );
+  }
+
+  /// 启动被控服务（stop-service=N），随后重拉 ID + 重新探测 API。
+  Future<void> _startService() async {
+    try {
+      await start_service(true);
+      showToast('正在启动服务…');
+      // 给 Rust 侧服务重启留一点时间，再刷新状态
+      await Future.delayed(const Duration(milliseconds: 800));
+      await _refreshLocalId();
+      await _probeApi();
+      if (mounted) setState(() {});
+    } catch (e) {
+      showToast('启动服务失败：$e');
+    }
   }
 
   Widget _squareIconButton(IconData icon, VoidCallback onTap,
