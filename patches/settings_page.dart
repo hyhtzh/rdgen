@@ -327,11 +327,12 @@ class _SettingsRouteState extends State<SettingsRoute> {
             Text(id.isEmpty ? '-' : id,
                 style: const TextStyle(fontSize: 13, color: _SC.sub))),
         // 2026-11-21：恢复官方网站入口（用户要求恢复所有隐藏项）
+        // 2026-11-25：官网此前误指向购买站 1t.8kub.cn，改为品牌官网 kOfficialUrl。
         _row(
             '官方网站',
             InkWell(
-              onTap: () => openExternalUrl(kPurchaseUrl),
-              child: const Text(kPurchaseUrl,
+              onTap: () => openExternalUrl(kOfficialUrl),
+              child: const Text(kOfficialUrl,
                   style: TextStyle(fontSize: 12.5, color: _SC.blue)),
             )),
       ]),
