@@ -35,6 +35,11 @@ const kAbBase = 'https://api.hydesk.cn';
 /// 购买授权的落地页（激活页「购买」与详情弹窗「续费升级」都跳这里）
 const kPurchaseUrl = 'https://1t.8kub.cn';
 
+/// 【HyDesk】官网地址（主页「官网」按钮 + 设置页「官方网站」入口）。
+/// 2026-11-25 用户反馈官网入口此前误指向购买站 1t.8kub.cn，改为品牌官网。
+/// 购买 / 续费仍走 kPurchaseUrl（商城），两者分开，避免官网入口跳错站。
+const kOfficialUrl = 'https://ww.hydesk.cn';
+
 /// 商城地址：带上商品 id 时直接选中对应加购包（pa16 / pa32 / pa64 / paGroup）
 String shopUrl([String? productId]) {
   final id = (productId ?? '').trim();
