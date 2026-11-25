@@ -2059,8 +2059,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     return Row(
       children: [
         // 2026-11-21：恢复官网入口（用户要求恢复所有隐藏按钮）
+        // 2026-11-25：官网此前误指向购买站，改为品牌官网 kOfficialUrl；
+        // 购买 / 续费入口仍走 gotoShop(kPurchaseUrl)。
         Expanded(flex: 72,
-            child: _solidButton('官网', _C.red, () => gotoShop(context))),
+            child: _solidButton(
+                '官网', _C.red, () => openExternalUrl(kOfficialUrl))),
         const SizedBox(width: 8),
         Expanded(flex: 88, child: _solidButton('屏幕墙', _C.blue, _openWall)),
         const SizedBox(width: 8),
