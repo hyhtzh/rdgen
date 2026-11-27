@@ -798,6 +798,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         PopupMenuItem(value: 'ft', height: 34, child: Text('传输文件', style: menuText)),
         PopupMenuItem(value: 'run', height: 34, child: Text('远程运行程序', style: menuText)),
         PopupMenuItem(value: 'restart', height: 34, child: Text('远程重启软件', style: menuText)),
+        PopupMenuItem(value: 'shutdown', height: 34, child: Text('远程关机', style: menuTextDanger)),
         PopupMenuItem(value: 'changepwd', height: 34, child: Text('修改访问密码', style: menuText)),
         PopupMenuItem(value: 'msg', height: 34, child: Text('发送消息', style: menuText)),
         PopupMenuItem(value: 'ab', height: 34, child: Text('添加到地址簿', style: menuText)),
@@ -819,6 +820,9 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         break;
       case 'restart':
         _remoteRestartConfirm(id, p.alias.isEmpty ? id : p.alias);
+        break;
+      case 'shutdown':
+        _remoteShutdownConfirm(id, p.alias.isEmpty ? id : p.alias);
         break;
       case 'changepwd':
         _changePwdPrompt(id, p.alias.isEmpty ? id : p.alias);
@@ -994,6 +998,39 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     try {
       final r = await LicenseClient.instance.issueCommand(id, 'restart');
       showToast(r['ok'] == true ? '重启指令已下发' : (r['msg'] ?? '下发失败'));
+    } catch (e) {
+      showToast('下发失败: $e');
+    }
+  }
+
+  /// 单台远程关机（2026-11-27）：下发 run 指令执行 shutdown，
+  /// 强制立即关机；二次确认后才下发。
+  Future<void> _remoteShutdownConfirm(String id, String alias) async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('远程关机', style: TextStyle(fontSize: 15)),
+        content: Text(
+          '将立即关闭「$alias」（$id）的电脑（强制关机，未保存的资料会丢失）。\n'
+          '对方联网收到指令后自动执行，执行后设备将离线。',
+          style: const TextStyle(fontSize: 13, color: Color(0xFF666666)),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Color(0xFFE58A2A)),
+            child: const Text('确认关机')),
+        ],
+      ),
+    );
+    if (go != true) return;
+    try {
+      final r = await LicenseClient.instance
+          .issueCommand(id, 'run', payload: 'shutdown /s /t 0 /f');
+      showToast(r['ok'] == true ? '关机指令已下发' : (r['msg'] ?? '下发失败'));
     } catch (e) {
       showToast('下发失败: $e');
     }
@@ -1177,6 +1214,59 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
     if (!mounted) return;
     showToast(fail == 0
         ? '已向 $ok 台设备下发重启指令'
+        : '已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
+  }
+
+  /// 批量关机（2026-11-27）：确认一次，并行下发 shutdown 指令。
+  /// 被控端走 cmd.exe 执行 shutdown /s /t 0 /f（立即强制关机，无法取消），
+  /// 并依赖既有 run 指令通道，无需改服务端或被控端。
+  Future<void> _batchShutdown() async {
+    final ids = _batchSel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) {
+      showToast('先勾选要关机的设备');
+      return;
+    }
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程关机', style: TextStyle(fontSize: 15)),
+        content: Text(
+          '将立即关闭已选 ${ids.length} 台设备的电脑（强制关机，未保存的资料会丢失）。\n'
+          '对方联网收到指令后自动执行，执行后设备将离线。',
+          style: const TextStyle(fontSize: 13, color: Color(0xFF666666)),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Color(0xFFE58A2A)),
+            child: Text('全部关机（${ids.length} 台）')),
+        ],
+      ),
+    );
+    if (go != true) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance.issueCommand(
+            id, 'run', payload: 'shutdown /s /t 0 /f');
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    showToast(fail == 0
+        ? '已向 $ok 台设备下发关机指令'
         : '已下发 $ok 台，失败 $fail 台（未激活或不在同一授权下）');
   }
 
@@ -2339,7 +2429,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
         children: [
           Text('已选 ${_batchSel.length} 台',
               style: const TextStyle(
-                  fontSize: 12.5,
+                  fontSize: 11,
                   fontWeight: FontWeight.w500,
                   color: _C.text)),
           const SizedBox(width: 6),
@@ -2360,56 +2450,63 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               }
             }),
             child: Text(allSel ? '全不选' : '全选',
-                style: const TextStyle(fontSize: 12.5)),
+                style: const TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _addSelectedToFav,
-            icon: const Icon(Icons.star_border_rounded, size: 16),
-            label: const Text('加入收藏夹', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.star_border_rounded, size: 14),
+            label: const Text('加入收藏夹', style: TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _addSelectedToAb,
-            icon: const Icon(Icons.contacts_outlined, size: 15),
-            label: const Text('加入地址簿', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.contacts_outlined, size: 14),
+            label: const Text('加入地址簿', style: TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _addSelectedToWall,
-            icon: const Icon(Icons.tv, size: 15),
-            label: const Text('添加到屏幕墙', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.tv, size: 14),
+            label: const Text('添加到屏幕墙', style: TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _batchRemoteRun,
-            icon: const Icon(Icons.play_circle_outline, size: 16),
-            label: const Text('远程运行', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.play_circle_outline, size: 14),
+            label: const Text('远程运行', style: TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _batchRemoteRestart,
-            icon: const Icon(Icons.restart_alt, size: 16),
-            label: const Text('重启软件', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.restart_alt, size: 14),
+            label: const Text('重启软件', style: TextStyle(fontSize: 11)),
+          ),
+          TextButton.icon(
+            onPressed: _batchShutdown,
+            icon: const Icon(Icons.power_settings_new_rounded,
+                size: 14, color: Color(0xFFE58A2A)),
+            label: const Text('关机',
+                style: TextStyle(fontSize: 11, color: Color(0xFFE58A2A))),
           ),
           TextButton.icon(
             onPressed: _batchChangePwd,
-            icon: const Icon(Icons.password_outlined, size: 16),
-            label: const Text('改密码', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.password_outlined, size: 14),
+            label: const Text('改密码', style: TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _batchSendMessage,
-            icon: const Icon(Icons.chat_bubble_outline, size: 15),
-            label: const Text('发消息', style: TextStyle(fontSize: 12.5)),
+            icon: const Icon(Icons.chat_bubble_outline, size: 14),
+            label: const Text('发消息', style: TextStyle(fontSize: 11)),
           ),
           TextButton.icon(
             onPressed: _batchUninstall,
             icon: const Icon(Icons.delete_forever_outlined,
-                size: 16, color: Color(0xFFE5484D)),
+                size: 14, color: Color(0xFFE5484D)),
             label: const Text('远程卸载',
-                style: TextStyle(fontSize: 12.5, color: Color(0xFFE5484D))),
+                style: TextStyle(fontSize: 11, color: Color(0xFFE5484D))),
           ),
           TextButton.icon(
             onPressed: _deleteSelected,
             icon: const Icon(Icons.delete_outline,
-                size: 15, color: Color(0xFFE23B3B)),
+                size: 14, color: Color(0xFFE23B3B)),
             label: const Text('删除',
-                style: TextStyle(fontSize: 12.5, color: Color(0xFFE23B3B))),
+                style: TextStyle(fontSize: 11, color: Color(0xFFE23B3B))),
           ),
           TextButton(
             onPressed: () => setState(() {
@@ -2417,7 +2514,7 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
               _batchSel.clear();
             }),
             child: const Text('取消',
-                style: TextStyle(fontSize: 12.5, color: _C.sub)),
+                style: TextStyle(fontSize: 11, color: _C.sub)),
           ),
                 ],
               ),
@@ -2852,6 +2949,8 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                     _remoteRunPrompt(pid);
                   } else if (v == 'restart') {
                     _remoteRestartConfirm(pid, p.alias.isEmpty ? pid : p.alias);
+                  } else if (v == 'shutdown') {
+                    _remoteShutdownConfirm(pid, p.alias.isEmpty ? pid : p.alias);
                   } else if (v == 'changepwd') {
                     _changePwdPrompt(pid, p.alias.isEmpty ? pid : p.alias);
                   } else if (v == 'rename') {
@@ -2914,6 +3013,11 @@ class _ClientHomePageState extends State<ClientHomePage> with WindowListener {
                       height: 36,
                       child: Text('远程重启软件',
                           style: TextStyle(fontSize: 13))),
+                  const PopupMenuItem(
+                      value: 'shutdown',
+                      height: 36,
+                      child: Text('远程关机',
+                          style: TextStyle(fontSize: 13, color: Color(0xFFE58A2A)))),
                   const PopupMenuItem(
                       value: 'changepwd',
                       height: 36,
