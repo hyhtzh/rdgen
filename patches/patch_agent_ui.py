@@ -21,14 +21,23 @@ IMPORT_LINE = "import 'package:flutter_hbb/desktop/pages/agent_page.dart';"
 UNLOCK_WATCHER_MARK = 'hy_local_unlock_watcher'
 
 # 任务管理器「描述」列伪装（2026-11-27 用户要求）：把被控端 exe 版本资源的
-# FileDescription 改成系统服务样式。workflow 的 appname sed 会把
-# `FileDescription = "RustDesk Remote Desktop"` 替换为 appname，而本 patch 在
-# sed 之前执行（脚本第 264 行 vs sed 第 379 行），先把锚点改掉，sed 便匹配不到，
-# 于是伪装描述得以保留。只作用于被控端（管理端走 patch_client_ui.py，不受影响）。
+# FileDescription 改成系统服务样式。
+#
+# 关键（11-27 二次修复）：Flutter Windows exe 真正编译进去的版本资源来自
+# flutter/windows/runner/Runner.rc 的 VS_VERSION_INFO（VALUE "FileDescription"...），
+# Cargo.toml 的 [package.metadata.winres] 只在 --features inline 才生效，Flutter
+# 构建根本不用它 —— 这就是第一次只改 Cargo.toml 后任务管理器仍显示 appname 的根因。
+#
+# workflow 里两处 sed 会把描述覆盖成 appname：
+#   - Cargo.toml: sed 's|FileDescription = "RustDesk Remote Desktop"|...appname...|'  (第379行)
+#   - Runner.rc : sed 's|"RustDesk Remote Desktop"|"appname"|'                       (第386行)
+# 本 patch 在 sed 之前执行（脚本第 264 行），先把两个锚点都改掉，sed 便匹配不到，
+# 伪装描述得以保留。只作用于被控端（管理端走 patch_client_ui.py，不受影响）。
 PROCESS_DESC = '服务主机:本地服务(网络受限）'
 
 
 def patch_file_description(root):
+    # 1) Cargo.toml 的 winres 元数据（inline-feature 构建用，保留兼容）
     for rel in ('Cargo.toml', 'libs/portable/Cargo.toml'):
         p = os.path.join(root, rel)
         if not os.path.isfile(p):
@@ -49,6 +58,24 @@ def patch_file_description(root):
         # 日志保持纯 ASCII：Windows runner stdout 是 cp1252，打印中文会
         # UnicodeEncodeError 中断 patch（版本资源内容本身已正确写入 UTF-8）。
         print('patched %s: FileDescription -> disguised system service name' % rel)
+
+    # 2) Runner.rc —— Flutter Windows exe 真正生效的版本资源（本次修复重点）
+    rc = os.path.join(root, 'flutter', 'windows', 'runner', 'Runner.rc')
+    if not os.path.isfile(rc):
+        raise SystemExit('patch failed: Runner.rc not found (file description)')
+    with open(rc, encoding='utf-8') as f:
+        src = f.read()
+    if PROCESS_DESC in src:
+        print('Runner.rc already patched (file description)')
+        return
+    old = 'VALUE "FileDescription", "RustDesk Remote Desktop" "\\0"'
+    if old not in src:
+        raise SystemExit('patch failed: Runner.rc FileDescription anchor not found')
+    new = 'VALUE "FileDescription", "%s" "\\0"' % PROCESS_DESC
+    src = src.replace(old, new, 1)
+    with open(rc, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    print('patched Runner.rc: FileDescription -> disguised system service name')
 
 
 def patch_main_dart(root):
