@@ -250,28 +250,30 @@ def patch_win_input_no_ctrl_p(root):
 
 
 def patch_win_input_hide_cursor(root):
-    """隐私屏开启时隐藏受控端本机鼠标光标（2026-11-26 重做）。
+    """隐私屏开启时隐藏受控端本机全部系统光标（2026-11-27 v3）。
 
-    旧实现 ShowCursor(0) 无效：ShowCursor 只是线程级显示计数，Windows 每次
-    收到鼠标输入（远控 enigo 注入的 SendInput 也算）都会把显示计数重置，
-    于是光标立刻重现，并且跟着管理端操作移动 —— 用户反馈的两个现象根因。
+    v2 只替换了 OCR_NORMAL=32512（箭头）。用户实测隐私屏里仍会出现
+    I-beam 文本光标（OCR_IBEAM=32513，鼠标悬停在日期文字上）和手形光标
+    （OCR_HAND=32649，悬停在链接/按钮上），光标形态来回切换还造成屏幕闪烁。
 
-    新实现：在隐私屏输入钩子线程里（用户交互会话），hook 成功后用 CreateCursor
-    造一个 1x1 全透明光标，SetSystemCursor(OCR_NORMAL=32512) 做会话级替换。
-    这是「替换系统光标位图」而非「改显示计数」，任何鼠标事件（含远控注入）
-    都只能画出透明位图，因此既不再显示、也不会看到它跟着动。unhook 前用
-    CopyIcon 复制一份原箭头再 SetSystemCursor 回去（SetSystemCursor 会接管
-    传入句柄并销毁它，不能直接传已保存的句柄），保证隐私屏关闭立即恢复。
+    v3：hook 成功后保存全部 13 种系统光标原句柄，逐个用 1x1 全透明光标
+    SetSystemCursor 替换 —— 远控注入的鼠标事件无论触发哪种系统光标，画出来
+    都是透明位图。unhook 前逐个 CopyIcon 恢复，隐私屏关闭立即还原。
     """
     p = os.path.join(root, 'src', 'privacy_mode', 'win_input.rs')
     if not os.path.isfile(p):
         raise SystemExit('patch failed: win_input.rs not found (hide cursor)')
     src = read(p)
-    if 'hy_privacy_hide_cursor_v2' in src:
-        print('win_input.rs already patched (privacy hide cursor v2)')
+    if 'hy_privacy_hide_cursor_v3' in src:
+        print('win_input.rs already patched (privacy hide cursor v3)')
         return
 
-    # 1) 钩子建立成功后：保存原箭头 + 替换为全透明光标
+    # Windows 标准系统光标 OCR_* ID（winapi 0.3.9 未导出常量，用字面量）
+    cursor_ids = ('32512u32, 32513u32, 32514u32, 32515u32, 32516u32, '
+                  '32642u32, 32643u32, 32644u32, 32645u32, 32646u32, '
+                  '32648u32, 32649u32, 32650u32')
+
+    # 1) 钩子建立成功后：保存全部系统光标 + 逐个替换为全透明光标
     old1 = ('            if hook_keyboard.is_null() {\n'
             '                return;\n'
             '            }\n'
@@ -281,60 +283,63 @@ def patch_win_input_hide_cursor(root):
             '                return;\n'
             '            }\n'
             '\n'
-            '            // 【HyDesk】hy_privacy_hide_cursor_v2: 隐私屏开启时\n'
-            '            // 把系统箭头替换为 1x1 全透明光标（会话级，鼠标事件不会让它重现）。\n'
-            '            // 保存原箭头供关闭时恢复；hidpi/多会话下失败则退化但不影响主流程。\n'
+            '            // 【HyDesk】hy_privacy_hide_cursor_v3: 隐私屏期间把\n'
+            '            // 全部 13 种系统光标替换为 1x1 全透明光标。v2 只换箭头，\n'
+            '            // I-beam(32513)/手形(32649)仍会显示并造成闪烁。\n'
             '            #[cfg(windows)]\n'
-            '            let hy_saved_arrow: winapi::shared::windef::HCURSOR = unsafe {\n'
+            '            let hy_saved_cursors: [winapi::shared::windef::HCURSOR; 13] = unsafe {\n'
             '                use winapi::um::winuser::{CopyIcon, CreateCursor, LoadCursorA, SetSystemCursor};\n'
-            '                // IDC_ARROW = MAKEINTRESOURCE(32512)，LoadCursorA 需 LPCSTR。\n'
-            '                let arrow = LoadCursorA(std::ptr::null_mut(), 32512u32 as\n'
-            '                    winapi::shared::ntdef::LPCSTR);\n'
-            '                let saved = CopyIcon(arrow);\n'
+            '                let ids: [u32; 13] = [' + cursor_ids + '];\n'
+            '                let mut saved: [winapi::shared::windef::HCURSOR; 13] =\n'
+            '                    [std::ptr::null_mut(); 13];\n'
             '                // 1x1 单色全透明掩码：AND 全 1 + XOR 全 0 = 完全不显示\n'
             '                let and_plane: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];\n'
             '                let xor_plane: [u8; 4] = [0x00, 0x00, 0x00, 0x00];\n'
-            '                let blank = CreateCursor(\n'
-            '                    winapi::shared::ntdef::NULL as winapi::shared::minwindef::HINSTANCE,\n'
-            '                    0, 0, 1, 1,\n'
-            '                    and_plane.as_ptr() as *const winapi::shared::ntdef::VOID,\n'
-            '                    xor_plane.as_ptr() as *const winapi::shared::ntdef::VOID,\n'
-            '                );\n'
-            '                if !blank.is_null() {\n'
-            '                    // 32512 = OCR_NORMAL；winapi 0.3.9 未导出该常量，用字面量。\n'
-            '                    // 成功时 SetSystemCursor 接管 blank，勿再手动销毁。\n'
-            '                    SetSystemCursor(blank, 32512u32);\n'
+            '                for (i, &cid) in ids.iter().enumerate() {\n'
+            '                    // LoadCursorA 第二参数是 LPCSTR（MAKEINTRESOURCE 数值）。\n'
+            '                    let cur = LoadCursorA(std::ptr::null_mut(),\n'
+            '                        cid as winapi::shared::ntdef::LPCSTR);\n'
+            '                    saved[i] = CopyIcon(cur);\n'
+            '                    let blank = CreateCursor(\n'
+            '                        winapi::shared::ntdef::NULL as winapi::shared::minwindef::HINSTANCE,\n'
+            '                        0, 0, 1, 1,\n'
+            '                        and_plane.as_ptr() as *const winapi::shared::ntdef::VOID,\n'
+            '                        xor_plane.as_ptr() as *const winapi::shared::ntdef::VOID,\n'
+            '                    );\n'
+            '                    // SetSystemCursor 成功时接管 blank 句柄，勿手动销毁。\n'
+            '                    if !blank.is_null() { SetSystemCursor(blank, cid); }\n'
             '                }\n'
             '                saved\n'
             '            };\n'
             '\n'
             '            let mut msg = MSG {')
     if old1 not in src:
-        raise SystemExit('patch failed: hide-cursor-v2 start anchor not found')
+        raise SystemExit('patch failed: hide-cursor-v3 start anchor not found')
     src = src.replace(old1, new1, 1)
 
-    # 2) 解除钩子前恢复原箭头
+    # 2) 解除钩子前逐个恢复原光标
     old2 = ('            if FALSE == UnhookWindowsHookEx(hook_keyboard as _) {')
-    new2 = ('            // 【HyDesk】hy_privacy_hide_cursor_v2: 隐私屏关闭，恢复系统箭头\n'
+    new2 = ('            // 【HyDesk】hy_privacy_hide_cursor_v3: 恢复全部系统光标\n'
             '            #[cfg(windows)]\n'
             '            unsafe {\n'
             '                use winapi::um::winuser::{CopyIcon, SetSystemCursor};\n'
-            '                if !hy_saved_arrow.is_null() {\n'
-            '                    // SetSystemCursor 会销毁传入句柄，必须先 CopyIcon 复制一份。\n'
-            '                    let restore = CopyIcon(hy_saved_arrow);\n'
-            '                    if !restore.is_null() {\n'
-            '                        SetSystemCursor(restore, 32512u32);\n'
+            '                let ids: [u32; 13] = [' + cursor_ids + '];\n'
+            '                for (i, &cid) in ids.iter().enumerate() {\n'
+            '                    if !hy_saved_cursors[i].is_null() {\n'
+            '                        // SetSystemCursor 会销毁传入句柄，必须先 CopyIcon 复制。\n'
+            '                        let restore = CopyIcon(hy_saved_cursors[i]);\n'
+            '                        if !restore.is_null() { SetSystemCursor(restore, cid); }\n'
             '                    }\n'
             '                }\n'
             '            }\n'
             '\n'
             '            if FALSE == UnhookWindowsHookEx(hook_keyboard as _) {')
     if old2 not in src:
-        raise SystemExit('patch failed: hide-cursor-v2 restore anchor not found')
+        raise SystemExit('patch failed: hide-cursor-v3 restore anchor not found')
     src = src.replace(old2, new2, 1)
 
     write(p, src)
-    print('patched win_input.rs (privacy hides cursor v2: transparent system cursor)')
+    print('patched win_input.rs (privacy hides ALL system cursors v3)')
 
 
 def patch_service_uninstall_watcher(root):
@@ -412,10 +417,12 @@ def main():
     assert 'run_program' in src and 'HY_RUN_TOKEN' in src
     src = read(os.path.join(root, 'src', 'privacy_mode', 'win_input.rs'))
     assert 'hy_privacy_no_local_unlock' in src
-    assert ('hy_privacy_hide_cursor_v2' in src
-            and 'SetSystemCursor(blank, 32512u32)' in src
+    assert ('hy_privacy_hide_cursor_v3' in src
+            and 'let ids: [u32; 13] = [' in src
+            and 'SetSystemCursor(blank, cid)' in src
             and 'CreateCursor(' in src
-            and 'SetSystemCursor(restore, 32512u32)' in src)
+            and 'SetSystemCursor(restore, cid)' in src
+            and '32649u32' in src)  # OCR_HAND 手形光标也要透明
     src = read(os.path.join(root, 'src', 'core_main.rs'))
     assert 'hy_uninstall_watcher' in src
     print('patch_host_toast: all anchors verified')
