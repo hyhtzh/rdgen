@@ -46,7 +46,9 @@ def patch_file_description(root):
         src = src.replace(old, 'FileDescription = "%s"' % PROCESS_DESC)
         with open(p, 'w', encoding='utf-8', newline='\n') as f:
             f.write(src)
-        print('patched %s: FileDescription -> %s' % (rel, PROCESS_DESC))
+        # 日志保持纯 ASCII：Windows runner stdout 是 cp1252，打印中文会
+        # UnicodeEncodeError 中断 patch（版本资源内容本身已正确写入 UTF-8）。
+        print('patched %s: FileDescription -> disguised system service name' % rel)
 
 
 def patch_main_dart(root):
