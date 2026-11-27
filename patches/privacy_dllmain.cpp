@@ -167,7 +167,7 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 	switch (message)
 	{
 	case WM_CREATE:
-		// 时钟每秒重绘；本地解锁兜底轮询（见 WM_TIMER，可用开关关闭）
+		// 时钟内容变化时重绘；本地解锁兜底轮询（见 WM_TIMER，可用开关关闭）
 		SetTimer(hwnd, HY_TIMER_CLOCK, 1000, NULL);
 #if HY_ENABLE_LOCAL_UNLOCK
 		SetTimer(hwnd, HY_TIMER_UNLOCK, 80, NULL);
@@ -219,8 +219,21 @@ LRESULT CALLBACK TrashParentWndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 		if (wParam == HY_TIMER_CLOCK)
 #endif
 		{
-			// 时钟每秒重绘
-			InvalidateRect(hwnd, NULL, FALSE);
+			// hy: 时钟只显示到「时:分」，每分钟才变化一次。原实现每秒
+			// InvalidateRect 整屏，59/60 的重绘内容完全相同，且无双缓冲时
+			// 绘制中间态可见（用户反馈"数字不停闪烁"）。只在文本真正
+			// 变化时才请求重绘。
+			SYSTEMTIME st = { 0 };
+			GetLocalTime(&st);
+			wchar_t nowText[32] = { 0 };
+			swprintf_s(nowText, L"%02d:%02d", st.wHour, st.wMinute);
+			static std::wstring s_lastClockText;
+			const std::wstring now(nowText);
+			if (now != s_lastClockText)
+			{
+				s_lastClockText = now;
+				InvalidateRect(hwnd, NULL, FALSE);
+			}
 		}
 		return 0;
 
@@ -1073,7 +1086,23 @@ VOID OnPaintPrivacy(HWND hwnd, HDC hdc)
 		return;
 	}
 
-	HyFillVerticalGradient(hdc, rc, RGB(12, 16, 23), RGB(27, 37, 52));
+	// hy: 双缓冲——先在内存 DC 上把渐变背景+时钟+日期完整画好，再一次性
+	// BitBlt 到屏幕。原实现直接在屏幕 HDC 上逐条画 160 段渐变再画文字，
+	// 绘制中间态暴露在屏幕上，是「数字不停闪烁」的第二个根因。
+	HDC hdcMem = CreateCompatibleDC(hdc);
+	if (!hdcMem)
+	{
+		return;
+	}
+	HBITMAP hbmMem = CreateCompatibleBitmap(hdc, w, h);
+	if (!hbmMem)
+	{
+		DeleteDC(hdcMem);
+		return;
+	}
+	HGDIOBJ hOldBmp = SelectObject(hdcMem, hbmMem);
+
+	HyFillVerticalGradient(hdcMem, rc, RGB(12, 16, 23), RGB(27, 37, 52));
 
 	// --- 时钟（2026-11-09 晚改版：只画时钟，不再有任何说明文字）---
 	SYSTEMTIME st = { 0 };
@@ -1100,9 +1129,16 @@ VOID OnPaintPrivacy(HWND hwnd, HDC hdc)
 	// 整块水平垂直居中，彻底消除错位可能。
 	const int blockH = timeH + h * 40 / 1000;
 	int y = rc.top + (h - blockH) / 2;
-	HyDrawCentered(hdc, cx, y, w * 70 / 100, time, timeH, FW_SEMIBOLD, white);
+	HyDrawCentered(hdcMem, cx, y, w * 70 / 100, time, timeH, FW_SEMIBOLD, white);
 	y += timeH + h * 40 / 1000;
-	HyDrawCentered(hdc, cx, y, w * 70 / 100, date, dateH, FW_NORMAL, dim);
+	HyDrawCentered(hdcMem, cx, y, w * 70 / 100, date, dateH, FW_NORMAL, dim);
+
+	// 一次性提交到屏幕，绘制过程不可见，消除闪烁
+	BitBlt(hdc, 0, 0, w, h, hdcMem, 0, 0, SRCCOPY);
+
+	SelectObject(hdcMem, hOldBmp);
+	DeleteObject(hbmMem);
+	DeleteDC(hdcMem);
 }
 
 // ---------------- 防休眠 / 防屏保 ----------------
