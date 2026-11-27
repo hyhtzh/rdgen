@@ -342,6 +342,131 @@ def patch_win_input_hide_cursor(root):
     print('patched win_input.rs (privacy hides ALL system cursors v3)')
 
 
+def patch_win_input_disable_sas(root):
+    """隐私屏期间禁用 Ctrl+Alt+Delete 安全菜单项（2026-11-27 用户要求）。
+
+    Windows 的 Ctrl+Alt+Del 是 SAS（安全注意序列），由内核/winlogon 在用户态
+    钩子之前捕获，用户态 WH_KEYBOARD_LL 拿不到它，无法真正"吞掉"按键。
+    可行的最大程度禁用 = 用注册表策略把 SAS 菜单项功能废掉：
+      - DisableTaskMgr       任务管理器（含 Ctrl+Shift+Esc）打不开
+      - DisableLockWorkstation  "锁定"灰掉
+      - DisableChangePassword   "更改密码"灰掉
+      - NoLogoff               "注销"灰掉
+    隐私屏 hook 建立时写 1 并保存原值，unhook 时按原值恢复/删除，绝不残留
+    影响用户正常桌面。SAS 蓝色菜单本身仍会弹出（系统安全桌面），但里面的
+    操作项全部失效——这是用户态能做到的极限，需如实告知用户。
+    """
+    p = os.path.join(root, 'src', 'privacy_mode', 'win_input.rs')
+    if not os.path.isfile(p):
+        raise SystemExit('patch failed: win_input.rs not found (disable sas)')
+    src = read(p)
+    if 'hy_disable_sas_ui' in src:
+        print('win_input.rs already patched (disable sas)')
+        return
+
+    # 1) 在常量后插入独立的策略模块（自带 winreg，不污染顶层命名空间）
+    anchor1 = 'const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 2;'
+    if anchor1 not in src:
+        raise SystemExit('patch failed: disable-sas module anchor not found')
+    module = '''
+
+// 【HyDesk】hy_disable_sas_ui：隐私屏期间禁用 Ctrl+Alt+Del 安全菜单项。
+// SAS 由内核捕获不可拦按键，只能废掉菜单项（任务管理器/锁定/改密/注销）。
+#[cfg(windows)]
+mod hy_disable_sas_ui {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    use std::sync::Mutex;
+
+    struct Saved {
+        taskmgr: Option<Option<u32>>,
+        lock: Option<Option<u32>>,
+        changepwd: Option<Option<u32>>,
+        nologoff: Option<Option<u32>>,
+    }
+    static SAVED: Mutex<Option<Saved>> = Mutex::new(None);
+
+    fn disable_one(sub: &RegKey, name: &str) -> Option<u32> {
+        let orig: Option<u32> = sub.get_value(name).ok();
+        let _ = sub.set_value(name, &1u32, RegType::REG_DWORD);
+        orig
+    }
+
+    pub fn apply() {
+        let mut g = SAVED.lock().unwrap();
+        if g.is_some() { return; }
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let sys_path = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System";
+        let explorer_path = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\Explorer";
+        let sys = hkcu.open_subkey_with_flags(sys_path, KEY_READ | KEY_WRITE)
+            .or_else(|_| hkcu.create_subkey(sys_path).map(|(k, _)| k));
+        let explorer = hkcu.open_subkey_with_flags(explorer_path, KEY_READ | KEY_WRITE)
+            .or_else(|_| hkcu.create_subkey(explorer_path).map(|(k, _)| k));
+        let mut s = Saved { taskmgr: None, lock: None, changepwd: None, nologoff: None };
+        if let Ok(ref k) = sys {
+            s.taskmgr = Some(disable_one(k, "DisableTaskMgr"));
+            s.lock = Some(disable_one(k, "DisableLockWorkstation"));
+            s.changepwd = Some(disable_one(k, "DisableChangePassword"));
+        }
+        if let Ok(ref k) = explorer {
+            s.nologoff = Some(disable_one(k, "NoLogoff"));
+        }
+        *g = Some(s);
+    }
+
+    fn restore_one(sub: &RegKey, name: &str, orig: Option<u32>) {
+        match orig {
+            Some(v) => { let _ = sub.set_value(name, &v, RegType::REG_DWORD); }
+            None => { let _ = sub.delete_value(name); }
+        }
+    }
+
+    pub fn restore() {
+        let mut g = SAVED.lock().unwrap();
+        let s = match g.take() { Some(s) => s, None => return };
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let sys_path = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System";
+        let explorer_path = "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\Explorer";
+        if let Ok(k) = hkcu.open_subkey_with_flags(sys_path, KEY_READ | KEY_WRITE) {
+            if let Some(v) = s.taskmgr { restore_one(&k, "DisableTaskMgr", v); }
+            if let Some(v) = s.lock { restore_one(&k, "DisableLockWorkstation", v); }
+            if let Some(v) = s.changepwd { restore_one(&k, "DisableChangePassword", v); }
+        }
+        if let Ok(k) = hkcu.open_subkey_with_flags(explorer_path, KEY_READ | KEY_WRITE) {
+            if let Some(v) = s.nologoff { restore_one(&k, "NoLogoff", v); }
+        }
+    }
+}'''
+    src = src.replace(anchor1, anchor1 + module, 1)
+
+    # 2) hook 成功后应用策略（do_hook 里 tx.send("") 之后）
+    anchor2 = ('        *cur_hook_thread_id = GetCurrentThreadId();\n'
+               '        tx.send("".to_owned())?;\n'
+               '        return Ok((hook_keyboard, hook_mouse));')
+    if anchor2 not in src:
+        raise SystemExit('patch failed: disable-sas apply anchor not found')
+    new2 = ('        *cur_hook_thread_id = GetCurrentThreadId();\n'
+            '        tx.send("".to_owned())?;\n'
+            '        // 【HyDesk】隐私屏开启：禁用 Ctrl+Alt+Del 安全菜单项\n'
+            '        #[cfg(windows)]\n'
+            '        hy_disable_sas_ui::apply();\n'
+            '        return Ok((hook_keyboard, hook_mouse));')
+    src = src.replace(anchor2, new2, 1)
+
+    # 3) 退出钩子线程时恢复策略（清 CUR_HOOK_THREAD_ID 之前）
+    anchor3 = '        *CUR_HOOK_THREAD_ID.lock().unwrap() = 0;'
+    if anchor3 not in src:
+        raise SystemExit('patch failed: disable-sas restore anchor not found')
+    new3 = ('        // 【HyDesk】隐私屏关闭：恢复注册表策略原值（不残留）\n'
+            '        #[cfg(windows)]\n'
+            '        hy_disable_sas_ui::restore();\n'
+            '        *CUR_HOOK_THREAD_ID.lock().unwrap() = 0;')
+    src = src.replace(anchor3, new3, 1)
+
+    write(p, src)
+    print('patched win_input.rs (privacy disables SAS menu items via registry)')
+
+
 def patch_service_uninstall_watcher(root):
     """--service 分支启动卸载标记 watcher（SYSTEM 权限静默卸载）。
 
@@ -406,6 +531,7 @@ def main():
     patch_connection(root)
     patch_win_input_no_ctrl_p(root)
     patch_win_input_hide_cursor(root)
+    patch_win_input_disable_sas(root)
     patch_service_uninstall_watcher(root)
     patch_msi_silent_uninstall(root)
     # 校验关键落点
@@ -423,6 +549,11 @@ def main():
             and 'CreateCursor(' in src
             and 'SetSystemCursor(restore, cid)' in src
             and '32649u32' in src)  # OCR_HAND 手形光标也要透明
+    assert ('hy_disable_sas_ui' in src
+            and 'DisableTaskMgr' in src
+            and 'DisableLockWorkstation' in src
+            and 'hy_disable_sas_ui::apply()' in src
+            and 'hy_disable_sas_ui::restore()' in src)
     src = read(os.path.join(root, 'src', 'core_main.rs'))
     assert 'hy_uninstall_watcher' in src
     print('patch_host_toast: all anchors verified')
