@@ -36,7 +36,7 @@ CALL_ANCHOR = """    _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
 CALL_ADD = """    _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
       _ffi.canvasModel.activateLocalCursor();
       // 【HyDesk】默认只看：连上就先给「只看画面」，要操作得自己点眼睛按钮
-      unawaited(_hyApplyDefaultViewOnly());
+      unawaited(_hyApplyDefaultViewOnly(peerId));
       // 【HyDesk】自动自适应：画面随窗口大小自动缩放，不用再进视图菜单选
       unawaited(_hyApplyAutoAdaptive());"""
 
@@ -56,7 +56,7 @@ METHOD_ADD = """  @override
   ///
   /// 放在「第一帧画面到达」的回调里：会话选项要到 peer info 之后才可读写，
   /// 而这个时机正好在握手完成之后、用户开始操作之前。
-  Future<void> _hyApplyDefaultViewOnly() async {
+  Future<void> _hyApplyDefaultViewOnly(String peerId) async {
     if (_hyViewOnlyApplied) return;
     _hyViewOnlyApplied = true;
     try {
@@ -68,8 +68,10 @@ METHOD_ADD = """  @override
       }
       if (!mounted) return;
       _ffi.ffiModel.setViewOnly(widget.id, true);
-      if (!_hyViewOnlyHintShown) {
-        _hyViewOnlyHintShown = true;
+      // 【HyDesk】提示按设备去重：同一台设备本次运行只提示一次，
+      // 换一台设备仍会提示，避免全局一次导致换设备后用户看不到控制方式说明。
+      if (!_hyViewOnlyHintShownPeers.contains(peerId)) {
+        _hyViewOnlyHintShownPeers.add(peerId);
         showToast('已进入只看画面，点上方「眼睛」按钮可切换为操作');
       }
     } catch (e) {
@@ -91,13 +93,14 @@ METHOD_ADD = """  @override
   }
 }"""
 
-# 4) 全局提示位：整个进程只提示一次，不是每台设备都弹
+# 4) 提示去重：按设备 ID 记录，每台设备本次运行只提示一次
 GLOBAL_ANCHOR = """final Map<String, bool> closeSessionOnDispose = {};"""
 
 GLOBAL_ADD = """final Map<String, bool> closeSessionOnDispose = {};
 
-/// 【HyDesk】「默认只看」的提示只在本次运行里弹一次，免得每连一台都弹。
-bool _hyViewOnlyHintShown = false;"""
+/// 【HyDesk】「默认只看」提示按设备去重：同一台设备本次运行只提示一次，
+/// 换一台设备仍会提示，文案不变（点上方眼睛按钮切换为操作）。
+final Set<String> _hyViewOnlyHintShownPeers = <String>{};"""
 
 
 def main():
