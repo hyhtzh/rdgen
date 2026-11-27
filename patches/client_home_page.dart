@@ -3659,25 +3659,103 @@ class _LicenseDetailDialogState extends State<_LicenseDetailDialog> {
     bool ok = false;
     String err = '';
     try {
-      final client = http.Client();
-      final req = http.Request('GET', Uri.parse(pkg.url));
-      final resp = await client.send(req).timeout(const Duration(minutes: 10));
-      if (resp.statusCode != 200) {
-        throw Exception('下载失败，HTTP ${resp.statusCode}');
+      // 【HyDesk】2026-11-27 分片并发下载：服务端已支持 Accept-Ranges（实测 206），
+      // 单连接实测仅 ~57KB/s，8 路 Range 并发合计可达 ~500KB/s。用 HEAD 拿总长度，
+      // 分成 N 片并行下载到 .partN 临时文件，全部完成后按顺序合并；任一片失败则清理
+      // 回退到单连接下载，保证老服务器（不支持 Range）也能用。
+      const int parts = 8;
+      int total = 0;
+      bool rangeOK = false;
+      try {
+        final hreq = http.Request('HEAD', Uri.parse(pkg.url));
+        final hresp = await hreq.send().timeout(const Duration(seconds: 15));
+        if (hresp.statusCode == 200) {
+          total = hresp.contentLength ?? 0;
+          rangeOK = total > 0 &&
+              (hresp.headers['accept-ranges'] ?? '').toLowerCase().contains('bytes');
+        }
+      } catch (_) {
+        rangeOK = false;
       }
-      final total = resp.contentLength ?? 0;
-      var received = 0;
-      final sink = io.File(tmpPath).openWrite();
-      await for (final chunk in resp.stream) {
-        sink.add(chunk);
-        received += chunk.length;
-        if (!mounted) break;
-        setState(() {
-          _genProgress = total > 0 ? received / total : 0.0;
-        });
+
+      if (rangeOK && total > 2 * 1024 * 1024) {
+        final chunk = (total / parts).ceil();
+        final got = List<int>.filled(parts, 0);
+        final partFiles = List<io.File>.filled(parts, io.File('$tmpPath.placeholder'));
+        final tasks = <Future<void>>[];
+        for (var i = 0; i < parts; i++) {
+          final start = i * chunk;
+          var end = start + chunk - 1;
+          if (end > total - 1) end = total - 1;
+          if (start > end) continue;
+          tasks.add((() async {
+            final preq = http.Request('GET', Uri.parse(pkg.url));
+            preq.headers['Range'] = 'bytes=$start-$end';
+            final presp = await preq.send().timeout(const Duration(minutes: 10));
+            if (presp.statusCode != 206) {
+              throw Exception('range ${presp.statusCode}');
+            }
+            final pf = io.File('$tmpPath.part$i');
+            partFiles[i] = pf;
+            final psink = pf.openWrite();
+            await for (final chunkData in presp.stream) {
+              psink.add(chunkData);
+              got[i] += chunkData.length;
+              if (!mounted) break;
+              final done = got.fold<int>(0, (a, b) => a + b);
+              setState(() {
+                _genProgress = total > 0 ? done / total : 0.0;
+              });
+            }
+            await psink.close();
+          })());
+        }
+        try {
+          await Future.wait(tasks);
+          // 合并分片：按序写入目标临时文件
+          final merged = io.File(tmpPath).openWrite();
+          for (var i = 0; i < parts; i++) {
+            final pf = partFiles[i];
+            if (await pf.exists()) {
+              final bytes = await pf.readAsBytes();
+              merged.add(bytes);
+              await pf.delete();
+            }
+          }
+          await merged.close();
+        } catch (_) {
+          // 并发任一片失败：清理分片，回退单连接
+          for (final pf in partFiles) {
+            try {
+              if (await pf.exists()) await pf.delete();
+            } catch (_) {}
+          }
+          rangeOK = false;
+        }
       }
-      await sink.close();
-      client.close();
+
+      if (!rangeOK) {
+        // 单连接回退路径（原逻辑）
+        final client = http.Client();
+        final req = http.Request('GET', Uri.parse(pkg.url));
+        final resp = await client.send(req).timeout(const Duration(minutes: 10));
+        if (resp.statusCode != 200) {
+          throw Exception('下载失败，HTTP ${resp.statusCode}');
+        }
+        final length = resp.contentLength ?? 0;
+        var received = 0;
+        final sink = io.File(tmpPath).openWrite();
+        await for (final chunkData in resp.stream) {
+          sink.add(chunkData);
+          received += chunkData.length;
+          if (!mounted) break;
+          setState(() {
+            _genProgress = length > 0 ? received / length : 0.0;
+          });
+        }
+        await sink.close();
+        client.close();
+      }
       // 校验最小体积，避免拿到错误页当成 exe
       final f = io.File(tmpPath);
       final size = await f.length();
