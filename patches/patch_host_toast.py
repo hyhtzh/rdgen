@@ -388,7 +388,8 @@ mod hy_disable_sas_ui {
 
     fn disable_one(sub: &RegKey, name: &str) -> Option<u32> {
         let orig: Option<u32> = sub.get_value(name).ok();
-        let _ = sub.set_value(name, &1u32, RegType::REG_DWORD);
+        // winreg 0.11 的 set_value 只收 (name, value) 两个参数，u32 自动写成 REG_DWORD
+        let _ = sub.set_value(name, &1u32);
         orig
     }
 
@@ -416,7 +417,7 @@ mod hy_disable_sas_ui {
 
     fn restore_one(sub: &RegKey, name: &str, orig: Option<u32>) {
         match orig {
-            Some(v) => { let _ = sub.set_value(name, &v, RegType::REG_DWORD); }
+            Some(v) => { let _ = sub.set_value(name, &v); }
             None => { let _ = sub.delete_value(name); }
         }
     }
