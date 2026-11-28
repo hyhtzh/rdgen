@@ -95,6 +95,46 @@ def patch_home(root):
     print('patch: mobile home -> screen wall entry')
 
 
+# 会话标签名缓存：桌面端由 patch_client_ui.py 注入 common.dart，安卓端没跑
+# 那个脚本，但 address_book_page.dart 的 _publishTabAliases() 会调用
+# hySetTabAlias —— 不补齐就会在 kernel_snapshot 阶段报
+#   "The method 'hySetTabAlias' isn't defined for the class 'AddressBookStore'"
+# （run 46090196544 三个架构同时失败）。这里注入与 Windows 侧完全一致的实现，
+# 只补顶层符号，不改 getDesktopTabLabel 行为：安卓没有桌面会话标签页。
+TAB_ALIAS_CACHE_DART = '''
+// 【HyDesk】会话标签名缓存（安卓端补齐顶层符号，2026-11-28）
+final Map<String, String> hyTabAliasCache = <String, String>{};
+
+void hySetTabAlias(String peerId, String alias) {
+  final k = peerId.replaceAll(' ', '').trim();
+  if (k.isEmpty) return;
+  final v = alias.trim();
+  if (v.isEmpty) {
+    hyTabAliasCache.remove(k);
+  } else {
+    hyTabAliasCache[k] = v;
+  }
+}
+
+String hyTabAliasOf(String peerId) =>
+    hyTabAliasCache[peerId.replaceAll(' ', '').trim()] ?? '';
+'''
+
+
+def patch_common_tab_alias(root):
+    """补齐 address_book_page.dart 依赖的 common.dart 顶层符号。"""
+    p = os.path.join(root, 'flutter', 'lib', 'common.dart')
+    if not os.path.isfile(p):
+        raise SystemExit('common.dart not found: %s' % p)
+    s = read(p)
+    if 'hySetTabAlias' in s:
+        print('skip common.dart tab alias (already patched)')
+        return
+    # 追加到文件末尾：Dart 顶层声明与顺序无关，零锚点风险
+    write(p, s.rstrip() + '\n\n' + TAB_ALIAS_CACHE_DART.strip() + '\n')
+    print('patch: common.dart -> hySetTabAlias / hyTabAliasOf')
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit('usage: patch_wall_mobile.py <rustdesk root>')
@@ -102,6 +142,7 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     # android.yml 里脚本和下载的 dart 文件放在同一目录
     copy_pages(root, here)
+    patch_common_tab_alias(root)
     patch_home(root)
     print('screen wall (android) applied')
 
