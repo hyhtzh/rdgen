@@ -648,6 +648,24 @@ jobs:
           grep -q "ScreenWallPage" flutter/lib/mobile/pages/home_page.dart \
             || { echo 'home entry patch failed'; exit 1; }
 
+      - name: Apply keepalive + device online notification (android)
+        shell: bash
+        run: |
+          set -e
+          # 【HyDesk】2026-11-28：与管理端同步的后台保活 + 新设备上线通知。
+          # Kotlin 服务由 Dart 经 MethodChannel 传入授权凭证，独立跑 30s 心跳。
+          curl -sSL -o HyKeepAliveService.kt \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/HyKeepAliveService.kt?nc=${{ github.run_id }}
+          curl -sSL -o patch_android_keepalive.py \
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_android_keepalive.py?nc=${{ github.run_id }}
+          grep -q "class HyKeepAliveService" HyKeepAliveService.kt \
+            || { echo 'keepalive kt template fetch failed'; exit 1; }
+          python3 patch_android_keepalive.py .
+          grep -rq "HyKeepAliveService" flutter/android/app/src/main/AndroidManifest.xml \
+            || { echo 'manifest keepalive patch failed'; exit 1; }
+          grep -rq "start_keepalive" flutter/android/app/src/main/kotlin/ \
+            || { echo 'MainActivity keepalive channel patch failed'; exit 1; }
+
       - name: Hide server settings (android)
         shell: bash
         run: |
