@@ -586,15 +586,15 @@ jobs:
           set -e
           mkdir -p flutter/lib/desktop/pages ui
           curl -sSL -o flutter/lib/desktop/pages/license_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
           curl -sSL -o flutter/lib/desktop/pages/license_client.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/license_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_page.dart?nc=${{ github.run_id }}
           curl -sSL -o ui/license_client.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/license_client.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_license.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_license.py?nc=${{ github.run_id }}
           python3 patch_license.py . android
 
       - name: Apply screen wall (android)
@@ -603,37 +603,37 @@ jobs:
           set -e
           # 屏幕墙：拷页面 + 手机主页挂入口（档位/拉流上限在墙页内部按平台分支）
           curl -sSL -o screen_wall_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/screen_wall_page.dart?nc=${{ github.run_id }}
           curl -sSL -o address_book_page.dart \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/address_book_page.dart?nc=${{ github.run_id }}
           curl -sSL -o patch_wall_mobile.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_mobile.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_mobile.py?nc=${{ github.run_id }}
           grep -q "_wallSid" screen_wall_page.dart \
             || { echo 'wall page is not multi-session aware (upload failed?)'; exit 1; }
           # 墙页依赖模型层的墙画布扩展（CanvasModel.layoutSize/globalOrigin、
           # InputModel.wallNoGrab 等）与工具栏的 kWallToolbarStates，
           # 和 Windows 侧同一份补丁
           curl -sSL -o patch_wall_canvas.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_wall_canvas.py?nc=${{ github.run_id }}
           python3 patch_wall_canvas.py .
           grep -rq "kWallToolbarStates" flutter/lib/ || true
           curl -sSL -o patch_toolbar_eye.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_toolbar_eye.py?nc=${{ github.run_id }}
           python3 patch_toolbar_eye.py .
           grep -rq "kWallToolbarStates" flutter/lib/ \
             || { echo 'wall canvas / toolbar patch failed'; exit 1; }
           python3 patch_wall_mobile.py .
           # 与 Windows 同款：会话建好默认「只看画面」，要操作得开群控/点眼睛
           curl -sSL -o patch_default_view_only.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_default_view_only.py?nc=${{ github.run_id }}
           python3 patch_default_view_only.py .
           # 安卓隐私屏收费：未开通不给开关，菜单换增值引导
           curl -sSL -o patch_mobile_privacy_gate.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_privacy_gate.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_privacy_gate.py?nc=${{ github.run_id }}
           python3 patch_mobile_privacy_gate.py .
           # 安卓默认值：UDP 打洞默认开启（首页 initState 补 Y + 设置页显示兜底）
           curl -sSL -o patch_mobile_defaults.py \
-            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_defaults.py
+            https://raw.githubusercontent.com/hyhtzh/rdgen/master/patches/patch_mobile_defaults.py?nc=${{ github.run_id }}
           python3 patch_mobile_defaults.py .
           grep -q "HyDesk 安卓默认开启 UDP 打洞" flutter/lib/mobile/pages/home_page.dart \
             || { echo 'mobile udp punch default patch failed'; exit 1; }
