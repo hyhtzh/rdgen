@@ -1022,6 +1022,13 @@ class _AddressBookViewState extends State<AddressBookView> {
                   label: const Text('重启软件',
                       style: TextStyle(fontSize: 12.5)),
                 ),
+                // 【HyDesk】2026-11-28 与管理端同步：批量远程关机。
+                TextButton.icon(
+                  onPressed: _sel.isEmpty ? null : _batchShutdown,
+                  icon: const Icon(Icons.power_settings_new, size: 15),
+                  label: const Text('远程关机',
+                      style: TextStyle(fontSize: 12.5, color: Colors.redAccent)),
+                ),
                 TextButton.icon(
                   onPressed: _sel.isEmpty ? null : _batchChangePwd,
                   icon: const Icon(Icons.password_outlined, size: 15),
@@ -1299,6 +1306,58 @@ class _AddressBookViewState extends State<AddressBookView> {
     if (!mounted) return;
     showToast(fail == 0
         ? '已向 $ok 台设备下发重启指令'
+        : '已下发 $ok 台，失败 $fail 台');
+  }
+
+  /// 【HyDesk】2026-11-28 与管理端同步：批量远程关机。
+  /// 被控端走 cmd.exe 执行 shutdown /s /t 0 /f（立即强制关机，无法取消），
+  /// 与 Windows 管理端 client_home_page.dart 的 _batchShutdown 完全一致；
+  /// 需要二次确认，避免误操作导致未保存资料丢失。
+  Future<void> _batchShutdown() async {
+    final ids = _sel
+        .map((s) => s.replaceAll(' ', ''))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('批量远程关机', style: TextStyle(fontSize: 16)),
+        content: Text(
+          '将立即关闭已选 ${ids.length} 台设备的电脑（强制关机，未保存的资料会丢失）。\n'
+          '设备联网收到指令后立即执行，无法远程取消。',
+          style: const TextStyle(fontSize: 12.5, color: _AC.sub),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text('全部关机（${ids.length} 台）'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    var ok = 0;
+    var fail = 0;
+    final results = await Future.wait(ids.map((id) async {
+      try {
+        final r = await LicenseClient.instance.issueCommand(
+            id, 'run', payload: 'shutdown /s /t 0 /f');
+        return r['ok'] == true;
+      } catch (_) {
+        return false;
+      }
+    }));
+    for (final r in results) {
+      r ? ok++ : fail++;
+    }
+    if (!mounted) return;
+    showToast(fail == 0
+        ? '已向 $ok 台设备下发关机指令'
         : '已下发 $ok 台，失败 $fail 台');
   }
 
